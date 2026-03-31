@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "TapServe",
+    "slug": "tapserve",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "tapserve",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.tapserve.app",
+      "merchantIdentifier": "merchant.com.tapserve",
+      "associatedDomains": [
+        "applinks:tapserve.app",
+        "applinks:tapserve.app"
+      ],
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.tapserve.app",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "https",
+              "host": "tapserve.app"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.tapserve"
+        }
+      ],
+      "expo-camera",
+      "expo-secure-store"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "0b72055f-b0c3-4e11-a749-914cafebef66"
+      }
+    }
+  }
+}
