@@ -1,23 +1,119 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+} from 'typeorm'
 
 @Entity()
 export class Business {
   @PrimaryGeneratedColumn()
-  id: number;
+  id: number
 
-  @Column({ unique: true })
-  storeCode: string;
+  // =========================
+  // AUTH
+  // =========================
 
-  // ✅ FIX — MAKE SAFE FOR SYNC
-  @Column({ nullable: true })
-  name: string;
+  @Column({
+    type: 'varchar',
+    unique: true,
+  })
+  email: string
 
-  @Column()
-  email: string;
+  @Column({
+    type: 'varchar',
+  })
+  password: string
 
-  @Column()
-  password: string;
+  @Column({
+    type: 'varchar',
+    unique: true,
+  })
+  storeCode: string
 
-  @Column({ nullable: true })
-  stripeAccountId: string;
+  // =========================
+  // STRIPE
+  // =========================
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  stripeAccountId:
+    | string
+    | null
+
+  // =========================
+  // KITCHEN
+  // =========================
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  kitchenPassword:
+    | string
+    | null
+
+  // =========================
+  // SERVICE FEE
+  // =========================
+
+  @Column({
+    type: 'float',
+    default: 0,
+  })
+  serviceFee: number
+
+  // =========================
+  // BRANDING
+  // =========================
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  name: string | null
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  cafeName:
+    | string
+    | null
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  logo: string | null
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  coverImage:
+    | string
+    | null
+
+  // =========================
+  // OPEN / CLOSED
+  // =========================
+
+  @Column({
+    default: true,
+  })
+  isOpen: boolean
+
+  // =========================
+  // RESET TOKEN
+  // =========================
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  resetToken:
+    | string
+    | null
 }

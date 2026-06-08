@@ -1,22 +1,26 @@
-import { Module, forwardRef } from '@nestjs/common'
+import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
+import { JwtModule } from '@nestjs/jwt'
 
 import { Business } from './business.entity'
-import { Order } from '../order/order.entity'
-
 import { BusinessService } from './business.service'
 import { BusinessController } from './business.controller'
 
-import { StripeModule } from '../stripe/stripe.module'
-
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Business, Order]),
+    TypeOrmModule.forFeature([Business]),
 
-    forwardRef(() => StripeModule), // ✅ FIX (CRITICAL)
+    // 🔥 JWT (GLOBAL SAFE CONFIG)
+    JwtModule.register({
+      global: true,
+      secret: process.env.JWT_SECRET || 'supersecret',
+      signOptions: { expiresIn: '7d' },
+    }),
   ],
   providers: [BusinessService],
   controllers: [BusinessController],
-  exports: [BusinessService],
+
+  // 🔥 EXPORT JWT + SERVICE (IMPORTANT)
+  exports: [BusinessService, JwtModule],
 })
 export class BusinessModule {}

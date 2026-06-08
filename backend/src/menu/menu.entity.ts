@@ -10,30 +10,79 @@ export class MenuItem {
   @PrimaryGeneratedColumn()
   id: number
 
-  @Column()
-  name: string
+  // =========================
+  // BUSINESS
+  // =========================
 
-  @Column('float')
-  price: number
-
-  // ✅ FIX: allow null
-  @Column('float', { nullable: true })
-  discountPrice: number | null
-
-  @Column({ nullable: true })
-  description: string
-
-  @Column({ nullable: true })
-  imageUrl: string
-
-  @Column()
+  @Column({
+    type: 'int',
+  })
   businessId: number
 
-  @Column({ default: true })
-  available: boolean
+  // =========================
+  // BASIC INFO
+  // =========================
 
-  @Column({ nullable: true })
-  category: string
+  @Column({
+    type: 'varchar',
+  })
+  name: string
+
+  @Column({
+    type: 'text',
+    nullable: true,
+  })
+  description: string | null
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  category: string | null
+
+  // =========================
+  // PRICING
+  // =========================
+
+  @Column({
+    type: 'float',
+    default: 0,
+  })
+  price: number
+
+  @Column({
+    type: 'float',
+    default: 0,
+  })
+  discount: number
+
+  // =========================
+  // IMAGE
+  // =========================
+
+  @Column({
+    type: 'varchar',
+    nullable: true,
+  })
+  imageUrl: string | null
+
+  // =========================
+  // STATUS
+  // =========================
+
+  @Column({
+    default: false,
+  })
+  isHidden: boolean
+
+  @Column({
+    default: false,
+  })
+  isOutOfStock: boolean
+
+  // =========================
+  // CREATED
+  // =========================
 
   @CreateDateColumn()
   createdAt: Date

@@ -1,34 +1,150 @@
-import { Controller, Post, Body, Get, Param } from '@nestjs/common'
+import {
+  Controller,
+  Post,
+  Patch,
+  Param,
+  Body,
+} from '@nestjs/common'
+
 import { BusinessService } from './business.service'
 
 @Controller('business')
 export class BusinessController {
-  constructor(private businessService: BusinessService) {}
+  constructor(
+    private readonly businessService: BusinessService,
+  ) {}
 
-  // 🔐 REGISTER
-  @Post('register')
-  async register(@Body() body: any) {
-    return this.businessService.register(body)
+  // =========================
+  // 🔥 SIGNUP
+  // =========================
+  @Post('signup')
+  async signup(
+    @Body()
+    body: {
+      email: string
+      password: string
+      storeCode: string
+    },
+  ) {
+    return this.businessService.signup(
+      body,
+    )
   }
 
-  // 🔐 LOGIN (FIXED)
+  // =========================
+  // 🔥 LOGIN
+  // =========================
   @Post('login')
-  async login(@Body() body: any) {
+  async login(
+    @Body()
+    body: {
+      email: string
+      password: string
+    },
+  ) {
     return this.businessService.login(
-      body.storeCode,
+      body,
+    )
+  }
+
+  // =========================
+  // 🔥 KITCHEN LOGIN
+  // =========================
+  @Post('kitchen-login')
+  async kitchenLogin(
+    @Body()
+    body: {
+      storeCode: string
+      password: string
+    },
+  ) {
+    return this.businessService.kitchenLogin(
+      body,
+    )
+  }
+
+  // =========================
+  // 🔥 SET KITCHEN PASSWORD
+  // =========================
+  @Post('set-kitchen-password')
+  async setKitchenPassword(
+    @Body()
+    body: {
+      businessId: number
+      password: string
+    },
+  ) {
+    return this.businessService.setKitchenPassword(
+      body.businessId,
       body.password,
     )
   }
 
-  // 💰 EARNINGS
-  @Get('earnings/:storeCode')
-  async getEarnings(@Param('storeCode') storeCode: string) {
-    return this.businessService.getEarnings(storeCode)
+  // =========================
+  // 🔥 DISABLE PASSWORD
+  // =========================
+  @Post(
+    'disable-kitchen-password',
+  )
+  async disableKitchenPassword(
+    @Body()
+    body: {
+      businessId: number
+    },
+  ) {
+    return this.businessService.disableKitchenPassword(
+      body.businessId,
+    )
   }
 
-  // 💸 WITHDRAW
-  @Post('withdraw/:storeCode')
-  async withdraw(@Param('storeCode') storeCode: string) {
-    return this.businessService.withdraw(storeCode)
+  // =========================
+  // 🔥 SERVICE FEE
+  // =========================
+  @Post('set-service-fee')
+  async setServiceFee(
+    @Body()
+    body: {
+      businessId: number
+      fee: number
+    },
+  ) {
+    return this.businessService.setServiceFee(
+      body.businessId,
+      body.fee,
+    )
+  }
+
+  // =========================
+  // 🔥 BRANDING
+  // =========================
+  @Post('update-branding')
+  async updateBranding(
+    @Body()
+    body: {
+      businessId: number
+      name?: string
+      logo?: string
+    },
+  ) {
+    return this.businessService.updateBranding(
+      body.businessId,
+      body.name,
+      body.logo,
+    )
+  }
+
+  // =========================
+  // 🔥 OPEN / CLOSE KITCHEN
+  // =========================
+  @Patch(
+    'toggle-open/:businessId',
+  )
+  async toggleOpen(
+    @Param('businessId')
+    businessId: number,
+  ) {
+    return this.businessService.toggleOpen(
+      Number(businessId),
+    )
   }
 }

@@ -1,141 +1,452 @@
-import { Injectable } from '@nestjs/common'
+import {
+  Injectable,
+  BadRequestException,
+  UnauthorizedException,
+} from '@nestjs/common'
+
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
 import { Business } from './business.entity'
-import { Order } from '../order/order.entity'
-import { StripeService } from '../stripe/stripe.service'
+
+import * as bcrypt from 'bcrypt'
 
 @Injectable()
 export class BusinessService {
   constructor(
     @InjectRepository(Business)
     private businessRepo: Repository<Business>,
-
-    @InjectRepository(Order)
-    private orderRepo: Repository<Order>,
-
-    private stripeService: StripeService,
   ) {}
 
-  async findByStoreCode(storeCode: string) {
-    return this.businessRepo.findOne({
-      where: { storeCode },
-    })
-  }
+  // =========================
+  // 🔥 SIGNUP
+  // =========================
+  async signup(data: {
+    email: string
+    password: string
+    storeCode: string
+  }) {
+    const email =
+      data.email
+        .toLowerCase()
+        .trim()
 
-  async register(data: any) {
-    const existing = await this.businessRepo.findOne({
-      where: { storeCode: data.storeCode },
-    })
+    const existing =
+      await this.businessRepo.findOne({
+        where: [
+          { email },
+          {
+            storeCode:
+              data.storeCode,
+          },
+        ],
+      })
 
     if (existing) {
-      return { success: false, message: 'Store already exists' }
+      throw new BadRequestException(
+        'Account already exists',
+      )
     }
 
-    const business = this.businessRepo.create({
-      storeCode: data.storeCode,
-      name: data.name,
-      email: data.email,
-      password: data.password,
-    })
-
-    await this.businessRepo.save(business)
-
-    return {
-      success: true,
-      storeCode: business.storeCode,
-    }
-  }
-
-  async login(storeCode: string, password: string) {
-    const business = await this.businessRepo.findOne({
-      where: { storeCode },
-    })
-
-    if (!business) {
-      return { success: false, message: 'Store not found' }
-    }
-
-    if (business.password !== password) {
-      return { success: false, message: 'Invalid password' }
-    }
-
-    return {
-      success: true,
-      storeCode: business.storeCode,
-    }
-  }
-
-  async getEarnings(storeCode: string) {
-    const business = await this.findByStoreCode(storeCode)
-
-    if (!business) {
-      return { success: false, message: 'Business not found' }
-    }
-
-    const orders = await this.orderRepo.find({
-      where: { storeCode },
-    })
-
-    const totalRevenue = orders.reduce(
-      (sum, o) => sum + Number(o.totalAmount || 0),
-      0,
-    )
-
-    const platformFees = orders.reduce(
-      (sum, o) => sum + Number(o.platformFee || 0),
-      0,
-    )
-
-    const net = totalRevenue - platformFees
-
-    return {
-      success: true,
-      totalRevenue,
-      platformFees,
-      net,
-      orderCount: orders.length,
-    }
-  }
-
-  async withdraw(storeCode: string) {
-    const business = await this.findByStoreCode(storeCode)
-
-    if (!business) {
-      return { success: false, message: 'Business not found' }
-    }
-
-    if (!business.stripeAccountId) {
-      return { success: false, message: 'Stripe not connected' }
-    }
-
-    const earnings = await this.getEarnings(storeCode)
-
-    // ✅ FIX: guard earnings
-    if (!earnings.success || earnings.net === undefined) {
-      return { success: false, message: 'Earnings unavailable' }
-    }
-
-    if (earnings.net <= 0) {
-      return { success: false, message: 'No funds available' }
-    }
-
-    try {
-      await this.stripeService.createConnectedAccountPayout(
-        business.stripeAccountId,
-        earnings.net,
+    const hashed =
+      await bcrypt.hash(
+        data.password,
+        10,
       )
 
+    const business =
+      this.businessRepo.create({
+        email,
+        password: hashed,
+        storeCode:
+          data.storeCode,
+        isOpen: true,
+      })
+
+    const saved =
+      await this.businessRepo.save(
+        business,
+      )
+
+    return {
+      id: saved.id,
+      email: saved.email,
+      storeCode:
+        saved.storeCode,
+    }
+  }
+
+  // =========================
+  // 🔥 LOGIN
+  // =========================
+  async login(data: {
+    email: string
+    password: string
+  }) {
+    if (
+      !data.email ||
+      !data.password
+    ) {
+      throw new BadRequestException(
+        'Missing credentials',
+      )
+    }
+
+    const email =
+      data.email
+        .toLowerCase()
+        .trim()
+
+    const business =
+      await this.businessRepo.findOne({
+        where: { email },
+      })
+
+    if (!business) {
+      throw new UnauthorizedException(
+        'Invalid email or password',
+      )
+    }
+
+    const isMatch =
+      await bcrypt.compare(
+        data.password,
+        business.password,
+      )
+
+    if (!isMatch) {
+      throw new UnauthorizedException(
+        'Invalid email or password',
+      )
+    }
+
+    return {
+      id: business.id,
+      email: business.email,
+      storeCode:
+        business.storeCode,
+      stripeAccountId:
+        business.stripeAccountId,
+      isOpen:
+        business.isOpen,
+    }
+  }
+
+  // =========================
+  // 🔥 KITCHEN LOGIN
+  // =========================
+  async kitchenLogin(data: {
+    storeCode: string
+    password?: string
+  }) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          storeCode:
+            data.storeCode,
+        },
+      })
+
+    if (!business) {
+      throw new UnauthorizedException(
+        'Invalid credentials',
+      )
+    }
+
+    // 🔥 PASSWORDLESS MODE
+    if (
+      !business.kitchenPassword
+    ) {
       return {
-        success: true,
-        amount: earnings.net,
-      }
-    } catch (err) {
-      return {
-        success: false,
-        message: 'Payout failed',
+        businessId:
+          business.id,
+        storeCode:
+          business.storeCode,
       }
     }
+
+    if (!data.password) {
+      throw new UnauthorizedException(
+        'Invalid credentials',
+      )
+    }
+
+    const isMatch =
+      await bcrypt.compare(
+        data.password,
+        business.kitchenPassword,
+      )
+
+    if (!isMatch) {
+      throw new UnauthorizedException(
+        'Invalid credentials',
+      )
+    }
+
+    return {
+      businessId:
+        business.id,
+      storeCode:
+        business.storeCode,
+    }
+  }
+
+  // =========================
+  // 🔥 SET KITCHEN PASSWORD
+  // =========================
+  async setKitchenPassword(
+    businessId: number,
+    password: string,
+  ) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          id: businessId,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Business not found',
+      )
+    }
+
+    const hashed =
+      await bcrypt.hash(
+        password,
+        10,
+      )
+
+    await this.businessRepo.update(
+      businessId,
+      {
+        kitchenPassword:
+          hashed,
+      },
+    )
+
+    return {
+      success: true,
+    }
+  }
+
+  // =========================
+  // 🔥 DISABLE PASSWORD
+  // =========================
+  async disableKitchenPassword(
+    businessId: number,
+  ) {
+    await this.businessRepo.update(
+      businessId,
+      {
+        kitchenPassword:
+          null,
+      },
+    )
+
+    return {
+      success: true,
+    }
+  }
+
+  // =========================
+  // 🔥 SERVICE FEE
+  // =========================
+  async setServiceFee(
+    businessId: number,
+    fee: number,
+  ) {
+    await this.businessRepo.update(
+      businessId,
+      {
+        serviceFee:
+          Number(fee) || 0,
+      },
+    )
+
+    return {
+      success: true,
+    }
+  }
+
+  // =========================
+  // 🔥 BRANDING UPDATE
+  // =========================
+  async updateBranding(
+    businessId: number,
+    name?: string,
+    logo?: string,
+  ) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          id: businessId,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Business not found',
+      )
+    }
+
+    let finalLogo =
+      business.logo
+
+    if (logo) {
+      const cleaned = logo
+        .replace(
+          /^\/+/g,
+          '',
+        )
+        .replace(
+          /^uploads\//g,
+          '',
+        )
+
+      finalLogo = `/uploads/${cleaned}`
+    }
+
+    await this.businessRepo.update(
+      businessId,
+      {
+        ...(name
+          ? { name }
+          : {}),
+        ...(finalLogo
+          ? {
+              logo:
+                finalLogo,
+            }
+          : {}),
+      },
+    )
+
+    return {
+      success: true,
+      logo: finalLogo,
+    }
+  }
+
+  // =========================
+  // 🔥 TOGGLE OPEN/CLOSED
+  // =========================
+  async toggleOpen(
+    businessId: number,
+  ) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          id: businessId,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Business not found',
+      )
+    }
+
+    // 🔥 FORCE FRESH VALUE
+    const newValue =
+      !business.isOpen
+
+    await this.businessRepo.update(
+      businessId,
+      {
+        isOpen: newValue,
+      },
+    )
+
+    // 🔥 REFETCH
+    const updated =
+      await this.businessRepo.findOne({
+        where: {
+          id: businessId,
+        },
+      })
+
+    return {
+      success: true,
+      isOpen:
+        updated?.isOpen,
+    }
+  }
+
+  // =========================
+  // 🔥 FIND STORE
+  // =========================
+  async findByStoreCode(
+    storeCode: string,
+  ) {
+    return this.businessRepo.findOne({
+      where: {
+        storeCode,
+      },
+    })
+  }
+
+  // =========================
+  // 🔥 CREATE
+  // =========================
+  async create(data: {
+    email: string
+    password: string
+    storeCode: string
+  }) {
+    const email =
+      data.email
+        .toLowerCase()
+        .trim()
+
+    const existing =
+      await this.businessRepo.findOne({
+        where: [
+          { email },
+          {
+            storeCode:
+              data.storeCode,
+          },
+        ],
+      })
+
+    if (existing) {
+      return existing
+    }
+
+    const hashed =
+      await bcrypt.hash(
+        data.password,
+        10,
+      )
+
+    const business =
+      this.businessRepo.create({
+        email,
+        password: hashed,
+        storeCode:
+          data.storeCode,
+        isOpen: true,
+      })
+
+    return this.businessRepo.save(
+      business,
+    )
+  }
+
+  // =========================
+  // 🔥 GET ALL STORE CODES
+  // =========================
+  async getAllStoreCodes() {
+    const businesses =
+      await this.businessRepo.find({
+        select: [
+          'storeCode',
+        ],
+      })
+
+    return businesses.map(
+      (b) => b.storeCode,
+    )
   }
 }

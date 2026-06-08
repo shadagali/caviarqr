@@ -3,29 +3,73 @@ import {
   WebSocketServer,
   SubscribeMessage,
   MessageBody,
-} from '@nestjs/websockets';
-import { Server } from 'socket.io';
+  ConnectedSocket,
+} from '@nestjs/websockets'
+
+import { Server, Socket } from 'socket.io'
 
 @WebSocketGateway({
-  cors: {
-    origin: '*',
-  },
+  cors: { origin: '*' },
 })
 export class OrderGateway {
   @WebSocketServer()
-  server: Server;
+  server: Server
 
-  // 🔥 CLIENT JOINS STORE ROOM
-  @SubscribeMessage('joinStore')
-  handleJoin(@MessageBody() storeCode: string) {
-    return storeCode;
+  @SubscribeMessage('join')
+  handleJoin(
+    @MessageBody()
+    businessId: number,
+
+    @ConnectedSocket()
+    client: Socket,
+  ) {
+    client.join(
+      `business-${businessId}`,
+    )
+
+    console.log(
+      '🔥 CLIENT JOINED:',
+      businessId,
+    )
   }
 
-  emitNewOrder(storeCode: string, order: any) {
-    this.server.to(storeCode).emit('newOrder', order);
+  emitNewOrder(
+    businessId: number,
+    order: any,
+  ) {
+    console.log(
+      '🔥 EMIT NEW ORDER:',
+      businessId,
+      order.id,
+    )
+
+    this.server
+      .to(
+        `business-${businessId}`,
+      )
+      .emit(
+        'newOrder',
+        order,
+      )
   }
 
-  emitOrderUpdate(storeCode: string, order: any) {
-    this.server.to(storeCode).emit('orderUpdate', order);
+  emitOrderUpdate(
+    businessId: number,
+    order: any,
+  ) {
+    console.log(
+      '🔥 EMIT ORDER UPDATE:',
+      businessId,
+      order.id,
+    )
+
+    this.server
+      .to(
+        `business-${businessId}`,
+      )
+      .emit(
+        'orderUpdate',
+        order,
+      )
   }
 }

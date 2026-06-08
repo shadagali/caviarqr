@@ -1,19 +1,35 @@
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-import * as bodyParser from 'body-parser';
+import { NestFactory } from '@nestjs/core'
+import { AppModule } from './app.module'
+
+import * as express from 'express'
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app =
+    await NestFactory.create(
+      AppModule,
+      {
+        rawBody: true,
+      },
+    )
 
-  // ✅ REQUIRED FOR STRIPE WEBHOOK
+  // 🔥 STRIPE RAW BODY
   app.use(
     '/webhook/stripe',
-    bodyParser.raw({ type: 'application/json' }),
-  );
+    express.raw({
+      type: 'application/json',
+    }),
+  )
 
-  // normal json parser
-  app.use(bodyParser.json());
+  // 🔥 NORMAL JSON FOR EVERYTHING ELSE
+  app.use(express.json())
 
-  await app.listen(3001);
+  app.enableCors()
+
+  await app.listen(3001)
+
+  console.log(
+    '🚀 Backend running on http://localhost:3001',
+  )
 }
-bootstrap();
+
+bootstrap()

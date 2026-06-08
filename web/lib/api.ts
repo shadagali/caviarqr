@@ -1,7 +1,26 @@
-import axios from "axios";
+export async function apiFetch(url: string, options: RequestInit) {
+  try {
+    const res = await fetch(url, options)
 
-export const api = axios.create({
-  baseURL: "/api",
-});
+    const data = await res.json().catch(() => ({}))
 
-export default api;
+    if (!res.ok) {
+      return {
+        success: false,
+        message: data.message || "Request failed",
+      }
+    }
+
+    return {
+      success: true,
+      ...data,
+    }
+  } catch (err: any) {
+    console.log("API ERROR:", err)
+
+    return {
+      success: false,
+      message: "Network error",
+    }
+  }
+}

@@ -1,41 +1,69 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import api from "@/lib/api"
+import { useSearchParams, useRouter } from "next/navigation"
+import { loadStripe } from "@stripe/stripe-js"
 
 export default function SuccessPage() {
-  const [status, setStatus] = useState("Placing order...")
+  const params = useSearchParams()
+  const router = useRouter()
+
+  const [status, setStatus] = useState("Checking payment...")
 
   useEffect(() => {
-    const send = async () => {
-      const cart = JSON.parse(localStorage.getItem("tapserve_cart") || "[]")
-      const storeCode = localStorage.getItem("tapserve_store")
-      const tableNumber = localStorage.getItem("tapserve_table")
+    const checkPayment = async () => {
+      const clientSecret = params.get("payment_intent_client_secret")
 
-      try {
-        const res = await api.post("/order", {
-          storeCode,
-          items: cart,
-          tableNumber,
-        })
+      if (!clientSecret) {
+        setStatus("Invalid payment session")
+        return
+      }
 
-        if (res.data.id) {
-          setStatus("✅ Order placed!")
-        } else {
-          setStatus("❌ Failed")
-        }
-      } catch (err) {
-        console.log(err)
-        setStatus("❌ Server error")
+      const stripe = await loadStripe(
+        process.env.NEXT_PUBLIC_STRIPE_KEY!
+      )
+
+      if (!stripe) {
+        setStatus("Stripe failed to load")
+        return
+      }
+
+      const { paymentIntent } =
+        await stripe.retrievePaymentIntent(clientSecret)
+
+      if (!paymentIntent) {
+        setStatus("Payment not found")
+        return
+      }
+
+      switch (paymentIntent.status) {
+        case "succeeded":
+          setStatus("Payment successful ✅")
+          break
+        case "processing":
+          setStatus("Payment processing…")
+          break
+        case "requires_payment_method":
+          setStatus("Payment failed ❌")
+          break
+        default:
+          setStatus("Unknown status")
       }
     }
 
-    send()
+    checkPayment()
   }, [])
 
   return (
-    <div className="bg-black text-white h-screen flex items-center justify-center">
-      {status}
+    <div className="flex flex-col items-center justify-center h-screen bg-black text-white">
+      <h1 className="text-3xl mb-4">{status}</h1>
+
+      <button
+        onClick={() => router.push("/store/cafe1")}
+        className="mt-6 bg-white text-black px-6 py-2 rounded"
+      >
+        Back to Menu
+      </button>
     </div>
   )
 }

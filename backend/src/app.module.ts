@@ -1,52 +1,54 @@
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { ConfigModule } from '@nestjs/config';
+import { Module } from '@nestjs/common'
+import { TypeOrmModule } from '@nestjs/typeorm'
+import { ServeStaticModule } from '@nestjs/serve-static'
 
-import { BusinessModule } from './business/business.module';
-import { MenuModule } from './menu/menu.module';
-import { OrderModule } from './order/order.module';
-import { StripeModule } from './stripe/stripe.module';
-import { PublicModule } from './public/public.module';
-import { SetupModule } from './setup/setup.module';
-import { WebhookModule } from './webhook/webhook.module';
+import { join } from 'path'
 
-// ❌ REMOVE THESE (IMPORTANT)
-// import { BullModule } from '@nestjs/bullmq';
-// import { QueueModule } from './queue/queue.module';
+import { BusinessModule } from './business/business.module'
+import { MenuModule } from './menu/menu.module'
+import { PublicModule } from './public/public.module'
+import { OrderModule } from './order/order.module'
+import { StripeModule } from './stripe/stripe.module'
+import { WebhookModule } from './webhook/webhook.module'
+import { AnalyticsModule } from './analytics/analytics.module'
+import { MaintenanceModule } from './maintenance/maintenance.module'
+
+import { Business } from './business/business.entity'
+import { MenuItem } from './menu/menu.entity'
+import { Order } from './order/order.entity'
 
 @Module({
   imports: [
-    ConfigModule.forRoot(),
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'uploads'),
+      serveRoot: '/uploads',
+    }),
 
     TypeOrmModule.forRoot({
       type: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
-      port: Number(process.env.DB_PORT) || 5433,
-      username: process.env.DB_USERNAME || 'postgres',
-      password: process.env.DB_PASSWORD || 'postgres',
-      database: process.env.DB_NAME || 'tapserve',
-      autoLoadEntities: true,
+      host: 'localhost',
+      port: 5433,
+      username: 'postgres',
+      password: 'postgres',
+      database: 'tapserve',
+
+      entities: [
+        Business,
+        MenuItem,
+        Order,
+      ],
+
       synchronize: true,
     }),
 
-    // ❌ REMOVE BULLMQ COMPLETELY
-    // BullModule.forRoot({
-    //   connection: {
-    //     host: 'localhost',
-    //     port: 6379,
-    //   },
-    // }),
-
-    // ❌ REMOVE QUEUE MODULE
-    // QueueModule,
-
     BusinessModule,
     MenuModule,
+    PublicModule,
     OrderModule,
     StripeModule,
-    PublicModule,
-    SetupModule,
     WebhookModule,
+    AnalyticsModule,
+    MaintenanceModule,
   ],
 })
 export class AppModule {}

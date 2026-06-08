@@ -1,17 +1,14 @@
-import { Module, forwardRef } from '@nestjs/common'
+import { Module } from '@nestjs/common'
+import { TypeOrmModule } from '@nestjs/typeorm'
 import { StripeService } from './stripe.service'
 import { StripeController } from './stripe.controller'
-import { TypeOrmModule } from '@nestjs/typeorm'
 import { Business } from '../business/business.entity'
-import { OrderModule } from '../order/order.module'
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Business]),
-    forwardRef(() => OrderModule),
   ],
   providers: [StripeService],
-  controllers: [StripeController], // ✅ ADD THIS
-  exports: [StripeService],
+  controllers: [StripeController],
 })
 export class StripeModule {}

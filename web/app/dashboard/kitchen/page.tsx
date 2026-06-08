@@ -1,177 +1,1186 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useSearchParams } from "next/navigation"
-import { api } from "@/lib/api"
-import io from "socket.io-client"
-
-const socket = io("http://localhost:3001")
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react"
+import axios from "axios"
+import { io } from "socket.io-client"
 
 export default function KitchenPage() {
-  const searchParams = useSearchParams()
-  const storeCode = searchParams.get("storeCode") || "cafe1"
+  const [orders, setOrders] =
+    useState<any[]>([])
 
-  const [orders, setOrders] = useState<any[]>([])
-  const [now, setNow] = useState(Date.now())
+  const [pastOrders, setPastOrders] =
+    useState<any[]>([])
 
-  // 🔥 LIVE TIMER
+  const [showHistory, setShowHistory] = useState(false)
+  const [isOpen, setIsOpen] =
+    useState<boolean | null>(
+      null,
+    )
+
+  const [refundOrderId, setRefundOrderId] = useState<number | null>(null)
+  const [selectedItems, setSelectedItems] = useState<number[]>([])
+
+  const socketRef = useRef<any>(null)
+
+  const storeCode = "cafe1"
+  const businessId = 3
+
+  // ─────────────────────────────────────
+  // LOAD ORDERS
+  // ─────────────────────────────────────
+  const load = async () => {
+    try {
+      const activeRes =
+        await axios.get(
+          `${process.env.NEXT_PUBLIC_API_URL}/order/${storeCode}`,
+        )
+
+      const historyRes =
+        await axios.get(
+          `${process.env.NEXT_PUBLIC_API_URL}/order/history/${storeCode}`,
+        )
+
+      let activeData: any[] = []
+      let historyData: any[] = []
+
+      if (
+        Array.isArray(
+          activeRes.data,
+        )
+      ) {
+        activeData =
+          activeRes.data
+      } else if (
+        Array.isArray(
+          activeRes.data.orders,
+        )
+      ) {
+        activeData =
+          activeRes.data.orders
+      }
+
+      if (
+        Array.isArray(
+          historyRes.data,
+        )
+      ) {
+        historyData =
+          historyRes.data
+      } else if (
+        Array.isArray(
+          historyRes.data.orders,
+        )
+      ) {
+        historyData =
+          historyRes.data.orders
+      }
+
+      activeData.sort(
+        (a, b) =>
+          b.id - a.id,
+      )
+
+      historyData.sort(
+        (a, b) =>
+          b.id - a.id,
+      )
+
+      const businessRes =
+        await axios.get(
+          `${process.env.NEXT_PUBLIC_API_URL}/public/store/${storeCode}`,
+        )
+
+      const latestOpen =
+        businessRes.data
+          ?.business
+          ?.isOpen === true
+
+      setIsOpen(
+        latestOpen,
+      )
+
+      setOrders(
+        activeData,
+      )
+
+      setPastOrders(
+        historyData,
+      )
+    } catch (err) {
+      console.log(err)
+
+      setOrders([])
+
+      setPastOrders([])
+    }
+  }
+
+  // ─────────────────────────────────────
+  // TOGGLE KITCHEN OPEN/CLOSED
+  // ─────────────────────────────────────
+  const toggleKitchen = async () => {
+    try {
+      const res = await axios.patch(
+        `${process.env.NEXT_PUBLIC_API_URL}/business/toggle-open/${businessId}`,
+      )
+
+      setIsOpen(
+        res.data?.isOpen === true,
+      )
+    } catch (err) {
+      console.log(err)
+    }
+  }
+
+  // ─────────────────────────────────────
+  // SOCKET + POLLING FALLBACK
+  // ─────────────────────────────────────
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(t)
-  }, [])
+    let poll: any
 
-  // 🚀 INITIAL FETCH + SOCKET SETUP
-  useEffect(() => {
-    const fetchOrders = async () => {
-      const res = await api.get(`/order/${storeCode}`)
-      setOrders(res.data || [])
+    const startPolling = () => {
+      if (poll) return
+
+      poll = setInterval(() => {
+        load()
+      }, 3000)
     }
 
-    fetchOrders()
+    const stopPolling = () => {
+      if (poll) {
+        clearInterval(poll)
+        poll = null
+      }
+    }
 
-    // ✅ JOIN ROOM
-    socket.emit("joinStore", storeCode)
+    const socket = io(
+      process.env.NEXT_PUBLIC_API_URL!,
+      {
+        transports: [
+          "websocket",
+          "polling",
+        ],
 
-    // ✅ NEW ORDER
-    socket.on("newOrder", (order) => {
-      setOrders(prev => [order, ...prev])
-      playSound()
-    })
+        reconnection: true,
 
-    // ✅ STATUS UPDATE
-    socket.on("orderUpdate", (updated) => {
-      setOrders(prev =>
-        prev.map(o => (o.id === updated.id ? updated : o))
+        reconnectionAttempts:
+          Infinity,
+
+        reconnectionDelay: 1000,
+      },
+    )
+
+    socketRef.current = socket
+
+    // 🔥 CONNECT
+    socket.on("connect", () => {
+      console.log(
+        "🔥 SOCKET CONNECTED",
       )
+
+      socket.emit(
+        "join",
+        businessId,
+      )
+
+      stopPolling()
+
+      // 🔥 FORCE LOAD
+      load()
     })
+
+    // 🔥 RECONNECT
+    socket.on(
+      "reconnect",
+      () => {
+        console.log(
+          "🔥 SOCKET RECONNECTED",
+        )
+
+        socket.emit(
+          "join",
+          businessId,
+        )
+
+        stopPolling()
+
+        load()
+      },
+    )
+
+    // 🔥 DISCONNECT
+    socket.on(
+      "disconnect",
+      () => {
+        console.log(
+          "🔥 SOCKET DISCONNECTED",
+        )
+
+        startPolling()
+      },
+    )
+
+    // 🔥 SOCKET ERROR
+    socket.on(
+      "connect_error",
+      () => {
+        console.log(
+          "🔥 SOCKET ERROR",
+        )
+
+        startPolling()
+      },
+    )
+
+    // 🔥 NEW ORDER
+    socket.on(
+      "newOrder",
+      (order: any) => {
+        console.log(
+          "🔥 NEW ORDER",
+          order,
+        )
+
+        setOrders((prev) => {
+          const exists =
+            prev.find(
+              (o) =>
+                o.id ===
+                order.id,
+            )
+
+          if (exists) {
+            return prev
+          }
+
+          return [
+            order,
+            ...prev,
+          ]
+        })
+
+        // 🔥 HARD SYNC
+        setTimeout(() => {
+          load()
+        }, 500)
+      },
+    )
+
+    // 🔥 ORDER UPDATE
+    socket.on(
+      "orderUpdate",
+      (order: any) => {
+        console.log(
+          "🔥 ORDER UPDATE",
+          order,
+        )
+
+        setOrders((prev) =>
+          prev.map((o) =>
+            o.id === order.id
+              ? order
+              : o,
+          ),
+        )
+
+        setTimeout(() => {
+          load()
+        }, 500)
+      },
+    )
+
+    // 🔥 INITIAL LOAD
+    load()
+
+    // 🔥 SAFETY POLL
+    startPolling()
 
     return () => {
+      stopPolling()
+
+      socket.off("connect")
+      socket.off("disconnect")
+      socket.off("reconnect")
+      socket.off("connect_error")
       socket.off("newOrder")
-      socket.off("orderUpdate")
+      socket.off(
+        "orderUpdate",
+      )
+
+      socket.disconnect()
     }
-  }, [storeCode])
+  }, [])
 
-  const updateStatus = async (id: number, status: string) => {
-    await api.patch(`/order/${id}/status`, { status })
+  // ─────────────────────────────────────
+  // COMPLETE ORDER
+  // ─────────────────────────────────────
+  const completeOrder = async (
+    id: number,
+  ) => {
+    if (
+      !confirm(
+        "Mark order as completed?",
+      )
+    )
+      return
+
+    try {
+      await axios.patch(
+        `${process.env.NEXT_PUBLIC_API_URL}/order/${id}`,
+        {
+          status: "DONE",
+        },
+      )
+
+      load()
+    } catch (err) {
+      console.log(err)
+    }
   }
 
-  // 🔥 TIME FORMAT
-  const getTimeAgo = (createdAt: string) => {
-    const diff = Math.floor((now - new Date(createdAt).getTime()) / 1000)
+  // ─────────────────────────────────────
+  // REFUND
+  // ─────────────────────────────────────
+  const openRefund = (
+    id: number,
+  ) => {
+    setRefundOrderId(id)
 
-    if (diff < 60) return `${diff}s`
-    if (diff < 3600) return `${Math.floor(diff / 60)}m`
-    return `${Math.floor(diff / 3600)}h`
+    setSelectedItems([])
   }
 
-  const playSound = () => {
-    const audio = new Audio("/alert.mp3")
-    audio.play()
+  const toggleItem = (
+    index: number,
+  ) => {
+    setSelectedItems((prev) =>
+      prev.includes(index)
+        ? prev.filter(
+            (i) => i !== index,
+          )
+        : [...prev, index],
+    )
   }
 
-  const activeOrders = orders.filter(o => o.status !== "DONE")
-  const completedOrders = orders.filter(o => o.status === "DONE")
+  const submitRefund = async () => {
+    if (!refundOrder) return
 
+    if (
+      !confirm(
+        "Issue full refund?",
+      )
+    )
+      return
+
+    try {
+      await axios.patch(
+        `${process.env.NEXT_PUBLIC_API_URL}/order/refund/${refundOrder.stripePaymentIntentId}`,
+      )
+
+      // 🔥 INSTANT UI UPDATE
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === refundOrder.id
+            ? {
+                ...o,
+                status:
+                  "REFUNDED",
+              }
+            : o,
+        ),
+      )
+
+      setRefundOrderId(null)
+
+      load()
+    } catch (err) {
+      console.log(err)
+      alert("Refund failed")
+    }
+  }
+
+  // ─────────────────────────────────────
+  // FILTERS
+  // ─────────────────────────────────────
+  const currentOrders =
+    orders.filter(
+      (o) =>
+        o.status !== "DONE" &&
+        o.status !== "REFUNDED",
+    )
+
+  const historyOrders =
+    pastOrders
+
+  const visible = showHistory
+    ? historyOrders
+    : currentOrders
+
+  const refundOrder = orders.find(
+    (o) => o.id === refundOrderId,
+  )
+
+  // ─────────────────────────────────────
+  // HELPERS
+  // ─────────────────────────────────────
+  const elapsed = (
+    iso: string,
+  ) => {
+    const created =
+      new Date(iso)
+
+    // 🔥 FIX UTC → LOCAL
+    const local =
+      new Date(
+        created.toLocaleString(
+          "en-US",
+          {
+            timeZone:
+              "Asia/Kolkata",
+          },
+        ),
+      )
+
+    const mins = Math.max(
+      0,
+      Math.floor(
+        (Date.now() -
+          local.getTime()) /
+          60000,
+      ),
+    )
+
+    if (mins < 1)
+      return "just now"
+
+    if (mins === 1)
+      return "1 min ago"
+
+    if (mins < 60)
+      return `${mins} mins ago`
+
+    const hours =
+      Math.floor(mins / 60)
+
+    if (hours === 1)
+      return "1 hour ago"
+
+    return `${hours} hours ago`
+  }
+
+  const statusConfig: Record<
+    string,
+    {
+      dot: string
+      label: string
+    }
+  > = {
+    NEW: {
+      dot: "#EF9F27",
+      label: "New",
+    },
+
+    PREPARING: {
+      dot: "#378ADD",
+      label: "Preparing",
+    },
+
+    READY: {
+      dot: "#7B61FF",
+      label: "Ready",
+    },
+
+    DONE: {
+      dot: "#639922",
+      label: "Completed",
+    },
+
+    REFUNDED: {
+      dot: "#A32D2D",
+      label: "Refunded",
+    },
+  }
+
+  // ─────────────────────────────────────
+  // UI
+  // ─────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
-      <h1 className="text-2xl font-bold mb-6">
-        🍳 Kitchen — {storeCode}
-      </h1>
+    <div
+      style={{
+        padding: 20,
+        minHeight: "100vh",
+        background: "#f4f2ed",
+      }}
+    >
+      {/* TOP BAR */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent:
+            "space-between",
+          marginBottom: 20,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <h1
+            style={{
+              fontSize: 18,
+              fontWeight: 500,
+              letterSpacing:
+                "-0.3px",
+            }}
+          >
+            Kitchen
+          </h1>
 
-      <div className="grid grid-cols-3 gap-4">
-        {/* ACTIVE ORDERS */}
-        <div className="col-span-2 space-y-4">
-          {activeOrders.map(order => (
-            <div
-              key={order.id}
-              className={`rounded-2xl shadow-md p-4 border ${
-                order.status === "NEW"
-                  ? "bg-red-100 border-red-400 animate-pulse"
-                  : "bg-white"
-              }`}
-            >
-              {/* HEADER */}
-              <div className="flex justify-between items-center mb-2">
-                <div>
-                  <h2 className="text-lg font-bold">
-                    Order #{order.id}
-                  </h2>
-
-                  <p className="text-sm text-gray-500">
-                    Table #{order.tableNumber || "1"}
-                  </p>
-                </div>
-
-                <div className="text-right">
-                  <p className="text-red-500 font-bold text-lg">
-                    {getTimeAgo(order.createdAt)}
-                  </p>
-                  <p className="text-xs text-gray-400">ago</p>
-                </div>
-              </div>
-
-              {/* ITEMS */}
-              <div className="mb-3 space-y-1">
-                {order.items.map((item, idx) => (
-                  <div key={idx} className="flex justify-between">
-                    <span>{item.name}</span>
-                    <span className="font-bold">x{item.qty}</span>
-                  </div>
-                ))}
-              </div>
-
-              {/* STATUS */}
-              <div className="flex gap-2">
-                {order.status === "NEW" && (
-                  <button
-                    onClick={() => updateStatus(order.id, "PREPARING")}
-                    className="flex-1 bg-yellow-400 py-2 rounded-lg font-semibold"
-                  >
-                    Start
-                  </button>
-                )}
-
-                {order.status === "PREPARING" && (
-                  <button
-                    onClick={() => updateStatus(order.id, "READY")}
-                    className="flex-1 bg-green-500 text-white py-2 rounded-lg font-semibold"
-                  >
-                    Ready
-                  </button>
-                )}
-
-                {order.status === "READY" && (
-                  <button
-                    onClick={() => updateStatus(order.id, "DONE")}
-                    className="flex-1 bg-black text-white py-2 rounded-lg font-semibold"
-                  >
-                    Complete
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 500,
+              padding: "3px 10px",
+              borderRadius: 20,
+              background:
+                showHistory
+                  ? "#E6F1FB"
+                  : "#EAF3DE",
+              color:
+                showHistory
+                  ? "#185FA5"
+                  : "#3B6D11",
+            }}
+          >
+            {showHistory
+              ? `${visible.length} past`
+              : `${currentOrders.length} active`}
+          </span>
         </div>
 
-        {/* COMPLETED */}
-        <div className="bg-white rounded-2xl p-3 shadow-md h-fit">
-          <h2 className="font-bold mb-3">✅ Completed</h2>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 12,
+              color: "#888",
+              letterSpacing:
+                "0.3px",
+            }}
+          >
+            {showHistory
+              ? "Past orders (24h)"
+              : "Current orders"}
+          </span>
 
-          {completedOrders.length === 0 && (
-            <p className="text-gray-400 text-sm">
-              No completed orders
-            </p>
-          )}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: isOpen
+                  ? "#4D7A19"
+                  : "#A32D2D",
+                minWidth: 52,
+                textAlign: "right",
+              }}
+            >
+              {isOpen
+                ? "OPEN"
+                : "CLOSED"}
+            </span>
 
-          {completedOrders.map(order => (
-            <div key={order.id} className="border-b py-2 text-sm">
-              <p className="font-semibold">
-                #{order.id} — Table {order.tableNumber || "1"}
-              </p>
-            </div>
-          ))}
+            <button
+              onClick={toggleKitchen}
+              style={{
+                width: 48,
+                height: 28,
+                borderRadius: 999,
+                border: "none",
+                background: isOpen
+                  ? "#7BC043"
+                  : "#D6D3CD",
+                position: "relative",
+                cursor: "pointer",
+                transition:
+                  "background 0.18s ease",
+                padding: 0,
+              }}
+            >
+              <div
+                style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: "50%",
+                  background: "white",
+                  position: "absolute",
+                  top: 3,
+                  left: isOpen
+                    ? 23
+                    : 3,
+                  transition:
+                    "left 0.18s ease",
+                  boxShadow:
+                    "0 1px 4px rgba(0,0,0,0.18)",
+                }}
+              />
+            </button>
+          </div>
+
+          <button
+            onClick={() =>
+              setShowHistory(
+                !showHistory,
+              )
+            }
+            style={{
+              fontSize: 13,
+              padding:
+                "7px 16px",
+              borderRadius: 8,
+              border:
+                "0.5px solid #d0cec8",
+              background: "white",
+              color: "#222",
+              cursor: "pointer",
+              fontFamily:
+                "inherit",
+            }}
+          >
+            {showHistory
+              ? "View current"
+              : "View past"}
+          </button>
         </div>
       </div>
+
+      {/* ORDERS */}
+      <div
+        style={{
+          maxHeight: "80vh",
+          overflowY: "auto",
+        }}
+      >
+        {visible.length === 0 ? (
+          <p
+            style={{
+              textAlign: "center",
+              color: "#aaa",
+              fontSize: 14,
+              padding:
+                "60px 0",
+            }}
+          >
+            {showHistory
+              ? "No completed orders in the last 24 hours."
+              : "No active orders right now."}
+          </p>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "repeat(auto-fill, minmax(210px, 1fr))",
+              gap: 12,
+            }}
+          >
+            {visible.map((o) => {
+              console.log(
+                "ORDER TIME",
+                o.createdAt,
+              )
+
+              const sc =
+                statusConfig[
+                  o.status
+                ] ?? {
+                  dot: "#aaa",
+                  label:
+                    o.status,
+                }
+
+              return (
+                <div
+                  key={o.id}
+                  style={{
+                    background:
+                      "white",
+                    borderRadius: 12,
+                    border:
+                      "0.5px solid #e0ddd7",
+                    padding:
+                      "14px 16px",
+                    display: "flex",
+                    flexDirection:
+                      "column",
+                    gap: 10,
+                    opacity:
+                      o.status ===
+                        "DONE" ||
+                      o.status ===
+                        "REFUNDED"
+                        ? 0.7
+                        : 1,
+                  }}
+                >
+                  {/* HEADER */}
+                  <div
+                    style={{
+                      display:
+                        "flex",
+                      alignItems:
+                        "center",
+                      justifyContent:
+                        "space-between",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 500,
+                      }}
+                    >
+                      #{o.id}
+                    </span>
+
+                    <span
+                      style={{
+                        fontSize: 11,
+                        padding:
+                          "2px 8px",
+                        borderRadius: 20,
+                        background:
+                          "#f4f2ed",
+                        color: "#666",
+                        border:
+                          "0.5px solid #e0ddd7",
+                      }}
+                    >
+                      Table{" "}
+                      {o.tableNumber ??
+                        "?"}
+                    </span>
+                  </div>
+
+                  {/* TIME */}
+                  {o.createdAt && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: "#aaa",
+                      }}
+                    >
+                      {elapsed(
+                        o.createdAt,
+                      )}
+                    </span>
+                  )}
+
+                  {/* ITEMS */}
+                  <div
+                    style={{
+                      borderTop:
+                        "0.5px solid #f0ede8",
+                      paddingTop: 10,
+                      display: "flex",
+                      flexDirection:
+                        "column",
+                      gap: 5,
+                    }}
+                  >
+                    {o.items?.map(
+                      (
+                        item: any,
+                        idx: number,
+                      ) => (
+                        <div
+                          key={idx}
+                          style={{
+                            display:
+                              "flex",
+                            justifyContent:
+                              "space-between",
+                            alignItems:
+                              "center",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 13,
+                            }}
+                          >
+                            {
+                              item.name
+                            }
+                          </span>
+
+                          <span
+                            style={{
+                              fontSize: 11,
+                              padding:
+                                "1px 7px",
+                              borderRadius: 20,
+                              background:
+                                "#f4f2ed",
+                              color:
+                                "#888",
+                            }}
+                          >
+                            x
+                            {item.qty ||
+                              1}
+                          </span>
+                        </div>
+                      ),
+                    )}
+                  </div>
+
+                  {/* STATUS */}
+                  <div
+                    style={{
+                      display:
+                        "flex",
+                      alignItems:
+                        "center",
+                      gap: 6,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius:
+                          "50%",
+                        background:
+                          sc.dot,
+                        flexShrink: 0,
+                      }}
+                    />
+
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "#888",
+                      }}
+                    >
+                      {sc.label}
+                    </span>
+                  </div>
+
+                  {/* ACTIONS */}
+                  {!showHistory && (
+                    <div
+                      style={{
+                        display:
+                          "flex",
+                        gap: 8,
+                        marginTop: 2,
+                      }}
+                    >
+                      <button
+                        onClick={() =>
+                          completeOrder(
+                            o.id,
+                          )
+                        }
+                        style={{
+                          flex: 1,
+                          fontSize: 12,
+                          fontWeight: 500,
+                          padding:
+                            "8px 0",
+                          borderRadius: 8,
+                          border:
+                            "none",
+                          background:
+                            "#639922",
+                          color:
+                            "#EAF3DE",
+                          cursor:
+                            "pointer",
+                          fontFamily:
+                            "inherit",
+                        }}
+                      >
+                        Mark done
+                      </button>
+
+                      <button
+                        onClick={() =>
+                          openRefund(
+                            o.id,
+                          )
+                        }
+                        style={{
+                          flex: 1,
+                          fontSize: 12,
+                          fontWeight: 500,
+                          padding:
+                            "8px 0",
+                          borderRadius: 8,
+                          border:
+                            "0.5px solid #e0ddd7",
+                          background:
+                            "white",
+                          color:
+                            "#A32D2D",
+                          cursor:
+                            "pointer",
+                          fontFamily:
+                            "inherit",
+                        }}
+                      >
+                        Refund
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* REFUND MODAL */}
+      {refundOrderId && (
+        <div
+          onClick={(e) => {
+            if (
+              e.target ===
+              e.currentTarget
+            ) {
+              setRefundOrderId(
+                null,
+              )
+            }
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background:
+              "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems:
+              "center",
+            justifyContent:
+              "center",
+            zIndex: 100,
+          }}
+        >
+          <div
+            style={{
+              background:
+                "white",
+              borderRadius: 12,
+              border:
+                "0.5px solid #d0cec8",
+              padding:
+                "20px 22px",
+              width: 300,
+              display: "flex",
+              flexDirection:
+                "column",
+              gap: 14,
+            }}
+          >
+            <div>
+              <h3
+                style={{
+                  fontSize: 15,
+                  fontWeight: 500,
+                }}
+              >
+                Select items to refund
+              </h3>
+
+              <p
+                style={{
+                  fontSize: 12,
+                  color: "#888",
+                  marginTop: 4,
+                }}
+              >
+                Order #
+                {
+                  refundOrderId
+                }{" "}
+                · Table{" "}
+                {refundOrder?.tableNumber ??
+                  "?"}
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                flexDirection:
+                  "column",
+                gap: 6,
+              }}
+            >
+              {refundOrder?.items?.map(
+                (
+                  item: any,
+                  idx: number,
+                ) => {
+                  const checked =
+                    selectedItems.includes(
+                      idx,
+                    )
+
+                  return (
+                    <label
+                      key={idx}
+                      style={{
+                        display:
+                          "flex",
+                        alignItems:
+                          "center",
+                        gap: 10,
+                        padding:
+                          "8px 10px",
+                        borderRadius: 8,
+                        cursor:
+                          "pointer",
+                        border: `0.5px solid ${
+                          checked
+                            ? "#97C459"
+                            : "#e0ddd7"
+                        }`,
+                        background:
+                          checked
+                            ? "#EAF3DE"
+                            : "white",
+                        transition:
+                          "background 0.12s, border-color 0.12s",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={
+                          checked
+                        }
+                        onChange={() =>
+                          toggleItem(
+                            idx,
+                          )
+                        }
+                        style={{
+                          accentColor:
+                            "#639922",
+                          width: 15,
+                          height: 15,
+                          cursor:
+                            "pointer",
+                        }}
+                      />
+
+                      <span
+                        style={{
+                          fontSize: 13,
+                        }}
+                      >
+                        {
+                          item.name
+                        }{" "}
+                        <span
+                          style={{
+                            color:
+                              "#aaa",
+                            fontSize: 12,
+                          }}
+                        >
+                          x
+                          {item.qty ||
+                            1}
+                        </span>
+                      </span>
+                    </label>
+                  )
+                },
+              )}
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                marginTop: 4,
+              }}
+            >
+              <button
+                onClick={() =>
+                  setRefundOrderId(
+                    null,
+                  )
+                }
+                style={{
+                  flex: 1,
+                  fontSize: 13,
+                  padding:
+                    "9px 0",
+                  borderRadius: 8,
+                  border:
+                    "0.5px solid #d0cec8",
+                  background:
+                    "white",
+                  color: "#555",
+                  cursor:
+                    "pointer",
+                  fontFamily:
+                    "inherit",
+                }}
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={
+                  submitRefund
+                }
+                style={{
+                  flex: 1,
+                  fontSize: 13,
+                  fontWeight: 500,
+                  padding:
+                    "9px 0",
+                  borderRadius: 8,
+                  border:
+                    "none",
+                  background:
+                    "#A32D2D",
+                  color:
+                    "#FCEBEB",
+                  cursor:
+                    "pointer",
+                  fontFamily:
+                    "inherit",
+                }}
+              >
+                Issue refund
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

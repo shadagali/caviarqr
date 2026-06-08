@@ -3,36 +3,109 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-} from 'typeorm';
+} from 'typeorm'
+
+export enum OrderStatus {
+  PENDING_PAYMENT =
+    'PENDING_PAYMENT',
+
+  NEW = 'NEW',
+
+  PREPARING =
+    'PREPARING',
+
+  READY = 'READY',
+
+  DONE = 'DONE',
+
+  REFUNDED =
+    'REFUNDED',
+}
 
 @Entity()
 export class Order {
   @PrimaryGeneratedColumn()
-  id: number;
+  id: number
+
+  // =========================
+  // BUSINESS
+  // =========================
 
   @Column()
-  businessId: number;
-
-  @Column()
-  storeCode: string;
-
-  @Column('json')
-  items: any[];
-
-  @Column('float')
-  totalAmount: number;
-
-  @Column('float')
-  platformFee: number;
-
-  @Column({ nullable: true })
-  stripePaymentIntentId: string;
+  businessId: number
 
   @Column({
-    default: 'PENDING',
+    nullable: true,
   })
-  status: string;
+  storeCode: string
 
-  @CreateDateColumn()
-  createdAt: Date;
+  // =========================
+  // ITEMS
+  // =========================
+
+  @Column({
+    type: 'json',
+  })
+  items: any
+
+  // =========================
+  // TOTALS
+  // =========================
+
+  @Column({
+    type: 'float',
+    default: 0,
+  })
+  total: number
+
+  @Column({
+    type: 'float',
+    default: 0,
+  })
+  platformFee: number
+
+  // =========================
+  // TABLE
+  // =========================
+
+  @Column({
+    nullable: true,
+    default: 0,
+  })
+  tableNumber?: number
+
+  // =========================
+  // STATUS
+  // =========================
+
+  @Column({
+    type: 'enum',
+    enum: OrderStatus,
+
+    default:
+      OrderStatus.PENDING_PAYMENT,
+  })
+  status: OrderStatus
+
+  // =========================
+  // STRIPE
+  // =========================
+
+  @Column({
+    unique: true,
+    nullable: true,
+  })
+  stripePaymentIntentId: string
+
+  // =========================
+  // CREATED
+  // =========================
+
+  @CreateDateColumn({
+    type: 'timestamptz',
+
+    default: () =>
+      'CURRENT_TIMESTAMP',
+  })
+  createdAt: Date
 }

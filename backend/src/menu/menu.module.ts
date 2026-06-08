@@ -6,8 +6,7 @@ import { MenuController } from './menu.controller'
 
 @Module({
   imports: [TypeOrmModule.forFeature([MenuItem])],
-  providers: [MenuService],
   controllers: [MenuController],
-  exports: [MenuService], // ✅ CRITICAL FIX
+  providers: [MenuService],
 })
 export class MenuModule {}

@@ -1,22 +1,86 @@
-import { Controller, Get, Param, Post, Body, Delete } from '@nestjs/common'
+import {
+  Controller,
+  Post,
+  Get,
+  Delete,
+  Patch,
+  Body,
+  Param,
+  UploadedFile,
+  UseInterceptors,
+  BadRequestException,
+} from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
+import { diskStorage } from 'multer'
 import { MenuService } from './menu.service'
 
 @Controller('menu')
 export class MenuController {
-  constructor(private menuService: MenuService) {}
+  constructor(private readonly menuService: MenuService) {}
 
+  // =========================
+  // 🔥 CREATE ITEM (FIXED)
+  // =========================
+  @Post('create')
+  async create(@Body() body: any) {
+    if (!body?.businessId || !body?.name || !body?.price) {
+      throw new BadRequestException('Missing fields')
+    }
+
+    return this.menuService.create({
+      businessId: Number(body.businessId),
+      name: body.name,
+      price: Number(body.price),
+      category: body.category || '',
+      imageUrl: body.imageUrl || '',
+      discount: Number(body.discount) || 0, // 🔥 FIXED
+    })
+  }
+
+  // =========================
+  // 🔥 GET MENU
+  // =========================
   @Get(':businessId')
-  async getMenu(@Param('businessId') businessId: number) {
+  async get(@Param('businessId') businessId: string) {
     return this.menuService.getByBusiness(Number(businessId))
   }
 
-  @Post()
-  async create(@Body() body: any) {
-    return this.menuService.create(body)
+  // =========================
+  // 🔥 DELETE
+  // =========================
+  @Delete(':id')
+  async delete(@Param('id') id: string) {
+    return this.menuService.delete(Number(id))
   }
 
-  @Delete(':id')
-  async delete(@Param('id') id: number) {
-    return this.menuService.delete(Number(id))
+  // =========================
+  // 🔥 HIDE / UNHIDE
+  // =========================
+  @Patch('hide/:id')
+  async hide(@Param('id') id: string) {
+    return this.menuService.toggleHide(Number(id))
+  }
+
+  // =========================
+  // 🔥 IMAGE UPLOAD (FIXED)
+  // =========================
+  @Post('upload')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: './uploads', // 🔥 MUST EXIST
+        filename: (req, file, cb) => {
+          const unique = Date.now() + '-' + file.originalname
+          cb(null, unique)
+        },
+      }),
+    }),
+  )
+  async upload(@UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException('No file')
+
+    return {
+      url: `/uploads/${file.filename}`, // 🔥 FIXED
+    }
   }
 }
