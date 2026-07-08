@@ -65,6 +65,16 @@ export class Business {
   serviceFee: number
 
   // =========================
+  // CAVIARQR PROCESSING FEE
+  // =========================
+
+  @Column({
+    type: 'float',
+    default: 1.75,
+  })
+  processingFeePercent: number
+
+  // =========================
   // BRANDING
   // =========================
 
@@ -97,7 +107,7 @@ export class Business {
     | null
 
   // =========================
-  // OPEN / CLOSED
+  // STORE STATUS
   // =========================
 
   @Column({

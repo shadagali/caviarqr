@@ -1,7 +1,10 @@
 import { NestFactory } from '@nestjs/core'
+import { ValidationPipe } from '@nestjs/common'
+
 import { AppModule } from './app.module'
 
 import * as express from 'express'
+import helmet from 'helmet'
 
 async function bootstrap() {
   const app =
@@ -12,18 +15,57 @@ async function bootstrap() {
       },
     )
 
-  // 🔥 STRIPE RAW BODY
+  // =====================================
+  // SECURITY HEADERS
+  // =====================================
+
   app.use(
-    '/webhook/stripe',
-    express.raw({
-      type: 'application/json',
+    helmet({
+      crossOriginResourcePolicy: false,
     }),
   )
 
-  // 🔥 NORMAL JSON FOR EVERYTHING ELSE
+  // =====================================
+  // STRIPE RAW BODY
+  // MUST COME BEFORE JSON PARSER
+  // =====================================
+
+  app.use(
+    '/webhook/stripe',
+    express.raw({
+      type:
+        'application/json',
+    }),
+  )
+
+  // =====================================
+  // NORMAL JSON
+  // =====================================
+
   app.use(express.json())
 
-  app.enableCors()
+  // =====================================
+  // VALIDATION
+  // =====================================
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+
+      forbidNonWhitelisted: true,
+
+      transform: true,
+    }),
+  )
+
+  // =====================================
+  // CORS
+  // =====================================
+
+  app.enableCors({
+    origin: true,
+    credentials: true,
+  })
 
   await app.listen(3001)
 

@@ -5,6 +5,7 @@ import {
   Patch,
   Body,
   BadRequestException,
+  Query,
 } from '@nestjs/common'
 
 import { OrderService } from './order.service'
@@ -20,20 +21,7 @@ export class OrderController {
   ) {}
 
   // =========================
-  // 🔥 ACTIVE KITCHEN ORDERS
-  // =========================
-  @Get(':storeCode')
-  async getOrders(
-    @Param('storeCode')
-    storeCode: string,
-  ) {
-    return this.orderService.getOrdersByStore(
-      storeCode,
-    )
-  }
-
-  // =========================
-  // 🔥 PAST ORDERS (24 HOURS)
+  // 🔥 ORDER HISTORY (60 DAYS)
   // =========================
   @Get('history/:storeCode')
   async getPastOrders(
@@ -42,6 +30,36 @@ export class OrderController {
   ) {
     return this.orderService.getPastOrders(
       storeCode,
+    )
+  }
+
+  // =========================
+  // 🚨 ACTION CENTER
+  // =========================
+  @Get('action-center/:storeCode')
+  async getActionCenter(
+    @Param('storeCode')
+    storeCode: string,
+  ) {
+    return this.orderService.getActionCenter(
+      storeCode,
+    )
+  }
+
+  // =========================
+  // 🔍 SEARCH ORDERS
+  // =========================
+  @Get('search/:storeCode')
+  async searchOrders(
+    @Param('storeCode')
+    storeCode: string,
+
+    @Query('q')
+    query: string,
+  ) {
+    return this.orderService.searchOrders(
+      storeCode,
+      query,
     )
   }
 
@@ -77,6 +95,36 @@ export class OrderController {
   ) {
     return this.orderService.refundOrder(
       paymentIntentId,
+    )
+  }
+
+  // =========================
+  // ✅ RESOLVE OWNER ACTION
+  // =========================
+  @Patch('resolve/:id')
+  async resolveOwnerAction(
+    @Param('id')
+    id: string,
+
+    @Body('resolvedBy')
+    resolvedBy = 'OWNER',
+  ) {
+    return this.orderService.resolveOwnerAction(
+      Number(id),
+      resolvedBy,
+    )
+  }
+
+  // =========================
+  // 🔥 ACTIVE KITCHEN ORDERS
+  // =========================
+  @Get(':storeCode')
+  async getOrders(
+    @Param('storeCode')
+    storeCode: string,
+  ) {
+    return this.orderService.getOrdersByStore(
+      storeCode,
     )
   }
 }

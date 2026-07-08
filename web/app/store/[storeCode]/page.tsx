@@ -24,11 +24,15 @@ const css = `
     --accent-light: #fff1f0;
     --green: #1a8917;
     --radius: 12px;
+    --radius-lg: 22px;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 10px 30px rgba(0,0,0,0.12);
     --font: 'Plus Jakarta Sans', sans-serif;
   }
 
   html, body {
     background: #f6f6f6;
+    scroll-behavior: smooth;
   }
 
   .store {
@@ -38,12 +42,12 @@ const css = `
     color: var(--text);
     max-width: 430px;
     margin: 0 auto;
-    padding-bottom: 130px;
+    padding-bottom: 140px;
   }
 
   .store-hero {
     background: var(--bg2);
-    height: 190px;
+    height: 210px;
     position: relative;
     overflow: hidden;
   }
@@ -55,19 +59,73 @@ const css = `
     display: block;
   }
 
+  .store-hero-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 56px;
+    background: linear-gradient(135deg, #fff1f0, #ffe0db);
+  }
+
   .store-hero-overlay {
     position: absolute;
     inset: 0;
     background: linear-gradient(
       to bottom,
-      rgba(0,0,0,0.08),
-      rgba(0,0,0,0.30)
+      rgba(0,0,0,0.05),
+      rgba(0,0,0,0.35)
     );
   }
 
+  .sticky-header {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%) translateY(-100%);
+    width: 100%;
+    max-width: 430px;
+    background: rgba(255,255,255,0.94);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 80;
+    transition: transform 0.25s ease;
+  }
+
+  .sticky-header.visible {
+    transform: translateX(-50%) translateY(0);
+  }
+
+  .sticky-header-name {
+    font-weight: 800;
+    font-size: 16px;
+    letter-spacing: -0.2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 240px;
+  }
+
+  .sticky-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
   .store-info {
-    padding: 16px 16px 0;
+    padding: 20px 16px 0;
     background: var(--bg);
+    position: relative;
+    z-index: 2;
+    margin-top: -22px;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    box-shadow: 0 -10px 24px rgba(0,0,0,0.03);
   }
 
   .store-name {
@@ -91,6 +149,7 @@ const css = `
     align-items: center;
     gap: 4px;
     background: var(--bg2);
+    border: 1px solid var(--border);
     border-radius: 20px;
     padding: 4px 10px;
     font-size: 12px;
@@ -101,6 +160,7 @@ const css = `
   .meta-pill.open {
     color: var(--green);
     background: #f0faf0;
+    border-color: #dff0df;
   }
 
   .divider {
@@ -110,8 +170,19 @@ const css = `
     border-bottom: 1px solid var(--border);
   }
 
+  .closed-banner {
+    background: linear-gradient(135deg, #fef2f2, #fee2e2);
+    color: #b91c1c;
+    padding: 16px;
+    text-align: center;
+    font-weight: 700;
+    margin: 14px 16px 0;
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+  }
+
   .cat-section {
-    padding: 20px 16px 0;
+    padding: 22px 16px 0;
   }
 
   .cat-label {
@@ -128,12 +199,16 @@ const css = `
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 14px 0;
-    border-bottom: 1px solid var(--border);
+    padding: 14px;
+    background: var(--bg);
+    border-radius: 16px;
+    margin-bottom: 10px;
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
   }
 
-  .menu-row:last-child {
-    border-bottom: none;
+  .menu-row:active {
+    transform: scale(0.985);
   }
 
   .menu-info {
@@ -193,11 +268,12 @@ const css = `
   }
 
   .menu-img-wrap {
-    width: 80px;
-    height: 80px;
-    border-radius: 10px;
+    width: 78px;
+    height: 78px;
+    border-radius: 12px;
     overflow: hidden;
     background: var(--bg2);
+    box-shadow: var(--shadow-sm);
   }
 
   .menu-img-wrap img {
@@ -208,38 +284,53 @@ const css = `
 
   .add-btn {
     background: var(--bg);
-    border: 2px solid var(--border);
+    border: 2px solid var(--accent-light);
     border-radius: 50%;
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     font-size: 20px;
-    font-weight: 300;
+    font-weight: 400;
     color: var(--accent);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.15s ease;
+  }
+
+  .add-btn:active {
+    transform: scale(0.88);
   }
 
   .qty-control {
     display: flex;
     align-items: center;
     gap: 8px;
+    background: var(--bg2);
+    border-radius: 20px;
+    padding: 4px 6px;
   }
 
   .qty-btn {
     background: var(--bg);
-    border: 2px solid var(--border);
+    border: none;
     border-radius: 50%;
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     font-size: 16px;
     color: var(--accent);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-weight: 600;
+    font-weight: 700;
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.15s ease;
+  }
+
+  .qty-btn:active {
+    transform: scale(0.85);
   }
 
   .qty-num {
@@ -273,12 +364,19 @@ const css = `
     font-weight: 700;
     padding: 16px 20px;
     cursor: pointer;
+    box-shadow: 0 8px 20px rgba(255,48,8,0.28);
+    transition: transform 0.15s ease;
+  }
+
+  .pay-btn:active {
+    transform: scale(0.98);
   }
 
   .success-popup {
     position: fixed;
     inset: 0;
     background: rgba(0,0,0,0.45);
+    backdrop-filter: blur(3px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -290,11 +388,12 @@ const css = `
     width: 100%;
     max-width: 330px;
     background: white;
-    border-radius: 20px;
+    border-radius: 26px;
     padding: 18px;
     text-align: center;
     max-height: 90vh;
     overflow-y: auto;
+    box-shadow: var(--shadow-md);
   }
 
   .success-title {
@@ -320,6 +419,11 @@ const css = `
     font-size: 15px;
     cursor: pointer;
     margin-top: 12px;
+    transition: transform 0.15s ease;
+  }
+
+  .success-btn:active {
+    transform: scale(0.97);
   }
 
   .receipt-download {
@@ -357,8 +461,6 @@ const css = `
       50% - 215px + 18px
     );
 
-    bottom: 95px;
-
     width: 72px;
     height: 72px;
 
@@ -385,13 +487,38 @@ const css = `
     box-shadow:
       0 10px 30px
       rgba(0,0,0,.25);
+
+    transition: transform 0.15s ease, bottom 0.2s ease;
   }
 
-  .menu-nav-fab:hover {
-    transform: scale(1.03);
+  .menu-nav-fab:active {
+    transform: scale(0.94);
   }
 
+  .loading-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 70vh;
+    gap: 14px;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 500;
+  }
 
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
 `
 
 export default function StorePage() {
@@ -404,6 +531,8 @@ export default function StorePage() {
   const [menu, setMenu] = useState<any[]>([])
   const [business, setBusiness] = useState<any>(null)
   const [cart, setCart] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [scrolled, setScrolled] = useState(false)
 
   const [receiptItems, setReceiptItems] =
     useState<any[]>([])
@@ -416,12 +545,7 @@ export default function StorePage() {
 
   const receiptRef = useRef<any>(null)
 
-  const sectionRefs = useRef<
-    Record<
-      string,
-      HTMLDivElement | null
-    >
-  >({})
+  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   const [
     showCategories,
@@ -443,6 +567,8 @@ export default function StorePage() {
       )
     } catch (err) {
       console.log(err)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -485,6 +611,23 @@ export default function StorePage() {
     return () =>
       clearInterval(poll)
   }, [storeCode])
+
+  useEffect(() => {
+    const onScroll = () => {
+      setScrolled(window.scrollY > 170)
+    }
+
+    window.addEventListener(
+      "scroll",
+      onScroll,
+    )
+
+    return () =>
+      window.removeEventListener(
+        "scroll",
+        onScroll,
+      )
+  }, [])
 
   useEffect(() => {
     const success =
@@ -698,6 +841,14 @@ export default function StorePage() {
   }
 
   const goToCart = () => {
+    if (
+      business?.isOpen === false
+    ) {
+      alert(
+        "Restaurant is currently closed",
+      )
+      return
+    }
     localStorage.setItem(
       "cart",
       JSON.stringify(cart),
@@ -707,9 +858,58 @@ export default function StorePage() {
       `/cart?storeCode=${storeCode}&table=${table}`
   }
 
+  const showCartBar =
+    cart.length > 0 &&
+    business?.isOpen === true
+
   return (
     <>
       <style>{css}</style>
+
+      <div
+        className={`sticky-header ${
+          scrolled ? "visible" : ""
+        }`}
+      >
+        <div className="sticky-header-name">
+          {business?.cafeName ||
+            business?.name ||
+            storeCode}
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <div
+            className="sticky-status-dot"
+            style={{
+              background:
+                business?.isOpen === true
+                  ? "#639922"
+                  : "#C23B3B",
+            }}
+          />
+
+          <span
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color:
+                business?.isOpen === true
+                  ? "#639922"
+                  : "#C23B3B",
+            }}
+          >
+            {business?.isOpen === true
+              ? "Open"
+              : "Closed"}
+          </span>
+        </div>
+      </div>
 
       {showSuccess && (
         <div className="success-popup">
@@ -1080,218 +1280,275 @@ export default function StorePage() {
         </div>
       )}
 
-      <div className="store">
-        <div className="store-hero">
-          {(business?.coverImage ||
-            business?.logo) && (
-            <img
-              src={`${process.env.NEXT_PUBLIC_API_URL}/${
-                (
-                  business?.coverImage ||
-                  business?.logo
-                ).replace(/^\/+/g, "")
-              }`}
-              alt="Cover"
-            />
-          )}
-
-          <div className="store-hero-overlay" />
-
-
+      {loading ? (
+        <div className="loading-wrap">
+          <div className="spinner" />
+          <div>Loading menu…</div>
         </div>
-
-        <div className="store-info">
-          <div className="store-name">
-            {business?.cafeName ||
-              business?.name ||
-              storeCode}
-          </div>
-
-          <div className="store-meta">
-            <span className="meta-pill open">
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <div
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background:
-                      business?.isOpen === true
-                        ? "#639922"
-                        : "#C23B3B",
-                  }}
-                />
-
-                <span
-                  style={{
-                    color:
-                      business?.isOpen === true
-                        ? "#639922"
-                        : "#C23B3B",
-                    fontWeight: 500,
-                  }}
-                >
-                  {business?.isOpen === true
-                    ? "Open"
-                    : "Closed"}
-                </span>
+      ) : (
+        <div className="store">
+          <div className="store-hero">
+            {business?.coverUrl ||
+            business?.logoUrl ? (
+              <img
+                src={`${process.env.NEXT_PUBLIC_API_URL}/${
+                  (
+                    business?.coverUrl ||
+                    business?.logoUrl
+                  ).replace(/^\/+/g, "")
+                }`}
+                alt="Cover"
+              />
+            ) : (
+              <div className="store-hero-placeholder">
+                🍽️
               </div>
-            </span>
+            )}
 
-            <span className="meta-pill">
-              🪑 Table {table}
-            </span>
+            <div className="store-hero-overlay" />
           </div>
-        </div>
 
-        <div className="divider" />
-
-        {Object.keys(grouped).map((cat) => (
-          <div
-            key={cat}
-            className="cat-section"
-            ref={(el) =>
-              (sectionRefs.current[
-                cat
-              ] = el)
-            }
-          >
-            <div className="cat-label">
-              {cat}
+          <div className="store-info">
+            <div className="store-name">
+              {business?.cafeName ||
+                business?.name ||
+                storeCode}
             </div>
 
-            {grouped[cat].map((i: any) => {
-              if (i.isHidden) return null
-
-              const cartItem = cart.find(
-                (c) => c.id === i.id,
-              )
-
-              const discountedPrice =
-                i.discount > 0
-                  ? (
-                      i.price *
-                      (1 - i.discount / 100)
-                    ).toFixed(2)
-                  : null
-
-              return (
+            <div className="store-meta">
+              <span className="meta-pill open">
                 <div
-                  key={i.id}
-                  className="menu-row"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
                 >
-                  <div className="menu-info">
-                    <div className="menu-item-name">
-                      {i.name}
-                    </div>
+                  <div
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background:
+                        business?.isOpen === true
+                          ? "#639922"
+                          : "#C23B3B",
+                    }}
+                  />
 
-                    <div className="price-row">
-                      {discountedPrice ? (
-                        <>
-                          <span className="price-original">
+                  <span
+                    style={{
+                      color:
+                        business?.isOpen === true
+                          ? "#639922"
+                          : "#C23B3B",
+                      fontWeight: 500,
+                    }}
+                  >
+                    {business?.isOpen === true
+                      ? "Open"
+                      : "Closed"}
+                  </span>
+                </div>
+              </span>
+
+              <span className="meta-pill">
+                🪑 Table {table}
+              </span>
+            </div>
+          </div>
+
+          <div className="divider" />
+
+          {business?.isOpen === false && (
+            <div className="closed-banner">
+              🔒 Restaurant Closed
+              <br />
+              Ordering is currently unavailable.
+            </div>
+          )}
+
+          {Object.keys(grouped).map((cat) => (
+            <div
+              key={cat}
+              className="cat-section"
+              ref={(el) =>
+                (sectionRefs.current[
+                  cat
+                ] = el)
+              }
+            >
+              <div className="cat-label">
+                {cat}
+              </div>
+
+              {grouped[cat].map((i: any) => {
+                if (i.isHidden) return null
+
+                const isOut =
+                  i.isOutOfStock === true
+
+                const cartItem = cart.find(
+                  (c) => c.id === i.id,
+                )
+
+                const discountedPrice =
+                  i.discount > 0
+                    ? (
+                        i.price *
+                        (1 - i.discount / 100)
+                      ).toFixed(2)
+                    : null
+
+                return (
+                  <div
+                    key={i.id}
+                    className="menu-row"
+                    style={{
+                      opacity:
+                        business?.isOpen === false
+                          ? 0.45
+                          : 1,
+                    }}
+                  >
+                    <div className="menu-info">
+                      <div className="menu-item-name">
+                        {i.name}
+                      </div>
+
+                      {i.description && (
+                        <div
+                          style={{
+                            fontSize: 13,
+                            color: "#666",
+                            marginTop: 4,
+                            marginBottom: 6,
+                          }}
+                        >
+                          {i.description}
+                        </div>
+                      )}
+
+                      <div className="price-row">
+                        {isOut && (
+                          <span
+                            style={{
+                              background: "#fee2e2",
+                              color: "#b91c1c",
+                              padding: "4px 8px",
+                              borderRadius: 6,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              marginRight: 8,
+                            }}
+                          >
+                            SOLD OUT
+                          </span>
+                        )}                        {discountedPrice ? (
+                          <>
+                            <span className="price-original">
+                              ${i.price}
+                            </span>
+
+                            <span className="price-final">
+                              ${discountedPrice}
+                            </span>
+
+                            <span className="discount-tag">
+                              {i.discount}% off
+                            </span>
+                          </>
+                        ) : (
+                          <span className="price-normal">
                             ${i.price}
                           </span>
+                        )}
+                      </div>
+                    </div>
 
-                          <span className="price-final">
-                            ${discountedPrice}
+                    <div className="menu-right">
+                      <div className="menu-img-wrap">
+                        <img
+                          src={
+                            i.imageUrl
+                              ? `${process.env.NEXT_PUBLIC_API_URL}${i.imageUrl}`
+                              : "https://via.placeholder.com/80"
+                          }
+                          alt={i.name}
+                        />
+                      </div>
+
+                      {business?.isOpen === false ? null : cartItem ? (
+                        <div className="qty-control">
+                          <button
+                            className="qty-btn"
+                            onClick={() =>
+                              removeFromCart(i.id)
+                            }
+                          >
+                            −
+                          </button>
+
+                          <span className="qty-num">
+                            {cartItem.qty}
                           </span>
 
-                          <span className="discount-tag">
-                            {i.discount}% off
-                          </span>
-                        </>
+                          <button
+                            className="qty-btn"
+                            onClick={() => {
+                              if (isOut) return
+                              addToCart(i)
+                            }}
+                          >
+                            +
+                          </button>
+                        </div>
                       ) : (
-                        <span className="price-normal">
-                          ${i.price}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="menu-right">
-                    <div className="menu-img-wrap">
-                      <img
-                        src={
-                          i.imageUrl
-                            ? `${process.env.NEXT_PUBLIC_API_URL}/${
-                                i.imageUrl.replace(
-                                  /^\/+/g,
-                                  "",
-                                )
-                              }`
-                            : "https://via.placeholder.com/80"
-                        }
-                        alt={i.name}
-                      />
-                    </div>
-
-                    {cartItem ? (
-                      <div className="qty-control">
                         <button
-                          className="qty-btn"
-                          onClick={() =>
-                            removeFromCart(i.id)
-                          }
-                        >
-                          −
-                        </button>
-
-                        <span className="qty-num">
-                          {cartItem.qty}
-                        </span>
-
-                        <button
-                          className="qty-btn"
-                          onClick={() =>
+                          className="add-btn"
+                          onClick={() => {
+                            if (isOut) return
                             addToCart(i)
-                          }
+                          }}
                         >
                           +
                         </button>
-                      </div>
-                    ) : (
-                      <button
-                        className="add-btn"
-                        onClick={() =>
-                          addToCart(i)
-                        }
-                      >
-                        +
-                      </button>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        ))}
-      </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      )}
 
-      <button
-        className="menu-nav-fab"
-        onClick={() =>
-          setShowCategories(true)
-        }
-      >
-        <div
+      {!loading && (
+        <button
+          className="menu-nav-fab"
+          onClick={() =>
+            setShowCategories(true)
+          }
           style={{
-            fontSize: 22,
-            marginBottom: 2,
+            bottom: showCartBar
+              ? 175
+              : 95,
           }}
         >
-          ☰
-        </div>
+          <div
+            style={{
+              fontSize: 22,
+              marginBottom: 2,
+            }}
+          >
+            ☰
+          </div>
 
-        ITEMS
-      </button>
+          ITEMS
+        </button>
+      )}
 
-      {cart.length > 0 && (
+      {showCartBar && (
         <div className="cart-bar">
           <button
             className="pay-btn"

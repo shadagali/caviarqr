@@ -21,7 +21,6 @@ export class MenuService {
   async create(data: any) {
     let imageUrl = data.imageUrl || null
 
-    // 🔥 NORMALIZE IMAGE PATH
     if (imageUrl) {
       imageUrl = imageUrl
         .replace(/\\/g, '/')
@@ -49,12 +48,13 @@ export class MenuService {
   // =========================
   // 🔥 GET BUSINESS MENU
   // =========================
-  async getByBusiness(businessId: number) {
+  async getByBusiness(
+    businessId: number,
+  ) {
     return this.menuRepo.find({
       where: {
         businessId,
       },
-
       order: {
         id: 'DESC',
       },
@@ -65,9 +65,10 @@ export class MenuService {
   // 🔥 DELETE ITEM
   // =========================
   async delete(id: number) {
-    const item = await this.menuRepo.findOne({
-      where: { id },
-    })
+    const item =
+      await this.menuRepo.findOne({
+        where: { id },
+      })
 
     if (!item) {
       throw new BadRequestException(
@@ -86,9 +87,10 @@ export class MenuService {
   // 🔥 HIDE ITEM
   // =========================
   async toggleHide(id: number) {
-    const item = await this.menuRepo.findOne({
-      where: { id },
-    })
+    const item =
+      await this.menuRepo.findOne({
+        where: { id },
+      })
 
     if (!item) {
       throw new BadRequestException(
@@ -96,7 +98,8 @@ export class MenuService {
       )
     }
 
-    item.isHidden = !item.isHidden
+    item.isHidden =
+      !item.isHidden
 
     return this.menuRepo.save(item)
   }
@@ -104,10 +107,11 @@ export class MenuService {
   // =========================
   // 🔥 OUT OF STOCK
   // =========================
-  async toggleOutOfStock(id: number) {
-    const item = await this.menuRepo.findOne({
-      where: { id },
-    })
+  async toggleStock(id: number) {
+    const item =
+      await this.menuRepo.findOne({
+        where: { id },
+      })
 
     if (!item) {
       throw new BadRequestException(
@@ -128,9 +132,10 @@ export class MenuService {
     id: number,
     discount: number,
   ) {
-    const item = await this.menuRepo.findOne({
-      where: { id },
-    })
+    const item =
+      await this.menuRepo.findOne({
+        where: { id },
+      })
 
     if (!item) {
       throw new BadRequestException(
@@ -138,7 +143,8 @@ export class MenuService {
       )
     }
 
-    item.discount = Number(discount || 0)
+    item.discount =
+      Number(discount || 0)
 
     return this.menuRepo.save(item)
   }

@@ -85,6 +85,12 @@ export class StripeService {
         )
       }
 
+      if (!business.isOpen) {
+        throw new BadRequestException(
+          'Restaurant is currently closed',
+        )
+      }
+
       if (
         !data.items?.length
       ) {
@@ -229,6 +235,17 @@ export class StripeService {
 
             payment_method_types:
               ['card'],
+
+            customer_creation:
+              'always',
+
+            billing_address_collection:
+              'required',
+
+            phone_number_collection:
+              {
+                enabled: true,
+              },
 
             line_items: [
               ...data.items.map(

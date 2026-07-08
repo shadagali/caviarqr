@@ -15,6 +15,8 @@ import Stripe from 'stripe'
 import {
   Order,
   OrderStatus,
+  OwnerIssueSeverity,
+  OwnerIssueType,
 } from './order.entity'
 
 import { OrderGateway } from './order.gateway'
@@ -32,8 +34,8 @@ export class OrderService {
 
     private gateway: OrderGateway,
   ) {
-    console.log(
-      '🔥 ORDER SERVICE STARTED',
+    this.logger.log(
+      'Order Service Started',
     )
 
     this.stripe = new Stripe(
@@ -43,6 +45,66 @@ export class OrderService {
           '2026-02-25.clover',
       },
     )
+  }
+
+  // =========================
+  // 🚨 OWNER ACTION
+  // =========================
+
+  private async flagOwnerAction(
+    order: Order,
+    issue: OwnerIssueType,
+    severity: OwnerIssueSeverity,
+    message: string,
+  ) {
+
+    if (
+      order.requiresOwnerAction &&
+      order.ownerIssueSeverity ===
+        OwnerIssueSeverity.CRITICAL
+    ) {
+      return
+    }
+
+    order.requiresOwnerAction = true
+
+    order.ownerIssueType = issue
+
+    order.ownerIssueSeverity = severity
+
+    order.ownerActionMessage = message
+
+    order.ownerActionCreatedAt =
+      new Date()
+
+    if (!order.id) {
+      throw new Error(
+        'Cannot create owner action before the order has been saved.',
+      )
+    }
+
+    if (!order.ownerActionId) {
+      order.ownerActionId =
+        `ACT-${String(
+          order.id,
+        ).padStart(6, '0')}`
+    }
+
+    this.logger.warn(
+      JSON.stringify({
+        actionCenter: true,
+        issueId: order.ownerActionId,
+        issue,
+        severity,
+        orderId: order.id,
+        customer: order.customerName,
+        paymentIntent: order.stripePaymentIntentId,
+        message,
+        createdAt: order.ownerActionCreatedAt,
+      }),
+    )
+
+    await this.orderRepo.save(order)
   }
 
   // =========================
@@ -68,6 +130,13 @@ export class OrderService {
       if (existing) {
         this.logger.warn(
           `Duplicate order prevented: ${data.stripePaymentIntentId}`,
+        )
+
+        await this.flagOwnerAction(
+          existing,
+          OwnerIssueType.DUPLICATE_PAYMENT,
+          OwnerIssueSeverity.WARNING,
+          'Duplicate payment attempt detected.',
         )
 
         return existing
@@ -107,14 +176,26 @@ export class OrderService {
           order,
         )
 
+      if (!saved.items || saved.items.length === 0) {
+        await this.flagOwnerAction(
+          saved,
+          OwnerIssueType.INVALID_ORDER_DATA,
+          OwnerIssueSeverity.CRITICAL,
+          'Order was created with no menu items.',
+        )
+      }
+
       try {
         this.gateway.emitNewOrder(
           data.businessId,
           saved,
         )
       } catch (err) {
-        console.log(
-          'Socket emit failed',
+        await this.flagOwnerAction(
+          saved,
+          OwnerIssueType.SOCKET_EMIT_FAILED,
+          OwnerIssueSeverity.CRITICAL,
+          'Kitchen never received the paid order.',
         )
       }
 
@@ -164,6 +245,44 @@ export class OrderService {
 
       order.status = status
 
+      // 🔥 AUTO RESOLVE ACTION CENTER ISSUES
+      if (
+        status ===
+          OrderStatus.PREPARING ||
+        status ===
+          OrderStatus.READY ||
+        status ===
+          OrderStatus.DONE
+      ) {
+        order.requiresOwnerAction =
+          false
+
+        order.ownerIssueType =
+          null
+
+        order.ownerIssueSeverity =
+          null
+
+        order.ownerActionMessage =
+          null
+
+        order.ownerActionResolvedAt =
+          new Date()
+
+        order.ownerActionResolvedBy =
+          'KITCHEN'
+
+        order.ownerActionCreatedAt =
+          null
+
+        order.ownerActionId =
+          null
+
+        order.issueResolved = true
+
+        order.issueType = null
+      }
+
       const saved =
         await this.orderRepo.save(
           order,
@@ -183,8 +302,9 @@ export class OrderService {
           saved,
         )
       } catch (err) {
-        console.log(
+        this.logger.error(
           'Socket update failed',
+          err,
         )
       }
 
@@ -246,7 +366,7 @@ export class OrderService {
   }
 
   // =========================
-  // 🔥 PAST ORDERS (24 HOURS)
+  // 🔥 PAST ORDERS (60 DAYS)
   // =========================
   async getPastOrders(
     storeCode: string,
@@ -260,7 +380,8 @@ export class OrderService {
       const cutoff =
         new Date(
           Date.now() -
-            24 *
+            60 *
+              24 *
               60 *
               60 *
               1000,
@@ -345,6 +466,12 @@ export class OrderService {
         balance.available,
       )
 
+      if (!order.stripePaymentIntentId) {
+        throw new BadRequestException(
+          'Order has no Stripe Payment Intent.',
+        )
+      }
+
       // ✅ NORMAL REFUND
       const refund =
         await this.stripe.refunds.create(
@@ -362,6 +489,34 @@ export class OrderService {
       order.status =
         OrderStatus.REFUNDED
 
+      order.requiresOwnerAction =
+        false
+
+      order.ownerIssueType =
+        null
+
+      order.ownerIssueSeverity =
+        null
+
+      order.ownerActionMessage =
+        null
+
+      order.ownerActionResolvedAt =
+        new Date()
+
+      order.ownerActionResolvedBy =
+        'REFUND'
+
+      order.ownerActionCreatedAt =
+        null
+
+      order.ownerActionId =
+        null
+
+      order.issueResolved = true
+
+      order.issueType = null
+
       const saved =
         await this.orderRepo.save(
           order,
@@ -373,8 +528,9 @@ export class OrderService {
           saved,
         )
       } catch (err) {
-        console.log(
+        this.logger.error(
           'Socket update failed',
+          err,
         )
       }
 
@@ -384,6 +540,153 @@ export class OrderService {
 
       this.logger.error(
         'Refund update failed',
+        err,
+      )
+
+      throw err
+    }
+  }
+
+  // =========================
+  // 🚨 ACTION CENTER
+  // =========================
+  async getActionCenter(
+    storeCode: string,
+  ) {
+    try {
+      return await this.orderRepo
+        .createQueryBuilder('order')
+        .where(
+          'order.storeCode = :storeCode',
+          { storeCode },
+        )
+        .andWhere(
+          'order.requiresOwnerAction = :flag',
+          { flag: true },
+        )
+        .orderBy(
+          'order.ownerActionCreatedAt',
+          'DESC',
+        )
+        .getMany()
+    } catch (err) {
+      this.logger.error(
+        'Error fetching action center orders',
+        err,
+      )
+
+      throw err
+    }
+  }
+
+  // =========================
+  // 🔍 SEARCH ORDERS
+  // =========================
+  async searchOrders(
+    storeCode: string,
+    query: string,
+  ) {
+    try {
+      const qb = this.orderRepo
+        .createQueryBuilder('order')
+        .where(
+          'order.storeCode = :storeCode',
+          { storeCode },
+        )
+
+      if (
+        query &&
+        query.trim().length > 0
+      ) {
+        qb.andWhere(
+          `(
+            order.customerName ILIKE :q
+            OR order.customerEmail ILIKE :q
+            OR order.stripePaymentIntentId ILIKE :q
+            OR order.ownerActionId ILIKE :q
+            OR CAST(order.id AS TEXT) ILIKE :q
+            OR CAST(order.tableNumber AS TEXT) ILIKE :q
+          )`,
+          { q: `%${query}%` },
+        )
+      }
+
+      return await qb
+        .orderBy('order.id', 'DESC')
+        .getMany()
+    } catch (err) {
+      this.logger.error(
+        'Error searching orders',
+        err,
+      )
+
+      throw err
+    }
+  }
+
+  // =========================
+  // ✅ RESOLVE OWNER ACTION
+  // =========================
+  async resolveOwnerAction(
+    id: number,
+    resolvedBy: string,
+  ) {
+    try {
+      const order =
+        await this.orderRepo.findOne({
+          where: { id },
+        })
+
+      if (!order) {
+        throw new BadRequestException(
+          'Order not found',
+        )
+      }
+
+      if (!order.requiresOwnerAction) {
+        throw new BadRequestException(
+          'This order has no open action to resolve.',
+        )
+      }
+
+      order.requiresOwnerAction = false
+
+      order.issueResolved = true
+      order.issueType = null
+
+      order.ownerIssueType = null
+      order.ownerIssueSeverity = null
+      order.ownerActionMessage = null
+
+      order.ownerActionResolvedAt = new Date()
+      order.ownerActionResolvedBy = resolvedBy
+
+      order.ownerActionCreatedAt = null
+      order.ownerActionId = null
+
+      const saved =
+        await this.orderRepo.save(order)
+
+      try {
+        this.gateway.emitOrderUpdate(
+          order.businessId,
+          saved,
+        )
+      } catch (err) {
+        this.logger.error(
+          'Socket update failed',
+          err,
+        )
+      }
+
+      this.logger.log(
+        `Owner action resolved for order ${saved.id}`,
+      )
+
+      return saved
+    } catch (err) {
+      this.logger.error(
+        'Error resolving owner action',
         err,
       )
 

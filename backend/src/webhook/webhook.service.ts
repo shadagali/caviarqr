@@ -15,6 +15,8 @@ import Stripe from 'stripe'
 import {
   Order,
   OrderStatus,
+  OwnerIssueSeverity,
+  OwnerIssueType,
 } from '../order/order.entity'
 
 import { Business } from '../business/business.entity'
@@ -47,6 +49,58 @@ export class WebhookService {
   }
 
   // =========================
+  // 🚨 OWNER ACTION
+  // =========================
+
+  private async createOwnerIssue(
+    order: Order,
+    issue: OwnerIssueType,
+    severity: OwnerIssueSeverity,
+    message: string,
+  ) {
+    if (!order.id) {
+      return
+    }
+
+    if (order.requiresOwnerAction) {
+      return
+    }
+
+    order.requiresOwnerAction = true
+
+    order.ownerIssueType = issue
+
+    order.ownerIssueSeverity = severity
+
+    order.ownerActionMessage = message
+
+    order.ownerActionCreatedAt =
+      new Date()
+
+    order.ownerActionId =
+      `ACT-${String(
+        order.id,
+      ).padStart(6, '0')}`
+
+    await this.orderRepo.save(order)
+
+    this.logger.error(
+      `[ACTION CENTER] ${issue}`,
+      JSON.stringify({
+        issueId:
+          order.ownerActionId,
+
+        orderId:
+          order.id,
+
+        severity,
+
+        message,
+      }),
+    )
+  }
+
+  // =========================
   // 🔥 WEBHOOK
   // =========================
 
@@ -66,7 +120,10 @@ export class WebhookService {
         event.type,
       )
     } catch (err: any) {
-      console.log(err)
+      this.logger.error(
+        'WEBHOOK_PARSE_FAILED',
+        err,
+      )
 
       throw new BadRequestException(
         'Webhook parse failed',
@@ -134,6 +191,21 @@ export class WebhookService {
               ?.id || ''
 
       // =========================
+      // 🔥 CUSTOMER INFO
+      // =========================
+
+      const customerEmail =
+        session.customer_details?.email ||
+        ''
+
+      const customerName =
+        session.customer_details?.name ||
+        ''
+
+      const stripeSessionId =
+        session.id || ''
+
+      // =========================
       // 🔥 METADATA
       // =========================
 
@@ -153,8 +225,8 @@ export class WebhookService {
       )
 
       if (!storeCode) {
-        console.log(
-          '❌ Missing storeCode',
+        this.logger.error(
+          'STORE_CODE_MISSING',
         )
 
         return
@@ -172,9 +244,8 @@ export class WebhookService {
         })
 
       if (!business) {
-        console.log(
-          '❌ Business not found:',
-          storeCode,
+        this.logger.error(
+          `BUSINESS_NOT_FOUND: ${storeCode}`,
         )
 
         return
@@ -191,6 +262,10 @@ export class WebhookService {
           items =
             JSON.parse(itemsRaw)
         } catch {
+          this.logger.error(
+            'INVALID_ORDER_DATA',
+          )
+
           items = []
         }
       }
@@ -207,9 +282,27 @@ export class WebhookService {
           ).toFixed(2),
         )
 
+      // =========================
+      // 🔥 PLATFORM FEE
+      // Uses the cafe's configured processing fee
+      // =========================
+
+      const processingFeePercent =
+        business.processingFeePercent ??
+        1.75
+
       const platformFee = +(
-        total * 0.0075
+        total *
+        (processingFeePercent / 100)
       ).toFixed(2)
+
+      console.log(
+        '🔥 PROCESSING FEE:',
+        {
+          processingFeePercent,
+          platformFee,
+        },
+      )
 
       // =========================
       // 🔥 CREATE ORDER
@@ -241,7 +334,33 @@ export class WebhookService {
       order.platformFee =
         platformFee
 
-      // ✅ SAVE REAL PAYMENT INTENT
+      // =========================
+      // 🔥 CUSTOMER
+      // =========================
+
+      order.customerEmail =
+        customerEmail
+
+      order.customerName =
+        customerName
+
+      order.stripeSessionId =
+        stripeSessionId
+
+      // =========================
+      // 🔥 ACTION CENTER
+      // =========================
+
+      order.issueResolved =
+        false
+
+      order.issueType =
+        'ORDER_RECEIVED'
+
+      // =========================
+      // 🔥 STRIPE
+      // =========================
+
       order.stripePaymentIntentId =
         paymentIntentId
 
@@ -265,7 +384,7 @@ export class WebhookService {
         },
       )
 
-      let saved: any
+      let saved: Order
 
       try {
         saved =
@@ -273,19 +392,26 @@ export class WebhookService {
             order,
           )
 
+        if (saved.items.length === 0) {
+          await this.createOwnerIssue(
+            saved,
+            OwnerIssueType.INVALID_ORDER_DATA,
+            OwnerIssueSeverity.CRITICAL,
+            'Order metadata could not be parsed.',
+          )
+        }
+
         console.log(
           '✅ SAVE SUCCESS:',
           saved,
         )
       } catch (err: any) {
-        console.log(
-          '❌ SAVE FAILED FULL ERROR:',
+        this.logger.error(
+          'DATABASE_SAVE_FAILED',
+          err,
         )
 
-        console.log(err)
-
-        console.log(
-          '❌ SAVE FAILED MESSAGE:',
+        this.logger.error(
           err?.message,
         )
 
@@ -295,6 +421,10 @@ export class WebhookService {
       console.log(
         '✅ ORDER CREATED:',
         saved.id,
+      )
+
+      this.logger.log(
+        `Order ${saved.id} successfully created.`,
       )
 
       // =========================
@@ -307,18 +437,26 @@ export class WebhookService {
           saved,
         )
 
-        console.log(
-          '🔥 SOCKET EMITTED',
+        this.logger.log(
+          `Order ${saved.id} sent to kitchen.`,
         )
       } catch (err) {
-        console.log(
-          '⚠️ Socket emit failed',
+        await this.createOwnerIssue(
+          saved,
+          OwnerIssueType.SOCKET_EMIT_FAILED,
+          OwnerIssueSeverity.CRITICAL,
+          'Kitchen never received the paid order.',
+        )
+
+        this.logger.error(
+          'SOCKET_EMIT_FAILED',
+          err,
         )
       }
     } catch (err: any) {
-      console.log(
-        '❌ WEBHOOK ERROR:',
-        err.message,
+      this.logger.error(
+        'WEBHOOK_PROCESSING_FAILED',
+        err,
       )
     }
   }

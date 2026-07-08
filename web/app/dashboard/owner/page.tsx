@@ -2,101 +2,128 @@
 import { useEffect, useState } from "react"
 import axios from "axios"
 
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+} from "recharts"
+
 const css = `
-  @import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@300;400;500;600;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap');
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg: #f5f5f7;
-    --bg2: #ffffff;
-    --surface: #ffffff;
-    --surface2: #f5f5f7;
-    --surface3: #e8e8ed;
-    --border: rgba(0,0,0,0.08);
-    --border2: rgba(0,0,0,0.12);
-    --text: #1d1d1f;
-    --text2: #6e6e73;
-    --text3: #aeaeb2;
-    --accent: #0071e3;
-    --accent-hover: #0077ed;
-    --accent-light: rgba(0,113,227,0.08);
-    --green: #34c759;
-    --green-light: rgba(52,199,89,0.1);
-    --red: #ff3b30;
-    --red-light: rgba(255,59,48,0.1);
-    --amber: #ff9f0a;
-    --amber-light: rgba(255,159,10,0.1);
-    --font: 'Instrument Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    --radius: 12px;
-    --radius-sm: 8px;
-    --radius-lg: 16px;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-    --shadow: 0 4px 16px rgba(0,0,0,0.06), 0 1px 4px rgba(0,0,0,0.04);
-    --shadow-md: 0 8px 32px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
+    --bg:           #f7f7f8;
+    --surface:      #ffffff;
+    --surface2:     #f3f3f5;
+    --surface3:     #ebebed;
+    --border:       rgba(0,0,0,0.07);
+    --border2:      rgba(0,0,0,0.11);
+    --text:         #111113;
+    --text2:        #60606a;
+    --text3:        #a0a0ab;
+    --accent:       #5b5bd6;
+    --accent-hover: #4f4fc4;
+    --accent-light: rgba(91,91,214,0.08);
+    --accent-dim:   rgba(91,91,214,0.15);
+    --green:        #1a9e5c;
+    --green-bg:     rgba(26,158,92,0.08);
+    --red:          #d93025;
+    --red-bg:       rgba(217,48,37,0.08);
+    --amber:        #c47d0e;
+    --amber-bg:     rgba(196,125,14,0.08);
+    --font:         'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+    --r:            10px;
+    --r-sm:         7px;
+    --r-lg:         14px;
+    --shadow-sm:    0 1px 2px rgba(0,0,0,0.05), 0 0 0 1px rgba(0,0,0,0.04);
+    --shadow:       0 4px 12px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.04);
   }
 
-  html, body { background: var(--bg); font-family: var(--font); color: var(--text); -webkit-font-smoothing: antialiased; }
+  html, body {
+    background: var(--bg);
+    font-family: var(--font);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+  }
 
   /* ── LAYOUT ── */
-  .owner-wrap {
+  .wrap {
     min-height: 100vh;
-    background: var(--bg);
     display: grid;
-    grid-template-columns: 240px 1fr;
-    grid-template-rows: 52px 1fr;
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 48px 1fr;
   }
 
   /* ── TOPBAR ── */
   .topbar {
     grid-column: 1 / -1;
-    height: 52px;
-    background: rgba(255,255,255,0.82);
-    backdrop-filter: saturate(180%) blur(20px);
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
-    border-bottom: 1px solid var(--border);
+    height: 48px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border2);
     display: flex;
     align-items: center;
-    padding: 0 20px;
-    gap: 14px;
+    padding: 0 18px;
+    gap: 12px;
     position: sticky;
     top: 0;
     z-index: 100;
   }
 
-  .topbar-logo {
+  .logo {
     display: flex;
     align-items: center;
-    gap: 9px;
-    font-weight: 600;
-    font-size: 15px;
-    letter-spacing: -0.3px;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: -0.4px;
     color: var(--text);
+    flex-shrink: 0;
   }
 
-  .topbar-logo-mark {
-    width: 28px;
-    height: 28px;
-    background: var(--text);
-    border-radius: 8px;
+  .logo-mark {
+    width: 26px;
+    height: 26px;
+    background: var(--accent);
+    border-radius: 7px;
     display: flex;
     align-items: center;
     justify-content: center;
     color: white;
-    font-size: 14px;
+    font-size: 13px;
   }
 
-  .topbar-divider {
+  .topbar-sep {
     width: 1px;
-    height: 18px;
+    height: 16px;
     background: var(--border2);
   }
 
-  .topbar-store {
-    font-size: 13px;
+  .store-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
     color: var(--text2);
     font-weight: 500;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 20px;
+    padding: 3px 10px 3px 7px;
+  }
+
+  .store-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0;
   }
 
   .topbar-right {
@@ -106,87 +133,63 @@ const css = `
     gap: 8px;
   }
 
-  .topbar-pill {
-    background: var(--green-light);
-    color: var(--green);
-    font-size: 11.5px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: 20px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .topbar-pill::before {
-    content: '';
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--green);
-  }
-
-  .topbar-avatar {
+  .avatar {
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    background: var(--surface3);
-    border: 1px solid var(--border2);
+    background: var(--accent-dim);
+    color: var(--accent);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 11px;
-    color: var(--text2);
-    font-weight: 600;
-    letter-spacing: 0;
+    font-weight: 700;
+    letter-spacing: 0.2px;
   }
 
   /* ── SIDEBAR ── */
   .sidebar {
-    background: rgba(255,255,255,0.7);
-    backdrop-filter: blur(10px);
-    border-right: 1px solid var(--border);
-    padding: 12px 10px;
+    background: var(--surface);
+    border-right: 1px solid var(--border2);
+    padding: 10px 8px;
     display: flex;
     flex-direction: column;
     gap: 1px;
-    height: calc(100vh - 52px);
+    height: calc(100vh - 48px);
     position: sticky;
-    top: 52px;
+    top: 48px;
     overflow-y: auto;
   }
 
-  .sidebar-section {
-    font-size: 10.5px;
+  .sidebar-label {
+    font-size: 10px;
     font-weight: 600;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.7px;
     color: var(--text3);
     text-transform: uppercase;
-    padding: 14px 10px 5px;
+    padding: 16px 8px 5px;
   }
 
   .sidebar-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
-    border-radius: var(--radius-sm);
-    font-size: 13.5px;
+    gap: 9px;
+    padding: 7px 9px;
+    border-radius: var(--r-sm);
+    font-size: 13px;
     font-weight: 500;
     color: var(--text2);
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: all 0.1s;
     border: none;
     background: none;
     width: 100%;
     text-align: left;
     font-family: var(--font);
+    line-height: 1;
   }
 
-  .sidebar-item:hover {
-    background: var(--surface3);
-    color: var(--text);
-  }
+  .sidebar-item:hover { background: var(--surface2); color: var(--text); }
 
   .sidebar-item.active {
     background: var(--accent-light);
@@ -194,89 +197,282 @@ const css = `
     font-weight: 600;
   }
 
-  .sidebar-icon {
-    width: 28px;
-    height: 28px;
-    border-radius: 7px;
+  .s-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 14px;
-    background: var(--surface3);
+    font-size: 13px;
+    background: var(--surface2);
     flex-shrink: 0;
-    transition: background 0.12s;
   }
 
-  .sidebar-item.active .sidebar-icon {
-    background: var(--accent-light);
+  .sidebar-item.active .s-icon { background: var(--accent-dim); }
+
+  .sidebar-bottom {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
   }
 
   /* ── MAIN ── */
   .main {
-    padding: 32px 40px;
+    padding: 28px 36px;
     overflow-y: auto;
-    max-height: calc(100vh - 52px);
+    max-height: calc(100vh - 48px);
+    background: var(--bg);
   }
 
-  .page-header {
-    margin-bottom: 28px;
+  /* ── PAGE HEADER ── */
+  .ph {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-bottom: 24px;
   }
 
-  .page-title {
-    font-size: 26px;
+  .ph-left {}
+
+  .ph-title {
+    font-size: 20px;
     font-weight: 700;
-    letter-spacing: -0.6px;
+    letter-spacing: -0.5px;
     color: var(--text);
-    line-height: 1.1;
+    line-height: 1;
   }
 
-  .page-sub {
-    font-size: 13.5px;
-    color: var(--text2);
+  .ph-sub {
+    font-size: 12.5px;
+    color: var(--text3);
     margin-top: 4px;
     font-weight: 400;
   }
 
-  /* ── CARDS ── */
-  .card {
+  /* ── STAT GRID ── */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .stat-card {
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 22px 24px;
-    margin-bottom: 14px;
+    border: 1px solid var(--border2);
+    border-radius: var(--r-lg);
+    padding: 16px 18px;
     box-shadow: var(--shadow-sm);
   }
 
-  .card-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 18px;
+  .stat-label {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text3);
+    letter-spacing: 0.1px;
+    margin-bottom: 8px;
   }
 
-  .card-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    background: var(--surface2);
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -1px;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .stat-sub {
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 5px;
+  }
+
+  .stat-up { color: var(--green); }
+  .stat-dn { color: var(--red); }
+
+  /* ── CARD ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: var(--r-lg);
+    padding: 20px 22px;
+    margin-bottom: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .card-top {
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-size: 16px;
+    justify-content: space-between;
+    margin-bottom: 16px;
   }
 
   .card-title {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text);
     letter-spacing: -0.2px;
   }
 
   .card-sub {
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--text3);
-    margin-top: 1px;
+    margin-top: 2px;
   }
+
+  .card-icon-wrap {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+
+  /* ── CHART TOOLTIP ── */
+  .custom-tip {
+    background: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-family: var(--font);
+    font-size: 12px;
+    color: white;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  }
+
+  .custom-tip-val {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+
+  /* ── TOP ITEMS TABLE ── */
+  .items-table {
+    width: 100%;
+  }
+
+  .items-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .items-row:last-child { border-bottom: none; }
+
+  .items-rank {
+    width: 20px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text3);
+    flex-shrink: 0;
+    text-align: center;
+  }
+
+  .items-name {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .items-bar-wrap {
+    width: 80px;
+    height: 4px;
+    background: var(--surface3);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .items-bar {
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+    opacity: 0.6;
+  }
+
+  .items-qty {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    width: 32px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── ORDERS TABLE ── */
+  .orders-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .orders-th {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 0 0 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border2);
+  }
+
+  .orders-th:last-child { text-align: right; }
+
+  .orders-td {
+    padding: 10px 0;
+    font-size: 13px;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  .orders-td:last-child { text-align: right; }
+
+  .orders-tr:last-child .orders-td { border-bottom: none; }
+
+  .order-id {
+    font-weight: 600;
+    font-family: monospace;
+    font-size: 12.5px;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 5px;
+    padding: 2px 6px;
+    color: var(--text2);
+  }
+
+  /* ── STATUS CHIP ── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 20px;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .chip-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+  }
+
+  .chip-green  { background: var(--green-bg);  color: var(--green);  }
+  .chip-green  .chip-dot { background: var(--green); }
+  .chip-amber  { background: var(--amber-bg);  color: var(--amber);  }
+  .chip-amber  .chip-dot { background: var(--amber); }
+  .chip-gray   { background: var(--surface3);  color: var(--text2);  }
+  .chip-gray   .chip-dot { background: var(--text3); }
+  .chip-accent { background: var(--accent-dim); color: var(--accent); }
+  .chip-accent .chip-dot { background: var(--accent); }
 
   /* ── FORM ── */
   .field-grid {
@@ -286,17 +482,13 @@ const css = `
     margin-bottom: 12px;
   }
 
-  .field-grid.one { grid-template-columns: 1fr; }
+  .field-grid.one   { grid-template-columns: 1fr; }
   .field-grid.three { grid-template-columns: 1fr 1fr 1fr; }
 
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
+  .field { display: flex; flex-direction: column; gap: 5px; }
 
   .field-label {
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 600;
     color: var(--text2);
     letter-spacing: 0.1px;
@@ -305,9 +497,9 @@ const css = `
   .inp {
     background: var(--surface2);
     border: 1px solid var(--border2);
-    border-radius: var(--radius-sm);
-    padding: 9px 13px;
-    font-size: 14px;
+    border-radius: var(--r-sm);
+    padding: 8px 11px;
+    font-size: 13.5px;
     color: var(--text);
     font-family: var(--font);
     outline: none;
@@ -319,7 +511,7 @@ const css = `
   .inp:focus {
     border-color: var(--accent);
     background: white;
-    box-shadow: 0 0 0 3px rgba(0,113,227,0.12);
+    box-shadow: 0 0 0 3px var(--accent-light);
   }
 
   .inp::placeholder { color: var(--text3); }
@@ -327,8 +519,8 @@ const css = `
   .file-zone {
     background: var(--surface2);
     border: 1.5px dashed var(--border2);
-    border-radius: var(--radius-sm);
-    padding: 14px;
+    border-radius: var(--r-sm);
+    padding: 12px 14px;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -339,19 +531,19 @@ const css = `
   }
 
   .file-zone:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
-  .file-zone.loaded { border-color: var(--green); color: var(--green); background: var(--green-light); border-style: solid; }
+  .file-zone.loaded { border-color: var(--green); color: var(--green); background: var(--green-bg); border-style: solid; }
   .file-zone input { display: none; }
 
-  .file-zone-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
+  .file-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
     background: white;
     box-shadow: var(--shadow-sm);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: 15px;
     flex-shrink: 0;
   }
 
@@ -361,110 +553,80 @@ const css = `
     align-items: center;
     justify-content: center;
     gap: 6px;
-    padding: 9px 18px;
-    border-radius: var(--radius-sm);
-    font-size: 13.5px;
+    padding: 8px 16px;
+    border-radius: var(--r-sm);
+    font-size: 13px;
     font-weight: 600;
     font-family: var(--font);
     cursor: pointer;
     border: none;
-    transition: all 0.15s;
+    transition: all 0.12s;
     letter-spacing: -0.1px;
+    line-height: 1;
   }
 
-  .btn-blue {
-    background: var(--accent);
-    color: white;
-  }
-  .btn-blue:hover { background: var(--accent-hover); }
-  .btn-blue:active { transform: scale(0.98); }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:active { transform: scale(0.98); }
 
   .btn-ghost {
-    background: var(--surface2);
+    background: var(--surface);
     color: var(--text);
     border: 1px solid var(--border2);
   }
-  .btn-ghost:hover { background: var(--surface3); }
+  .btn-ghost:hover { background: var(--surface2); }
 
-  .btn-red {
-    background: var(--red-light);
-    color: var(--red);
-  }
-  .btn-red:hover { background: rgba(255,59,48,0.16); }
-
-  .btn-green {
-    background: var(--green-light);
-    color: var(--green);
-  }
+  .btn-danger { background: var(--red-bg); color: var(--red); }
+  .btn-danger:hover { background: rgba(217,48,37,0.14); }
 
   .btn-row {
     display: flex;
     gap: 8px;
-    margin-top: 16px;
+    margin-top: 18px;
+    align-items: center;
     flex-wrap: wrap;
-    align-items: center;
   }
 
-  /* ── STATUS ── */
-  .status-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 12px;
-    border-radius: 20px;
-    font-size: 12.5px;
-    font-weight: 600;
-  }
+  /* ── INFO TABLE ── */
+  .info-tbl { width: 100%; border-collapse: collapse; }
+  .info-tr { border-bottom: 1px solid var(--border); }
+  .info-tr:last-child { border-bottom: none; }
+  .info-td { padding: 10px 0; font-size: 13px; }
+  .info-td.lbl { color: var(--text3); width: 42%; font-weight: 400; }
+  .info-td.val { color: var(--text); font-weight: 500; }
 
-  .chip-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-  }
-
-  .chip-green { background: var(--green-light); color: var(--green); }
-  .chip-green .chip-dot { background: var(--green); }
-  .chip-amber { background: var(--amber-light); color: var(--amber); }
-  .chip-amber .chip-dot { background: var(--amber); }
-  .chip-gray { background: var(--surface3); color: var(--text2); }
-  .chip-gray .chip-dot { background: var(--text3); }
-
-  /* ── MENU ITEMS ── */
+  /* ── MENU GRID ── */
   .menu-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
     gap: 10px;
     margin-top: 10px;
   }
 
   .item-card {
-    background: white;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: var(--r);
     overflow: hidden;
     box-shadow: var(--shadow-sm);
     transition: box-shadow 0.15s, transform 0.15s;
   }
 
-  .item-card:hover {
-    box-shadow: var(--shadow);
-    transform: translateY(-1px);
-  }
-
-  .item-card.hidden-item { opacity: 0.4; }
+  .item-card:hover { box-shadow: var(--shadow); transform: translateY(-1px); }
+  .item-card.hidden-item { opacity: 0.38; }
 
   .item-img {
     width: 100%;
-    height: 106px;
+    height: 100px;
     object-fit: cover;
     display: block;
     background: var(--surface2);
   }
 
-  .item-body { padding: 10px 12px 8px; }
+  .item-body { padding: 9px 11px 7px; }
 
   .item-name {
-    font-size: 13px;
+    font-size: 12.5px;
     font-weight: 600;
     color: var(--text);
     margin-bottom: 3px;
@@ -473,22 +635,18 @@ const css = `
     text-overflow: ellipsis;
   }
 
-  .item-price {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-  }
+  .item-price { font-size: 13px; font-weight: 700; color: var(--text); }
 
   .item-original {
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--text3);
     text-decoration: line-through;
-    margin-right: 4px;
+    margin-right: 3px;
   }
 
   .item-disc {
     display: inline-block;
-    background: var(--red-light);
+    background: var(--red-bg);
     color: var(--red);
     font-size: 10px;
     font-weight: 700;
@@ -499,84 +657,141 @@ const css = `
 
   .item-actions {
     display: flex;
-    gap: 0;
     border-top: 1px solid var(--border);
   }
 
   .item-btn {
     flex: 1;
     padding: 7px 0;
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 600;
     cursor: pointer;
     font-family: var(--font);
-    transition: background 0.12s;
+    transition: background 0.1s;
     border: none;
-    background: white;
+    background: transparent;
     color: var(--text2);
   }
 
   .item-btn:hover { background: var(--surface2); }
   .item-btn + .item-btn { border-left: 1px solid var(--border); color: var(--red); }
-  .item-btn + .item-btn:hover { background: var(--red-light); }
+  .item-btn + .item-btn:hover { background: var(--red-bg); }
 
-  .cat-row {
-    font-size: 11px;
+  .cat-label {
+    font-size: 10.5px;
     font-weight: 700;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.7px;
     text-transform: uppercase;
     color: var(--text3);
     padding: 20px 0 8px;
-    border-bottom: 1px solid var(--border);
     margin-bottom: 2px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
-  /* ── INFO TABLE ── */
-  .info-table { width: 100%; border-collapse: collapse; }
-  .info-row-tr { border-bottom: 1px solid var(--border); }
-  .info-row-tr:last-child { border-bottom: none; }
-  .info-td { padding: 11px 0; font-size: 13.5px; }
-  .info-td.label { color: var(--text2); width: 44%; font-weight: 400; }
-  .info-td.val { color: var(--text); font-weight: 500; }
+  .cat-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border2);
+  }
 
   /* ── TOAST ── */
   .toast {
     position: fixed;
-    bottom: 28px;
+    bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(29,29,31,0.92);
-    backdrop-filter: blur(12px);
+    background: var(--text);
     color: white;
-    font-size: 13.5px;
+    font-size: 13px;
     font-weight: 500;
-    padding: 11px 22px;
+    padding: 10px 20px;
     border-radius: 40px;
     z-index: 9999;
     white-space: nowrap;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-    animation: fadeUp 0.22s ease;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    animation: slideUp 0.2s cubic-bezier(0.16,1,0.3,1);
+    display: flex;
+    align-items: center;
+    gap: 7px;
   }
 
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateX(-50%) translateY(8px); }
-    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast::before {
+    content: '✓';
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--green);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    flex-shrink: 0;
   }
 
-  /* ── EMPTY STATE ── */
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+
+  /* ── EMPTY ── */
   .empty {
     text-align: center;
-    padding: 64px 0;
+    padding: 60px 0;
     color: var(--text3);
   }
 
-  .empty-icon { font-size: 36px; margin-bottom: 12px; }
-  .empty-text { font-size: 14px; font-weight: 500; }
-  .empty-sub { font-size: 13px; margin-top: 4px; }
+  .empty-icon { font-size: 32px; margin-bottom: 10px; }
+  .empty-title { font-size: 13.5px; font-weight: 600; color: var(--text2); }
+  .empty-sub { font-size: 12.5px; margin-top: 3px; }
+
+  /* ── DIVIDER ── */
+  .divider { height: 1px; background: var(--border); margin: 16px 0; }
+
+  /* ── SECTION INTRO ── */
+  .section-intro {
+    font-size: 12.5px;
+    color: var(--text3);
+    line-height: 1.5;
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    background: var(--surface2);
+    border-radius: var(--r-sm);
+    border-left: 3px solid var(--accent);
+  }
 `
+
+// Custom tooltip for recharts
+const ChartTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="custom-tip">
+      <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>{label}</div>
+      <div className="custom-tip-val">${Number(payload[0].value).toFixed(2)}</div>
+    </div>
+  )
+}
+
+const statusChip = (status: string) => {
+  const s = (status || "").toLowerCase()
+  const cls = s === "completed" || s === "paid" ? "chip-green"
+    : s === "pending" ? "chip-amber"
+    : s === "preparing" ? "chip-accent"
+    : "chip-gray"
+  return (
+    <span className={`chip ${cls}`}>
+      <span className="chip-dot" />
+      {status}
+    </span>
+  )
+}
 
 export default function OwnerPage() {
   const [businessId] = useState(3)
+
   const [menu, setMenu] = useState<any[]>([])
   const [name, setName] = useState("")
   const [price, setPrice] = useState("")
@@ -588,14 +803,18 @@ export default function OwnerPage() {
   const [serviceFee, setServiceFee] = useState("")
   const [cafeName, setCafeName] = useState("")
   const [logoFile, setLogoFile] = useState<any>(null)
+  // Change 7: cover photo state
+  const [coverFile, setCoverFile] = useState<any>(null)
   const [kitchenMode, setKitchenMode] = useState("unknown")
-  const [activeSection, setActiveSection] = useState("menu")
+  const [activeSection, setActiveSection] = useState("analytics")
   const [toast, setToast] = useState("")
+  const [dashboard, setDashboard] = useState<any>(null)
+  const [topItems, setTopItems] = useState<any[]>([])
+  const [revenueChart, setRevenueChart] = useState<any[]>([])
+  const [recentOrders, setRecentOrders] = useState<any[]>([])
+  const [issues, setIssues] = useState<any[]>([])
 
-  const showToast = (m: string) => {
-    setToast(m)
-    setTimeout(() => setToast(""), 2600)
-  }
+  const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2800) }
 
   const enablePasswordless = async () => {
     try {
@@ -603,9 +822,7 @@ export default function OwnerPage() {
       showToast("Passwordless mode enabled")
       setKitchenPass("")
       setKitchenMode("passwordless")
-    } catch {
-      showToast("Failed to enable passwordless")
-    }
+    } catch { showToast("Failed to enable passwordless") }
   }
 
   const load = async () => {
@@ -627,11 +844,42 @@ export default function OwnerPage() {
     checkMode()
   }, [])
 
+  const loadAnalytics = async () => {
+    try {
+      const [dashRes, itemsRes, chartRes, ordersRes] = await Promise.all([
+        axios.get(`http://localhost:3001/analytics/dashboard/${businessId}`),
+        axios.get(`http://localhost:3001/analytics/top-items/${businessId}`),
+        axios.get(`http://localhost:3001/analytics/revenue-chart/${businessId}`),
+        axios.get(`http://localhost:3001/analytics/recent-orders/${businessId}`),
+      ])
+      setDashboard(dashRes.data)
+      setTopItems(itemsRes.data)
+      setRevenueChart(chartRes.data)
+      setRecentOrders(ordersRes.data)
+    } catch (err) { console.error(err) }
+  }
+
+  const loadActionCenter = async () => {
+    try {
+      const res = await axios.get(
+        "http://localhost:3001/maintenance/action-center",
+      )
+
+      setIssues(res.data)
+    } catch {
+      setIssues([])
+    }
+  }
+
+  useEffect(() => {
+    loadAnalytics()
+    loadActionCenter()
+  }, [])
+
   const upload = async () => {
     if (!file) return ""
     try {
-      const form = new FormData()
-      form.append("file", file)
+      const form = new FormData(); form.append("file", file)
       const res = await axios.post("http://localhost:3001/menu/upload", form)
       return res.data.url
     } catch { return "" }
@@ -640,15 +888,24 @@ export default function OwnerPage() {
   const uploadLogo = async () => {
     if (!logoFile) return ""
     try {
-      const form = new FormData()
-      form.append("file", logoFile)
+      const form = new FormData(); form.append("file", logoFile)
+      const res = await axios.post("http://localhost:3001/menu/upload", form)
+      return res.data.url
+    } catch { return "" }
+  }
+
+  // Change 7: cover photo upload helper
+  const uploadCover = async () => {
+    if (!coverFile) return ""
+    try {
+      const form = new FormData(); form.append("file", coverFile)
       const res = await axios.post("http://localhost:3001/menu/upload", form)
       return res.data.url
     } catch { return "" }
   }
 
   const add = async () => {
-    if (!name || !price) return setMsg("Enter name and price")
+    if (!name || !price) return setMsg("Name and price are required")
     const imageUrl = await upload()
     await axios.post("http://localhost:3001/menu/create", {
       businessId, name, price: Number(price),
@@ -656,26 +913,40 @@ export default function OwnerPage() {
       imageUrl, discount: discount ? Number(discount) : 0,
     })
     setName(""); setPrice(""); setCategory(""); setFile(null); setDiscount(""); setMsg("")
-    showToast("Item added to menu")
+    // Change 3: reload analytics after adding item
+    showToast("Item added")
     await load()
+    await loadAnalytics()
   }
 
   const saveBranding = async () => {
     const logo = await uploadLogo()
-    await axios.post("http://localhost:3001/business/update-branding", { businessId, name: cafeName, logo })
+    // Change 7: send coverUrl to branding endpoint
+    const coverUrl = await uploadCover()
+    await axios.post("http://localhost:3001/business/update-branding", { businessId, name: cafeName, logo, coverUrl })
     showToast("Branding saved")
   }
 
-  const del = (id: any) => {
-    axios.delete(`http://localhost:3001/menu/${id}`).then(() => { load(); showToast("Item removed") })
-  }
+  // Change 4: reload analytics after deleting item
+  const del = (id: any) =>
+    axios
+      .delete(`http://localhost:3001/menu/${id}`)
+      .then(async () => {
+        await load()
+        await loadAnalytics()
+        showToast("Item removed")
+      })
 
-  const hide = (id: any) => { axios.patch(`http://localhost:3001/menu/hide/${id}`).then(load) }
+  // Change 5: reload analytics after hiding item
+  const hide = (id: any) =>
+    axios
+      .patch(`http://localhost:3001/menu/hide/${id}`)
+      .then(async () => {
+        await load()
+        await loadAnalytics()
+      })
 
-  const saveKitchen = () => {
-    axios.post("http://localhost:3001/business/set-kitchen-password", { businessId, password: kitchenPass })
-      .then(() => showToast("Password saved"))
-  }
+  const saveKitchen = () => axios.post("http://localhost:3001/business/set-kitchen-password", { businessId, password: kitchenPass }).then(() => showToast("Password saved"))
 
   const saveServiceFee = async () => {
     try {
@@ -699,19 +970,24 @@ export default function OwnerPage() {
   }
 
   const grouped = menu.reduce((acc: any, item: any) => {
-    const key = item.category || "other"
-    if (!acc[key]) acc[key] = []
-    acc[key].push(item)
-    return acc
+    const k = item.category || "other"
+    if (!acc[k]) acc[k] = []
+    acc[k].push(item); return acc
   }, {})
 
+  const maxQty = topItems.length ? Math.max(...topItems.map((i: any) => i.quantitySold)) : 1
+
   const nav = [
-    { id: "menu",     icon: "🍽️", label: "Menu" },
-    { id: "add",      icon: "✚",  label: "Add Item" },
-    { id: "kitchen",  icon: "🔑", label: "Kitchen Access" },
-    { id: "payments", icon: "💳", label: "Payments" },
-    { id: "fee",      icon: "％", label: "Service Fee" },
-    { id: "branding", icon: "✦",  label: "Branding" },
+    { id: "analytics", icon: "📈", label: "Analytics" },
+    { id: "menu",      icon: "🍽️", label: "Menu" },
+    { id: "add",       icon: "＋", label: "Add Item" },
+    { id: "kitchen",   icon: "🔑", label: "Kitchen Access" },
+    { id: "payments",  icon: "💳", label: "Payments" },
+
+    { id: "action",    icon: "🚨", label: "Action Center" },
+
+    { id: "fee",       icon: "％", label: "Service Fee" },
+    { id: "branding",  icon: "✦", label: "Branding" },
   ]
 
   return (
@@ -720,32 +996,34 @@ export default function OwnerPage() {
 
       {toast && <div className="toast">{toast}</div>}
 
-      <div className="owner-wrap">
+      <div className="wrap">
 
         {/* TOPBAR */}
         <div className="topbar">
-          <div className="topbar-logo">
-            <div className="topbar-logo-mark">🍴</div>
+          <div className="logo">
+            <div className="logo-mark">🍴</div>
             CaviarQR
           </div>
-          <div className="topbar-divider" />
-          <div className="topbar-store">cafe1</div>
+          <div className="topbar-sep" />
+          <div className="store-badge">
+            <div className="store-dot" />
+            cafe1
+          </div>
           <div className="topbar-right">
-            <div className="topbar-pill">Active</div>
-            <div className="topbar-avatar">OW</div>
+            <div className="avatar">OW</div>
           </div>
         </div>
 
         {/* SIDEBAR */}
         <div className="sidebar">
-          <div className="sidebar-section">Overview</div>
+          <div className="sidebar-label">Workspace</div>
           {nav.map(n => (
             <button
               key={n.id}
               className={`sidebar-item${activeSection === n.id ? " active" : ""}`}
               onClick={() => setActiveSection(n.id)}
             >
-              <div className="sidebar-icon">{n.icon}</div>
+              <div className="s-icon">{n.icon}</div>
               {n.label}
             </button>
           ))}
@@ -754,23 +1032,168 @@ export default function OwnerPage() {
         {/* MAIN */}
         <div className="main">
 
+          {/* ── ANALYTICS ── */}
+          {activeSection === "analytics" && (
+            <div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Analytics</div>
+                  <div className="ph-sub">Revenue and performance overview</div>
+                </div>
+                <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={loadAnalytics}>↻ Refresh</button>
+              </div>
+
+              <div className="stat-grid">
+                <div className="stat-card">
+                  <div className="stat-label">Today's Revenue</div>
+                  <div className="stat-value">${dashboard?.todayRevenue?.toFixed(2) || "0.00"}</div>
+                  <div className="stat-sub">{dashboard?.todayOrders || 0} orders today</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">This Month</div>
+                  <div className="stat-value">${dashboard?.monthRevenue?.toFixed(2) || "0.00"}</div>
+                  <div className="stat-sub">{dashboard?.monthOrders || 0} orders</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">All Time</div>
+                  <div className="stat-value">${dashboard?.allTimeRevenue?.toFixed(2) || "0.00"}</div>
+                  <div className="stat-sub">{dashboard?.allTimeOrders || 0} total orders</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Avg. Order Value</div>
+                  <div className="stat-value">${dashboard?.averageOrderValue?.toFixed(2) || "0.00"}</div>
+                  <div className="stat-sub">per transaction</div>
+                </div>
+              </div>
+
+              {/* CHART */}
+              <div className="card">
+                <div className="card-top">
+                  <div>
+                    <div className="card-title">Revenue — Last 30 Days</div>
+                    <div className="card-sub">Daily totals from completed orders</div>
+                  </div>
+                  <div className="card-icon-wrap">📊</div>
+                </div>
+                {/* Change 1: explicit width/height on ResponsiveContainer */}
+                <div style={{ width: "100%", height: 240 }}>
+                  <ResponsiveContainer width="100%" height={240}>
+                    <LineChart data={revenueChart} margin={{ top: 4, right: 4, bottom: 0, left: -16 }}>
+                      <defs>
+                        <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#5b5bd6" />
+                          <stop offset="100%" stopColor="#8b8beb" />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.05)" vertical={false} />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 11, fill: "#a0a0ab" }}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: "#a0a0ab" }}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={(v) => `$${v}`}
+                      />
+                      <Tooltip content={<ChartTooltip />} cursor={{ stroke: "rgba(91,91,214,0.15)", strokeWidth: 1 }} />
+                      <Line
+                        type="monotone"
+                        dataKey="revenue"
+                        stroke="url(#lineGrad)"
+                        strokeWidth={2.5}
+                        dot={false}
+                        activeDot={{ r: 4, fill: "#5b5bd6", strokeWidth: 0 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+
+                {/* TOP ITEMS */}
+                <div className="card" style={{ marginBottom: 0 }}>
+                  <div className="card-top">
+                    <div>
+                      <div className="card-title">Top Selling Items</div>
+                      <div className="card-sub">By units sold</div>
+                    </div>
+                    <div className="card-icon-wrap">🏆</div>
+                  </div>
+                  <div className="items-table">
+                    {topItems.length === 0 && <div style={{ fontSize: 12.5, color: "var(--text3)", padding: "12px 0" }}>No data yet</div>}
+                    {topItems.map((item: any, i: number) => (
+                      <div key={item.itemName} className="items-row">
+                        <div className="items-rank">{i + 1}</div>
+                        <div className="items-name">{item.itemName}</div>
+                        <div className="items-bar-wrap">
+                          <div className="items-bar" style={{ width: `${(item.quantitySold / maxQty) * 100}%` }} />
+                        </div>
+                        <div className="items-qty">{item.quantitySold}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* RECENT ORDERS */}
+                <div className="card" style={{ marginBottom: 0 }}>
+                  <div className="card-top">
+                    <div>
+                      <div className="card-title">Recent Orders</div>
+                      <div className="card-sub">Latest transactions</div>
+                    </div>
+                    <div className="card-icon-wrap">🧾</div>
+                  </div>
+                  <table className="orders-table">
+                    <thead>
+                      <tr>
+                        <th className="orders-th">Order</th>
+                        <th className="orders-th">Status</th>
+                        <th className="orders-th">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentOrders.length === 0 && (
+                        <tr><td className="orders-td" colSpan={3} style={{ color: "var(--text3)" }}>No orders yet</td></tr>
+                      )}
+                      {recentOrders.map((order: any) => (
+                        <tr key={order.id} className="orders-tr">
+                          <td className="orders-td"><span className="order-id">#{order.id}</span></td>
+                          <td className="orders-td">{statusChip(order.status)}</td>
+                          <td className="orders-td" style={{ fontWeight: 600 }}>${order.total}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+              </div>
+            </div>
+          )}
+
           {/* ── MENU ── */}
           {activeSection === "menu" && (
             <div>
-              <div className="page-header">
-                <div className="page-title">Menu</div>
-                <div className="page-sub">{menu.length} items · {Object.keys(grouped).length} categories</div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Menu</div>
+                  <div className="ph-sub">{menu.length} items across {Object.keys(grouped).length} categories</div>
+                </div>
+                <button className="btn btn-primary" onClick={() => setActiveSection("add")}>＋ Add Item</button>
               </div>
 
               {menu.length === 0 ? (
                 <div className="empty">
                   <div className="empty-icon">🍽️</div>
-                  <div className="empty-text">No items yet</div>
-                  <div className="empty-sub">Add your first item from the sidebar</div>
+                  <div className="empty-title">No items yet</div>
+                  <div className="empty-sub">Add your first item to get started</div>
                 </div>
               ) : Object.keys(grouped).map(cat => (
                 <div key={cat}>
-                  <div className="cat-row">{cat}</div>
+                  <div className="cat-label">{cat}</div>
                   <div className="menu-grid">
                     {grouped[cat].map((i: any) => (
                       <div key={i.id} className={`item-card${i.isHidden ? " hidden-item" : ""}`}>
@@ -778,8 +1201,8 @@ export default function OwnerPage() {
                           className="item-img"
                           src={i.imageUrl
                             ? (i.imageUrl.startsWith("http") ? i.imageUrl : `http://localhost:3001${i.imageUrl}`)
-                            : "https://via.placeholder.com/200x106?text= "}
-                          onError={(e: any) => e.currentTarget.src = "https://via.placeholder.com/200x106?text= "}
+                            : "https://via.placeholder.com/200x100?text= "}
+                          onError={(e: any) => e.currentTarget.src = "https://via.placeholder.com/200x100?text= "}
                           alt={i.name}
                         />
                         <div className="item-body">
@@ -797,9 +1220,7 @@ export default function OwnerPage() {
                           </div>
                         </div>
                         <div className="item-actions">
-                          <button className="item-btn" onClick={() => hide(i.id)}>
-                            {i.isHidden ? "Show" : "Hide"}
-                          </button>
+                          <button className="item-btn" onClick={() => hide(i.id)}>{i.isHidden ? "Show" : "Hide"}</button>
                           <button className="item-btn" onClick={() => del(i.id)}>Remove</button>
                         </div>
                       </div>
@@ -813,35 +1234,39 @@ export default function OwnerPage() {
           {/* ── ADD ITEM ── */}
           {activeSection === "add" && (
             <div>
-              <div className="page-header">
-                <div className="page-title">Add Item</div>
-                <div className="page-sub">New items appear on your store immediately</div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Add Item</div>
+                  <div className="ph-sub">New items go live on your store immediately</div>
+                </div>
               </div>
-              <div className="card">
-                <div className="card-header">
-                  <div className="card-icon">📋</div>
+
+              <div className="card" style={{ maxWidth: 560 }}>
+                <div className="card-top">
                   <div>
                     <div className="card-title">Item Details</div>
-                    <div className="card-sub">Fill in the basics</div>
+                    <div className="card-sub">Fill in the fields below</div>
                   </div>
+                  <div className="card-icon-wrap">📋</div>
                 </div>
+
                 <div className="field-grid">
                   <div className="field">
                     <div className="field-label">Name</div>
                     <input type="text" className="inp" placeholder="e.g. Iced Latte" value={name} onChange={e => setName(e.target.value)} />
                   </div>
                   <div className="field">
-                    <div className="field-label">Price</div>
+                    <div className="field-label">Price ($)</div>
                     <input type="number" className="inp" placeholder="0.00" value={price} onChange={e => setPrice(e.target.value)} />
                   </div>
                 </div>
                 <div className="field-grid">
                   <div className="field">
                     <div className="field-label">Category</div>
-                    <input type="text" className="inp" placeholder="food, drinks, desserts…" value={category} onChange={e => setCategory(e.target.value)} />
+                    <input type="text" className="inp" placeholder="drinks, food, desserts…" value={category} onChange={e => setCategory(e.target.value)} />
                   </div>
                   <div className="field">
-                    <div className="field-label">Discount %</div>
+                    <div className="field-label">Discount (%)</div>
                     <input type="number" className="inp" placeholder="0" value={discount} onChange={e => setDiscount(e.target.value)} />
                   </div>
                 </div>
@@ -849,15 +1274,16 @@ export default function OwnerPage() {
                   <div className="field">
                     <div className="field-label">Photo</div>
                     <label className={`file-zone${file ? " loaded" : ""}`}>
-                      <div className="file-zone-icon">📷</div>
-                      <span>{file ? (file as any).name : "Click to upload photo"}</span>
+                      <div className="file-icon">📷</div>
+                      <span>{file ? (file as any).name : "Click to upload a photo"}</span>
                       <input type="file" accept="image/*" onChange={e => setFile(e.target.files?.[0] || null)} />
                     </label>
                   </div>
                 </div>
+
                 <div className="btn-row">
-                  <button className="btn btn-blue" onClick={add}>Add to Menu</button>
-                  {msg && <span style={{ fontSize: 12.5, color: "var(--red)" }}>{msg}</span>}
+                  <button className="btn btn-primary" onClick={add}>Add to Menu</button>
+                  {msg && <span style={{ fontSize: 12, color: "var(--red)" }}>{msg}</span>}
                 </div>
               </div>
             </div>
@@ -866,60 +1292,54 @@ export default function OwnerPage() {
           {/* ── KITCHEN ── */}
           {activeSection === "kitchen" && (
             <div>
-              <div className="page-header">
-                <div className="page-title">Kitchen Access</div>
-                <div className="page-sub">Control how kitchen staff sign in</div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Kitchen Access</div>
+                  <div className="ph-sub">Control how kitchen staff sign in</div>
+                </div>
+                <div className={`chip ${kitchenMode === "passwordless" ? "chip-green" : kitchenMode === "password" ? "chip-amber" : "chip-gray"}`} style={{ padding: "5px 12px" }}>
+                  <span className="chip-dot" />
+                  {kitchenMode === "password" ? "Password Protected" : kitchenMode === "passwordless" ? "Passwordless" : "Checking…"}
+                </div>
               </div>
 
               <div className="card">
-                <div className="card-header">
-                  <div className="card-icon">📡</div>
+                <div className="card-top">
                   <div>
-                    <div className="card-title">Current Mode</div>
+                    <div className="card-title">Access Modes</div>
                   </div>
-                  <div style={{ marginLeft: "auto" }}>
-                    <div className={`status-chip ${
-                      kitchenMode === "passwordless" ? "chip-green"
-                      : kitchenMode === "password" ? "chip-amber"
-                      : "chip-gray"
-                    }`}>
-                      <div className="chip-dot" />
-                      {kitchenMode === "password" ? "Password Protected"
-                       : kitchenMode === "passwordless" ? "Passwordless"
-                       : "Checking…"}
-                    </div>
-                  </div>
+                  <div className="card-icon-wrap">📡</div>
                 </div>
-                <table className="info-table">
+                <table className="info-tbl">
                   <tbody>
-                    <tr className="info-row-tr">
-                      <td className="info-td label">Passwordless</td>
-                      <td className="info-td val">Instant access — no login needed</td>
+                    <tr className="info-tr">
+                      <td className="info-td lbl">Passwordless</td>
+                      <td className="info-td val">Instant access — no login required</td>
                     </tr>
-                    <tr className="info-row-tr">
-                      <td className="info-td label">Password mode</td>
-                      <td className="info-td val">Staff must enter a password</td>
+                    <tr className="info-tr">
+                      <td className="info-td lbl">Password mode</td>
+                      <td className="info-td val">Staff must enter a shared password</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
 
-              <div className="card">
-                <div className="card-header">
-                  <div className="card-icon">🔑</div>
+              <div className="card" style={{ maxWidth: 440 }}>
+                <div className="card-top">
                   <div>
                     <div className="card-title">Set Password</div>
-                    <div className="card-sub">Leave blank and tap Enable Passwordless for instant access</div>
+                    <div className="card-sub">Leave blank and use Enable Passwordless for instant access</div>
                   </div>
+                  <div className="card-icon-wrap">🔑</div>
                 </div>
-                <div className="field-grid one" style={{ maxWidth: 360 }}>
+                <div className="field-grid one">
                   <div className="field">
                     <div className="field-label">Kitchen Password</div>
                     <input type="password" className="inp" placeholder="Leave blank for passwordless" value={kitchenPass} onChange={e => setKitchenPass(e.target.value)} />
                   </div>
                 </div>
                 <div className="btn-row">
-                  <button className="btn btn-blue" onClick={saveKitchen}>Save Password</button>
+                  <button className="btn btn-primary" onClick={saveKitchen}>Save Password</button>
                   <button className="btn btn-ghost" onClick={enablePasswordless}>Enable Passwordless</button>
                 </div>
               </div>
@@ -929,66 +1349,188 @@ export default function OwnerPage() {
           {/* ── PAYMENTS ── */}
           {activeSection === "payments" && (
             <div>
-              <div className="page-header">
-                <div className="page-title">Payments</div>
-                <div className="page-sub">Manage Stripe and payouts</div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Payments</div>
+                  <div className="ph-sub">Stripe Connect and payout management</div>
+                </div>
               </div>
-              <div className="card">
-                <div className="card-header">
-                  <div className="card-icon">💳</div>
+
+              <div className="card" style={{ maxWidth: 520 }}>
+                <div className="card-top">
                   <div>
                     <div className="card-title">Stripe Connect</div>
-                    <div className="card-sub">Receive payments directly to your bank</div>
+                    <div className="card-sub">Receive payments directly to your bank account</div>
                   </div>
+                  <div className="card-icon-wrap">💳</div>
                 </div>
-                <table className="info-table">
+                <table className="info-tbl">
                   <tbody>
-                    <tr className="info-row-tr">
-                      <td className="info-td label">Processor</td>
+                    <tr className="info-tr">
+                      <td className="info-td lbl">Processor</td>
                       <td className="info-td val">Stripe</td>
                     </tr>
-                    <tr className="info-row-tr">
-                      <td className="info-td label">Payouts</td>
+                    <tr className="info-tr">
+                      <td className="info-td lbl">Payouts</td>
                       <td className="info-td val">Via Stripe Express dashboard</td>
+                    </tr>
+                    <tr className="info-tr">
+                      <td className="info-td lbl">Fees</td>
+                      <td className="info-td val">Stripe standard rates apply</td>
                     </tr>
                   </tbody>
                 </table>
                 <div className="btn-row">
-                  <button className="btn btn-blue" onClick={connectStripe}>Connect Stripe</button>
+                  <button className="btn btn-primary" onClick={connectStripe}>Connect Stripe</button>
                   <button className="btn btn-ghost" onClick={withdraw}>Open Dashboard ↗</button>
                 </div>
               </div>
             </div>
           )}
 
+          {/* ── ACTION CENTER ── */}
+
+          {activeSection === "action" && (
+            <div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">
+                    Action Center
+                  </div>
+
+                  <div className="ph-sub">
+                    Failed orders and customer issues
+                  </div>
+                </div>
+              </div>
+
+              {issues.length === 0 && (
+                <div className="card">
+                  No active issues
+                </div>
+              )}
+
+              {issues.map((issue: any) => (
+                <div
+                  key={issue.id}
+                  className="card"
+                >
+                  <h3>
+                    Order #{issue.id}
+                  </h3>
+
+                  <br />
+
+                  <p>
+                    Customer:
+                    {" "}
+                    {issue.customerName ||
+                      "Unknown"}
+                  </p>
+
+                  <p>
+                    Email:
+                    {" "}
+                    {issue.customerEmail ||
+                      "Unknown"}
+                  </p>
+
+                  <p>
+                    Issue:
+                    {" "}
+                    {issue.issueType ||
+                      "General"}
+                  </p>
+
+                  <p>
+                    Status:
+                    {" "}
+                    {issue.status}
+                  </p>
+
+                  <p>
+                    Total:
+                    $
+                    {issue.total}
+                  </p>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      marginTop: 15,
+                    }}
+                  >
+                    <button
+                      className="btn btn-danger"
+                      onClick={async () => {
+                        await axios.patch(
+                          `http://localhost:3001/order/refund/${issue.stripePaymentIntentId}`,
+                        )
+
+                        loadActionCenter()
+
+                        showToast(
+                          "Refund issued",
+                        )
+                      }}
+                    >
+                      Refund
+                    </button>
+
+                    <button
+                      className="btn btn-primary"
+                      onClick={async () => {
+                        await axios.patch(
+                          `http://localhost:3001/maintenance/resolve/${issue.id}`,
+                        )
+
+                        loadActionCenter()
+
+                        showToast(
+                          "Issue resolved",
+                        )
+                      }}
+                    >
+                      Resolve
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* ── SERVICE FEE ── */}
           {activeSection === "fee" && (
             <div>
-              <div className="page-header">
-                <div className="page-title">Service Fee</div>
-                <div className="page-sub">Added to every order at checkout</div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Service Fee</div>
+                  <div className="ph-sub">Added to every order at checkout</div>
+                </div>
               </div>
-              <div className="card">
-                <div className="card-header">
-                  <div className="card-icon">％</div>
+
+              <div className="card" style={{ maxWidth: 380 }}>
+                <div className="card-top">
                   <div>
                     <div className="card-title">Fee Configuration</div>
-                    <div className="card-sub">Applies to every order subtotal</div>
+                    <div className="card-sub">Applied as a percentage of each order subtotal</div>
                   </div>
+                  <div className="card-icon-wrap">％</div>
                 </div>
-                <div className="field-grid one" style={{ maxWidth: 280 }}>
+                <div className="field-grid one">
                   <div className="field">
                     <div className="field-label">Percentage</div>
                     <input type="number" className="inp" placeholder="e.g. 5" value={serviceFee} onChange={e => setServiceFee(e.target.value)} />
                   </div>
                 </div>
                 {serviceFee && (
-                  <p style={{ fontSize: 12.5, color: "var(--text2)", marginTop: 8 }}>
-                    A <strong>{serviceFee}%</strong> fee will be added to every order.
-                  </p>
+                  <div className="section-intro" style={{ marginTop: 10, marginBottom: 0 }}>
+                    A <strong>{serviceFee}%</strong> fee will be added to every order total.
+                  </div>
                 )}
                 <div className="btn-row">
-                  <button className="btn btn-blue" onClick={saveServiceFee}>Save</button>
+                  <button className="btn btn-primary" onClick={saveServiceFee}>Save Fee</button>
                 </div>
               </div>
             </div>
@@ -997,36 +1539,50 @@ export default function OwnerPage() {
           {/* ── BRANDING ── */}
           {activeSection === "branding" && (
             <div>
-              <div className="page-header">
-                <div className="page-title">Branding</div>
-                <div className="page-sub">Your store name and logo visible to customers</div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Branding</div>
+                  <div className="ph-sub">Name and logo shown to your customers</div>
+                </div>
               </div>
-              <div className="card">
-                <div className="card-header">
-                  <div className="card-icon">✦</div>
+
+              <div className="card" style={{ maxWidth: 480 }}>
+                <div className="card-top">
                   <div>
                     <div className="card-title">Store Identity</div>
-                    <div className="card-sub">Shown on your public menu page</div>
+                    <div className="card-sub">Displayed on your public menu page</div>
                   </div>
+                  <div className="card-icon-wrap">✦</div>
                 </div>
-                <div className="field-grid one" style={{ maxWidth: 400 }}>
+                <div className="field-grid one">
                   <div className="field">
                     <div className="field-label">Cafe Name</div>
                     <input type="text" className="inp" placeholder="e.g. Barista Coffee" value={cafeName} onChange={e => setCafeName(e.target.value)} />
                   </div>
                 </div>
-                <div className="field-grid one" style={{ maxWidth: 400, marginTop: 10 }}>
+                <div className="field-grid one" style={{ marginTop: 10 }}>
                   <div className="field">
                     <div className="field-label">Logo</div>
                     <label className={`file-zone${logoFile ? " loaded" : ""}`}>
-                      <div className="file-zone-icon">🖼️</div>
+                      <div className="file-icon">🖼️</div>
                       <span>{logoFile ? (logoFile as any).name : "Click to upload logo"}</span>
                       <input type="file" accept="image/*" onChange={e => setLogoFile(e.target.files?.[0] || null)} />
                     </label>
                   </div>
                 </div>
+                {/* Change 7: cover photo upload field */}
+                <div className="field-grid one" style={{ marginTop: 10 }}>
+                  <div className="field">
+                    <div className="field-label">Cover Photo</div>
+                    <label className={`file-zone${coverFile ? " loaded" : ""}`}>
+                      <div className="file-icon">🏞️</div>
+                      <span>{coverFile ? (coverFile as any).name : "Click to upload cover photo"}</span>
+                      <input type="file" accept="image/*" onChange={e => setCoverFile(e.target.files?.[0] || null)} />
+                    </label>
+                  </div>
+                </div>
                 <div className="btn-row">
-                  <button className="btn btn-blue" onClick={saveBranding}>Save Branding</button>
+                  <button className="btn btn-primary" onClick={saveBranding}>Save Branding</button>
                 </div>
               </div>
             </div>
