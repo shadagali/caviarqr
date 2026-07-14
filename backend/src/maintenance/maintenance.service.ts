@@ -1,24 +1,507 @@
 import {
   Injectable,
   BadRequestException,
+  Logger,
 } from '@nestjs/common'
+
+import {
+  Cron,
+  CronExpression,
+} from '@nestjs/schedule'
 
 import { InjectRepository } from '@nestjs/typeorm'
 
-import { Repository } from 'typeorm'
+import {
+  Repository,
+  In,
+  LessThan,
+} from 'typeorm'
 
-import { Order } from '../order/order.entity'
+import Stripe from 'stripe'
+
+import {
+  Order,
+  OrderStatus,
+  OwnerIssueSeverity,
+  OwnerIssueType,
+} from '../order/order.entity'
+
 import { Business } from '../business/business.entity'
+
+import {
+  PendingOrder,
+  PendingOrderStatus,
+} from '../pending-order/pending-order.entity'
 
 @Injectable()
 export class MaintenanceService {
+  private readonly logger =
+    new Logger(
+      MaintenanceService.name,
+    )
+
+  private stripe: Stripe
+
+  private reconciliationRunning = false
+
   constructor(
     @InjectRepository(Order)
     private orderRepo: Repository<Order>,
 
     @InjectRepository(Business)
     private businessRepo: Repository<Business>,
-  ) {}
+
+    @InjectRepository(PendingOrder)
+    private pendingOrderRepo: Repository<PendingOrder>,
+  ) {
+    this.stripe = new Stripe(
+      'sk_test_51Sxh4AKZAB5HMPha5usVVKGeyWcWBEqiFjVMGwPCVOFbbx56mJaJOcZrObsxj35zM92583ovMqnfGUI31JcL1rbP00TUzKY5xh',
+      {
+        apiVersion:
+          '2026-02-25.clover',
+      },
+    )
+  }
+
+  // =========================
+  // 🚨 OWNER ACTION HELPER
+  // =========================
+
+  private async createOwnerIssue(
+    order: Order,
+    issue: OwnerIssueType,
+    severity: OwnerIssueSeverity,
+    message: string,
+  ) {
+    if (!order.id) {
+      return order
+    }
+
+    order.requiresOwnerAction = true
+    order.issueResolved = false
+
+    order.ownerIssueType = issue
+    order.ownerIssueSeverity = severity
+    order.ownerActionMessage = message
+
+    order.ownerActionCreatedAt =
+      new Date()
+
+    order.ownerActionId =
+      `ACT-${String(
+        order.id,
+      ).padStart(6, '0')}`
+
+    return this.orderRepo.save(
+      order,
+    )
+  }
+
+  // =========================
+  // 🔥 AUTOMATIC RECONCILIATION
+  // Runs every 1 minute
+  // =========================
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async runAutomaticReconciliation() {
+    if (this.reconciliationRunning) {
+      return
+    }
+
+    this.reconciliationRunning = true
+
+    try {
+      const result =
+        await this.reconcilePendingOrders()
+
+      if (result.checked > 0) {
+        this.logger.log(
+          `Automatic reconciliation checked ${result.checked} pending orders.`,
+        )
+      }
+    } catch (err: any) {
+      this.logger.error(
+        'AUTOMATIC_RECONCILIATION_FAILED',
+        err,
+      )
+    } finally {
+      this.reconciliationRunning = false
+    }
+  }
+
+  // =========================
+  // 🔥 RECONCILE PENDING ORDERS
+  // =========================
+
+  async reconcilePendingOrders() {
+    const cutoff =
+      new Date(
+        Date.now() -
+          2 * 60 * 1000,
+      )
+
+    const pendingOrders =
+      await this.pendingOrderRepo.find({
+        where: {
+          status: In([
+            PendingOrderStatus.CREATED,
+            PendingOrderStatus.CHECKOUT_CREATED,
+          ]),
+
+          createdAt:
+            LessThan(cutoff),
+
+          issueCreated: false,
+        },
+
+        order: {
+          id: 'ASC',
+        },
+
+        take: 50,
+      })
+
+    const results: any[] = []
+
+    for (const pending of pendingOrders) {
+      try {
+        // No Stripe session means payment was never opened properly.
+        // This is not a customer-paid issue.
+        if (!pending.stripeSessionId) {
+          pending.status =
+            PendingOrderStatus.EXPIRED
+
+          pending.failureReason =
+            'Checkout session was never created.'
+
+          await this.pendingOrderRepo.save(
+            pending,
+          )
+
+          results.push({
+            pendingOrderId:
+              pending.id,
+
+            status:
+              'EXPIRED_NO_SESSION',
+          })
+
+          continue
+        }
+
+        const session =
+          await this.stripe.checkout.sessions.retrieve(
+            pending.stripeSessionId,
+          )
+
+        const paymentIntentId =
+          typeof session.payment_intent ===
+          'string'
+            ? session.payment_intent
+            : session.payment_intent
+                ?.id || ''
+
+        pending.stripePaymentIntentId =
+          paymentIntentId || null
+
+        // Paid in Stripe but our normal webhook flow did not complete.
+        if (
+          session.payment_status ===
+            'paid' ||
+          session.status ===
+            'complete'
+        ) {
+          const existingByPaymentIntent =
+            paymentIntentId
+              ? await this.orderRepo.findOne({
+                  where: {
+                    stripePaymentIntentId:
+                      paymentIntentId,
+                  },
+                })
+              : null
+
+          const existingBySession =
+            await this.orderRepo.findOne({
+              where: {
+                stripeSessionId:
+                  pending.stripeSessionId,
+              },
+            })
+
+          const existingOrder =
+            existingByPaymentIntent ||
+            existingBySession
+
+          if (existingOrder) {
+            pending.status =
+              PendingOrderStatus.COMPLETED
+
+            pending.issueCreated =
+              true
+
+            pending.failureReason =
+              null
+
+            await this.pendingOrderRepo.save(
+              pending,
+            )
+
+            results.push({
+              pendingOrderId:
+                pending.id,
+
+              orderId:
+                existingOrder.id,
+
+              status:
+                'ORDER_ALREADY_EXISTS',
+            })
+
+            continue
+          }
+
+          const business =
+            await this.businessRepo.findOne({
+              where: {
+                id: pending.businessId,
+              },
+            })
+
+          if (!business) {
+            pending.status =
+              PendingOrderStatus.FAILED
+
+            pending.failureReason =
+              'Business not found during reconciliation.'
+
+            pending.issueCreated =
+              true
+
+            await this.pendingOrderRepo.save(
+              pending,
+            )
+
+            results.push({
+              pendingOrderId:
+                pending.id,
+
+              status:
+                'FAILED_BUSINESS_NOT_FOUND',
+            })
+
+            continue
+          }
+
+          const total =
+            Number(
+              (
+                (session.amount_total ||
+                  pending.total * 100 ||
+                  0) / 100
+              ).toFixed(2),
+            )
+
+          const processingFeePercent =
+            business.processingFeePercent ??
+            1.75
+
+          const platformFee =
+            Number(
+              (
+                total *
+                (processingFeePercent /
+                  100)
+              ).toFixed(2),
+            )
+
+          const order =
+            new Order()
+
+          order.businessId =
+            business.id
+
+          order.storeCode =
+            business.storeCode ||
+            pending.storeCode
+
+          order.items =
+            pending.items || []
+
+          order.total =
+            total
+
+          order.platformFee =
+            platformFee
+
+          order.tableNumber =
+            pending.tableNumber || 0
+
+          order.customerEmail =
+            session.customer_details?.email ||
+            ''
+
+          order.customerName =
+            session.customer_details?.name ||
+            ''
+
+          order.status =
+            OrderStatus.NEW
+
+          order.stripePaymentIntentId =
+            paymentIntentId || null
+
+          order.stripeSessionId =
+            pending.stripeSessionId
+
+          order.kitchenAcknowledged =
+            false
+
+          order.kitchenAcknowledgedAt =
+            null
+
+          order.acknowledgementRetries =
+            0
+
+          order.issueType =
+            'WEBHOOK_RECOVERED'
+
+          order.issueResolved =
+            false
+
+          order.requiresOwnerAction =
+            false
+
+          order.ownerIssueType =
+            null
+
+          order.ownerIssueSeverity =
+            null
+
+          order.ownerActionMessage =
+            null
+
+          order.ownerActionId =
+            null
+
+          order.ownerActionResolvedBy =
+            null
+
+          order.ownerActionResolvedAt =
+            null
+
+          order.ownerActionCreatedAt =
+            null
+
+          let saved =
+            await this.orderRepo.save(
+              order,
+            )
+
+          saved =
+            await this.createOwnerIssue(
+              saved,
+              OwnerIssueType.WEBHOOK_TIMEOUT,
+              OwnerIssueSeverity.CRITICAL,
+              'Stripe shows this customer paid, but the normal webhook flow did not finish. This order was recovered by reconciliation. Check the kitchen and refund the customer if the order was not prepared.',
+            )
+
+          pending.status =
+            PendingOrderStatus.COMPLETED
+
+          pending.issueCreated =
+            true
+
+          pending.failureReason =
+            'Paid order recovered by reconciliation.'
+
+          await this.pendingOrderRepo.save(
+            pending,
+          )
+
+          results.push({
+            pendingOrderId:
+              pending.id,
+
+            orderId:
+              saved.id,
+
+            status:
+              'RECOVERED_PAID_ORDER',
+          })
+
+          continue
+        }
+
+        // Customer never completed payment.
+        if (
+          session.status ===
+            'expired' ||
+          session.payment_status ===
+            'unpaid'
+        ) {
+          pending.status =
+            PendingOrderStatus.EXPIRED
+
+          pending.failureReason =
+            'Checkout was not paid.'
+
+          await this.pendingOrderRepo.save(
+            pending,
+          )
+
+          results.push({
+            pendingOrderId:
+              pending.id,
+
+            status:
+              'EXPIRED_UNPAID',
+          })
+
+          continue
+        }
+
+        results.push({
+          pendingOrderId:
+            pending.id,
+
+          status:
+            'STILL_PENDING',
+        })
+      } catch (err: any) {
+        this.logger.error(
+          `RECONCILE_PENDING_ORDER_FAILED: ${pending.id}`,
+          err,
+        )
+
+        pending.failureReason =
+          err?.message ||
+          'Reconciliation failed.'
+
+        await this.pendingOrderRepo.save(
+          pending,
+        )
+
+        results.push({
+          pendingOrderId:
+            pending.id,
+
+          status:
+            'ERROR',
+
+          message:
+            err?.message,
+        })
+      }
+    }
+
+    return {
+      checked:
+        pendingOrders.length,
+
+      results,
+    }
+  }
 
   // =========================
   // 🔥 GET ALL OPEN ISSUES
@@ -27,6 +510,7 @@ export class MaintenanceService {
   async getIssues() {
     return this.orderRepo.find({
       where: {
+        requiresOwnerAction: true,
         issueResolved: false,
       },
       order: {
@@ -55,6 +539,14 @@ export class MaintenanceService {
 
     order.issueResolved = true
     order.issueType = ''
+    order.requiresOwnerAction = false
+    order.ownerIssueType = null
+    order.ownerIssueSeverity = null
+    order.ownerActionMessage = null
+    order.ownerActionResolvedAt =
+      new Date()
+    order.ownerActionResolvedBy =
+      'MAINTENANCE'
 
     await this.orderRepo.save(order)
 
@@ -76,9 +568,6 @@ export class MaintenanceService {
   }) {
     console.log('EMAIL CUSTOMER')
     console.log(body)
-
-    // TODO:
-    // Send email with Resend
 
     return {
       success: true,
@@ -122,6 +611,7 @@ export class MaintenanceService {
       unresolvedIssues:
         orders.filter(
           (o) =>
+            o.requiresOwnerAction &&
             !o.issueResolved,
         ).length,
 
@@ -129,7 +619,7 @@ export class MaintenanceService {
         orders.filter(
           (o) =>
             o.status ===
-            'REFUNDED',
+            OrderStatus.REFUNDED,
         ).length,
     }
   }
@@ -157,14 +647,16 @@ export class MaintenanceService {
 
     const unresolvedIssues =
       orders.filter(
-        (o) => !o.issueResolved,
+        (o) =>
+          o.requiresOwnerAction &&
+          !o.issueResolved,
       ).length
 
     const refundedOrders =
       orders.filter(
         (o) =>
           o.status ===
-          'REFUNDED',
+          OrderStatus.REFUNDED,
       ).length
 
     const platformFees =
@@ -247,9 +739,7 @@ export class MaintenanceService {
 
     const todayOrders =
       orders.filter(
-        (
-          o,
-        ) =>
+        (o) =>
           new Date(
             o.createdAt,
           ) >= today,
@@ -257,9 +747,7 @@ export class MaintenanceService {
 
     const monthOrders =
       orders.filter(
-        (
-          o,
-        ) =>
+        (o) =>
           new Date(
             o.createdAt,
           ) >= month,
@@ -270,10 +758,7 @@ export class MaintenanceService {
 
       todayRevenue:
         todayOrders.reduce(
-          (
-            s,
-            o,
-          ) =>
+          (s, o) =>
             s +
             o.total,
           0,
@@ -281,10 +766,7 @@ export class MaintenanceService {
 
       monthRevenue:
         monthOrders.reduce(
-          (
-            s,
-            o,
-          ) =>
+          (s, o) =>
             s +
             o.total,
           0,
@@ -292,10 +774,7 @@ export class MaintenanceService {
 
       allTimeRevenue:
         orders.reduce(
-          (
-            s,
-            o,
-          ) =>
+          (s, o) =>
             s +
             o.total,
           0,
@@ -303,10 +782,7 @@ export class MaintenanceService {
 
       todayPlatformFees:
         todayOrders.reduce(
-          (
-            s,
-            o,
-          ) =>
+          (s, o) =>
             s +
             o.platformFee,
           0,
@@ -314,10 +790,7 @@ export class MaintenanceService {
 
       monthPlatformFees:
         monthOrders.reduce(
-          (
-            s,
-            o,
-          ) =>
+          (s, o) =>
             s +
             o.platformFee,
           0,
@@ -325,10 +798,7 @@ export class MaintenanceService {
 
       allTimePlatformFees:
         orders.reduce(
-          (
-            s,
-            o,
-          ) =>
+          (s, o) =>
             s +
             o.platformFee,
           0,
@@ -337,10 +807,7 @@ export class MaintenanceService {
       averageOrder:
         orders.length
           ? orders.reduce(
-              (
-                s,
-                o,
-              ) =>
+              (s, o) =>
                 s +
                 o.total,
               0,
@@ -350,18 +817,15 @@ export class MaintenanceService {
 
       refunds:
         orders.filter(
-          (
-            o,
-          ) =>
+          (o) =>
             o.status ===
-            'REFUNDED',
+            OrderStatus.REFUNDED,
         ).length,
 
       openIssues:
         orders.filter(
-          (
-            o,
-          ) =>
+          (o) =>
+            o.requiresOwnerAction &&
             !o.issueResolved,
         ).length,
 

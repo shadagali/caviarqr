@@ -42,6 +42,55 @@ export class Business {
     | string
     | null
 
+  @Column({
+    default: false,
+  })
+  stripeChargesEnabled: boolean
+
+  @Column({
+    default: false,
+  })
+  stripePayoutsEnabled: boolean
+
+  @Column({
+    default: false,
+  })
+  stripeDetailsSubmitted: boolean
+
+  @Column({
+    default: false,
+  })
+  stripeAccountReady: boolean
+
+  @Column({
+    default: false,
+  })
+  stripeIssueActive: boolean
+
+  @Column({
+    type: 'text',
+    nullable: true,
+  })
+  stripeIssueMessage:
+    | string
+    | null
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  stripeIssueCreatedAt:
+    | Date
+    | null
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  stripeLastCheckedAt:
+    | Date
+    | null
+
   // =========================
   // KITCHEN
   // =========================

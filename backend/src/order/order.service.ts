@@ -57,7 +57,6 @@ export class OrderService {
     severity: OwnerIssueSeverity,
     message: string,
   ) {
-
     if (
       order.requiresOwnerAction &&
       order.ownerIssueSeverity ===
@@ -68,6 +67,9 @@ export class OrderService {
 
     order.requiresOwnerAction = true
 
+    order.issueResolved = false
+    order.issueType = issue
+
     order.ownerIssueType = issue
 
     order.ownerIssueSeverity = severity
@@ -76,6 +78,12 @@ export class OrderService {
 
     order.ownerActionCreatedAt =
       new Date()
+
+    order.ownerActionResolvedAt =
+      null
+
+    order.ownerActionResolvedBy =
+      null
 
     if (!order.id) {
       throw new Error(
@@ -429,30 +437,36 @@ export class OrderService {
   async refundOrder(
     paymentIntentId: string,
   ) {
+    const order =
+      await this.orderRepo.findOne({
+        where: {
+          stripePaymentIntentId:
+            paymentIntentId,
+        },
+      })
+
+    if (!order) {
+      throw new BadRequestException(
+        'Order not found',
+      )
+    }
+
+    if (
+      order.status ===
+      OrderStatus.REFUNDED
+    ) {
+      throw new BadRequestException(
+        'Already refunded',
+      )
+    }
+
+    if (!order.stripePaymentIntentId) {
+      throw new BadRequestException(
+        'Order has no Stripe Payment Intent.',
+      )
+    }
+
     try {
-      const order =
-        await this.orderRepo.findOne({
-          where: {
-            stripePaymentIntentId:
-              paymentIntentId,
-          },
-        })
-
-      if (!order) {
-        throw new BadRequestException(
-          'Order not found',
-        )
-      }
-
-      if (
-        order.status ===
-        OrderStatus.REFUNDED
-      ) {
-        throw new BadRequestException(
-          'Already refunded',
-        )
-      }
-
       console.log(
         '🔥 REFUNDING:',
         order.stripePaymentIntentId,
@@ -466,13 +480,6 @@ export class OrderService {
         balance.available,
       )
 
-      if (!order.stripePaymentIntentId) {
-        throw new BadRequestException(
-          'Order has no Stripe Payment Intent.',
-        )
-      }
-
-      // ✅ NORMAL REFUND
       const refund =
         await this.stripe.refunds.create(
           {
@@ -535,15 +542,39 @@ export class OrderService {
       }
 
       return saved
-    } catch (err) {
+    } catch (err: any) {
       console.log(err)
 
       this.logger.error(
-        'Refund update failed',
+        'Refund failed in Stripe',
         err,
       )
 
-      throw err
+      await this.flagOwnerAction(
+        order,
+        OwnerIssueType.REFUND_FAILED,
+        OwnerIssueSeverity.CRITICAL,
+        `Refund failed in Stripe. PaymentIntent: ${order.stripePaymentIntentId}. Error: ${
+          err?.message ||
+          'Unknown refund error'
+        }. Please retry the refund from Stripe or contact support.`,
+      )
+
+      try {
+        this.gateway.emitOrderUpdate(
+          order.businessId,
+          order,
+        )
+      } catch (socketErr) {
+        this.logger.error(
+          'Socket update failed after refund failure',
+          socketErr,
+        )
+      }
+
+      throw new BadRequestException(
+        'Refund failed. Action Center issue created.',
+      )
     }
   }
 

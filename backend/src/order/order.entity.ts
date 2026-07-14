@@ -44,6 +44,9 @@ export enum OwnerIssueType {
   KITCHEN_ACK_TIMEOUT =
     'KITCHEN_ACK_TIMEOUT',
 
+  WEBHOOK_TIMEOUT =
+    'WEBHOOK_TIMEOUT',
+
   INVALID_ORDER_DATA =
     'INVALID_ORDER_DATA',
 
@@ -168,6 +171,27 @@ export class Order {
     nullable: true,
   })
   stripeSessionId: string | null
+
+  // =========================
+  // KITCHEN ACKNOWLEDGEMENT
+  // =========================
+
+  @Column({
+    default: false,
+  })
+  kitchenAcknowledged: boolean
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  kitchenAcknowledgedAt: Date | null
+
+  @Column({
+    type: 'int',
+    default: 0,
+  })
+  acknowledgementRetries: number
 
   // =========================
   // ACTION CENTER

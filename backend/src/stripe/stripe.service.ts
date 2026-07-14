@@ -14,6 +14,11 @@ import { Repository } from 'typeorm'
 
 import { Business } from '../business/business.entity'
 
+import {
+  PendingOrder,
+  PendingOrderStatus,
+} from '../pending-order/pending-order.entity'
+
 @Injectable()
 export class StripeService {
   private readonly logger =
@@ -23,45 +28,46 @@ export class StripeService {
 
   private stripe: Stripe
 
+  private readonly frontendUrl =
+    process.env.FRONTEND_URL ||
+    'http://localhost:3000'
+
   constructor(
     @InjectRepository(Business)
     private businessRepo: Repository<Business>,
-  ) {
-    // 🔥 DIRECT STRIPE KEY
-    const key =
-      'sk_test_51Sxh4AKZAB5HMPha5usVVKGeyWcWBEqiFjVMGwPCVOFbbx56mJaJOcZrObsxj35zM92583ovMqnfGUI31JcL1rbP00TUzKY5xh'
 
-    console.log(
-      '🔥 USING STRIPE KEY:',
-      key,
-    )
+    @InjectRepository(PendingOrder)
+    private pendingOrderRepo: Repository<PendingOrder>,
+  ) {
+    const key =
+      process.env.STRIPE_SECRET_KEY
 
     if (
       !key ||
       !key.startsWith('sk_')
     ) {
       throw new Error(
-        '❌ Invalid Stripe key',
+        '❌ Missing or invalid STRIPE_SECRET_KEY in .env',
       )
     }
-
-    this.logger.log(
-      '✅ Stripe initialized',
-    )
 
     this.stripe = new Stripe(
       key,
       {
-        // 🔥 REQUIRED BY YOUR INSTALLED STRIPE SDK
         apiVersion:
           '2026-02-25.clover',
       },
+    )
+
+    this.logger.log(
+      '✅ Stripe initialized from environment',
     )
   }
 
   // =========================
   // 🔥 CHECKOUT
   // =========================
+
   async createCheckoutSession(
     data: {
       businessId: number
@@ -70,6 +76,10 @@ export class StripeService {
       items: any[]
     },
   ) {
+    let savedPendingOrder:
+      | PendingOrder
+      | null = null
+
     try {
       const business =
         await this.businessRepo.findOne({
@@ -146,14 +156,24 @@ export class StripeService {
         )
 
       const finalTotal =
-        subtotal +
-        serviceFeeAmount
+        Number(
+          (
+            subtotal +
+            serviceFeeAmount
+          ).toFixed(2),
+        )
+
+      const processingFeePercent =
+        Number(
+          business.processingFeePercent ??
+            1.75,
+        )
 
       const platformFee =
         Math.round(
           finalTotal *
             100 *
-            0.0075,
+            (processingFeePercent / 100),
         )
 
       let paymentIntentData:
@@ -161,72 +181,286 @@ export class StripeService {
         | undefined =
         undefined
 
-      if (
-        business.stripeAccountId
-      ) {
-        try {
-          const acc =
-            await this.stripe.accounts.retrieve(
-              business.stripeAccountId,
-            )
+      if (!business.stripeAccountId) {
+        business.stripeChargesEnabled =
+          false
 
-          if (
-            acc.charges_enabled &&
-            acc.payouts_enabled
-          ) {
-            paymentIntentData =
+        business.stripePayoutsEnabled =
+          false
+
+        business.stripeDetailsSubmitted =
+          false
+
+        business.stripeAccountReady =
+          false
+
+        business.stripeIssueActive =
+          true
+
+        business.stripeIssueMessage =
+          'Stripe account is not connected. Connect Stripe before accepting customer payments.'
+
+        business.stripeIssueCreatedAt =
+          business.stripeIssueCreatedAt ||
+          new Date()
+
+        business.stripeLastCheckedAt =
+          new Date()
+
+        await this.businessRepo.save(
+          business,
+        )
+
+        throw new BadRequestException(
+          'Restaurant payments are not ready yet. Please ask the owner to complete Stripe setup.',
+        )
+      }
+
+      try {
+        const acc =
+          await this.stripe.accounts.retrieve(
+            business.stripeAccountId,
+          )
+
+        const chargesEnabled =
+          Boolean(
+            acc.charges_enabled,
+          )
+
+        const payoutsEnabled =
+          Boolean(
+            acc.payouts_enabled,
+          )
+
+        const detailsSubmitted =
+          Boolean(
+            acc.details_submitted,
+          )
+
+        const stripeReady =
+          chargesEnabled &&
+          payoutsEnabled &&
+          detailsSubmitted
+
+        business.stripeChargesEnabled =
+          chargesEnabled
+
+        business.stripePayoutsEnabled =
+          payoutsEnabled
+
+        business.stripeDetailsSubmitted =
+          detailsSubmitted
+
+        business.stripeAccountReady =
+          stripeReady
+
+        business.stripeIssueActive =
+          !stripeReady
+
+        business.stripeIssueMessage =
+          stripeReady
+            ? null
+            : 'Stripe account is not fully ready. Complete onboarding before accepting customer payments.'
+
+        business.stripeIssueCreatedAt =
+          stripeReady
+            ? null
+            : business.stripeIssueCreatedAt ||
+              new Date()
+
+        business.stripeLastCheckedAt =
+          new Date()
+
+        await this.businessRepo.save(
+          business,
+        )
+
+        if (!stripeReady) {
+          throw new BadRequestException(
+            'Restaurant payments are not ready yet. Please ask the owner to complete Stripe setup.',
+          )
+        }
+
+        paymentIntentData =
+          {
+            application_fee_amount:
+              platformFee,
+
+            transfer_data:
               {
-                application_fee_amount:
-                  platformFee,
-
-                transfer_data:
-                  {
-                    destination:
-                      business.stripeAccountId,
-                  },
-              }
+                destination:
+                  business.stripeAccountId,
+              },
           }
-        } catch {}
+      } catch (err: any) {
+        if (
+          err instanceof
+          BadRequestException
+        ) {
+          throw err
+        }
+
+        business.stripeChargesEnabled =
+          false
+
+        business.stripePayoutsEnabled =
+          false
+
+        business.stripeDetailsSubmitted =
+          false
+
+        business.stripeAccountReady =
+          false
+
+        business.stripeIssueActive =
+          true
+
+        business.stripeIssueMessage =
+          `Stripe account check failed: ${
+            err?.message ||
+            'Unknown Stripe error'
+          }`
+
+        business.stripeIssueCreatedAt =
+          business.stripeIssueCreatedAt ||
+          new Date()
+
+        business.stripeLastCheckedAt =
+          new Date()
+
+        await this.businessRepo.save(
+          business,
+        )
+
+        this.logger.warn(
+          `STRIPE_ACCOUNT_CHECK_FAILED: ${err?.message}`,
+        )
+
+        throw new BadRequestException(
+          'Could not verify restaurant payment account. Please try again or contact support.',
+        )
       }
 
       const safeItems =
         data.items.map(
-          (i) => ({
-            id: i.id,
-            name:
-              i.name ||
-              'Item',
-            qty:
-              Number(
-                i.qty || 1,
-              ),
-            price:
+          (i) => {
+            const originalPrice =
               Number(
                 i.price || 0,
-              ),
-          }),
+              )
+
+            const discount =
+              Number(
+                i.discount || 0,
+              )
+
+            const finalPrice =
+              discount > 0
+                ? originalPrice *
+                  (1 -
+                    discount / 100)
+                : originalPrice
+
+            return {
+              id: i.id,
+
+              name:
+                i.name ||
+                'Item',
+
+              qty:
+                Number(
+                  i.qty || 1,
+                ),
+
+              price:
+                Number(
+                  finalPrice.toFixed(2),
+                ),
+
+              originalPrice,
+
+              discount,
+            }
+          },
         )
 
-      // 🔥 DEBUG
+      // =========================
+      // 🔥 CREATE PENDING ORDER FIRST
+      // =========================
+
+      const pendingOrder =
+        this.pendingOrderRepo.create({
+          businessId:
+            business.id,
+
+          storeCode:
+            data.storeCode,
+
+          tableNumber:
+            Number(
+              data.tableNumber ||
+                0,
+            ),
+
+          items:
+            safeItems,
+
+          subtotal:
+            Number(
+              subtotal.toFixed(2),
+            ),
+
+          serviceFeeAmount,
+
+          total:
+            finalTotal,
+
+          stripeSessionId:
+            null,
+
+          stripePaymentIntentId:
+            null,
+
+          status:
+            PendingOrderStatus.CREATED,
+
+          issueCreated:
+            false,
+
+          failureReason:
+            null,
+        })
+
+      savedPendingOrder =
+        await this.pendingOrderRepo.save(
+          pendingOrder,
+        )
+
+      console.log(
+        '✅ PENDING ORDER CREATED:',
+        savedPendingOrder.id,
+      )
+
       console.log(
         '🔥 CHECKOUT PAYLOAD:',
         {
+          pendingOrderId:
+            savedPendingOrder.id,
+
           storeCode:
             data.storeCode,
 
           tableNumber:
             data.tableNumber,
 
-          items: safeItems,
+          items:
+            safeItems,
+
+          total:
+            finalTotal,
         },
       )
-
-      const {
-        businessId,
-        storeCode,
-        tableNumber,
-        items,
-      } = data
 
       const session =
         await this.stripe.checkout.sessions.create(
@@ -248,53 +482,33 @@ export class StripeService {
               },
 
             line_items: [
-              ...data.items.map(
-                (i) => {
-                  const finalPrice =
-                    Number(
-                      i.discount ||
-                        0,
-                    ) > 0
-                      ? Number(
-                          i.price,
-                        ) *
-                        (1 -
+              ...safeItems.map(
+                (i) => ({
+                  price_data:
+                    {
+                      currency:
+                        'usd',
+
+                      product_data:
+                        {
+                          name:
+                            i.name ||
+                            'Item',
+                        },
+
+                      unit_amount:
+                        Math.round(
                           Number(
-                            i.discount ||
-                              0,
-                          ) /
-                            100)
-                      : Number(
-                          i.price,
-                        )
+                            i.price || 0,
+                          ) * 100,
+                        ),
+                    },
 
-                  return {
-                    price_data:
-                      {
-                        currency:
-                          'usd',
-
-                        product_data:
-                          {
-                            name:
-                              i.name ||
-                              'Item',
-                          },
-
-                        unit_amount:
-                          Math.round(
-                            finalPrice *
-                              100,
-                          ),
-                      },
-
-                    quantity:
-                      Number(
-                        i.qty ||
-                          1,
-                      ),
-                  }
-                },
+                  quantity:
+                    Number(
+                      i.qty || 1,
+                    ),
+                }),
               ),
 
               ...(serviceFeeAmount >
@@ -333,6 +547,11 @@ export class StripeService {
               : {}),
 
             metadata: {
+              pendingOrderId:
+                String(
+                  savedPendingOrder.id,
+                ),
+
               businessId:
                 String(
                   business.id,
@@ -346,37 +565,30 @@ export class StripeService {
                   data.tableNumber,
                 ),
 
-              items: JSON.stringify(
-                data.items.map(
-                  (i) => ({
-                    id: i.id,
-
-                    name:
-                      i.name || 'Item',
-
-                    qty:
-                      Number(
-                        i.qty || 1,
-                      ),
-
-                    price:
-                      Number(
-                        i.price || 0,
-                      ),
-                  }),
+              items:
+                JSON.stringify(
+                  safeItems,
                 ),
-              ),
             },
 
             success_url:
-              `http://localhost:3000/store/${data.storeCode}?success=1`,
+              `${this.frontendUrl}/store/${data.storeCode}?table=${data.tableNumber}&success=1&pendingOrderId=${savedPendingOrder.id}`,
 
             cancel_url:
-              `http://localhost:3000/store/${data.storeCode}`,
+              `${this.frontendUrl}/store/${data.storeCode}?table=${data.tableNumber}`,
           },
         )
 
-      // 🔥 DEBUG
+      savedPendingOrder.stripeSessionId =
+        session.id
+
+      savedPendingOrder.status =
+        PendingOrderStatus.CHECKOUT_CREATED
+
+      await this.pendingOrderRepo.save(
+        savedPendingOrder,
+      )
+
       console.log(
         '🔥 STRIPE SESSION CREATED:',
         session.id,
@@ -387,25 +599,29 @@ export class StripeService {
         session.metadata,
       )
 
-      // 🔥 SAFE NON-BLOCKING TEST
-      setTimeout(() => {
-        try {
-          console.log(
-            '🔥 ORDER FLOW ACTIVE',
-          )
-        } catch (err: any) {
-          console.log(
-            '⚠️ ORDER FLOW ERROR:',
-            err.message,
-          )
-        }
-      }, 100)
-
       return {
         url: session.url,
+
+        pendingOrderId:
+          savedPendingOrder.id,
       }
     } catch (err: any) {
       console.log(err)
+
+      if (savedPendingOrder) {
+        try {
+          savedPendingOrder.status =
+            PendingOrderStatus.FAILED
+
+          savedPendingOrder.failureReason =
+            err?.message ||
+            'Checkout failed'
+
+          await this.pendingOrderRepo.save(
+            savedPendingOrder,
+          )
+        } catch {}
+      }
 
       throw new BadRequestException(
         err?.message ||
@@ -415,8 +631,190 @@ export class StripeService {
   }
 
   // =========================
+  // 🔥 STRIPE ACCOUNT STATUS HELPER
+  // =========================
+
+  private async syncStripeAccountStatus(
+    business: Business,
+  ) {
+    const now = new Date()
+
+    if (!business.stripeAccountId) {
+      business.stripeChargesEnabled =
+        false
+
+      business.stripePayoutsEnabled =
+        false
+
+      business.stripeDetailsSubmitted =
+        false
+
+      business.stripeAccountReady =
+        false
+
+      business.stripeIssueActive =
+        true
+
+      business.stripeIssueMessage =
+        'Stripe account is not connected. Connect Stripe before accepting real payments and payouts.'
+
+      business.stripeIssueCreatedAt =
+        business.stripeIssueCreatedAt ||
+        now
+
+      business.stripeLastCheckedAt =
+        now
+
+      await this.businessRepo.save(
+        business,
+      )
+
+      return {
+        connected: false,
+        charges_enabled: false,
+        payouts_enabled: false,
+        details_submitted: false,
+        ready: false,
+        issueActive: true,
+        message:
+          business.stripeIssueMessage,
+      }
+    }
+
+    try {
+      const acc =
+        await this.stripe.accounts.retrieve(
+          business.stripeAccountId,
+        )
+
+      const chargesEnabled =
+        Boolean(
+          acc.charges_enabled,
+        )
+
+      const payoutsEnabled =
+        Boolean(
+          acc.payouts_enabled,
+        )
+
+      const detailsSubmitted =
+        Boolean(
+          acc.details_submitted,
+        )
+
+      const ready =
+        chargesEnabled &&
+        payoutsEnabled &&
+        detailsSubmitted
+
+      business.stripeChargesEnabled =
+        chargesEnabled
+
+      business.stripePayoutsEnabled =
+        payoutsEnabled
+
+      business.stripeDetailsSubmitted =
+        detailsSubmitted
+
+      business.stripeAccountReady =
+        ready
+
+      business.stripeIssueActive =
+        !ready
+
+      business.stripeIssueMessage =
+        ready
+          ? null
+          : 'Stripe account is not fully ready. Complete onboarding so charges and payouts work correctly.'
+
+      business.stripeIssueCreatedAt =
+        ready
+          ? null
+          : business.stripeIssueCreatedAt ||
+            now
+
+      business.stripeLastCheckedAt =
+        now
+
+      await this.businessRepo.save(
+        business,
+      )
+
+      return {
+        connected: true,
+        accountId:
+          business.stripeAccountId,
+
+        charges_enabled:
+          chargesEnabled,
+
+        payouts_enabled:
+          payoutsEnabled,
+
+        details_submitted:
+          detailsSubmitted,
+
+        ready,
+
+        issueActive:
+          !ready,
+
+        message:
+          business.stripeIssueMessage,
+      }
+    } catch (err: any) {
+      business.stripeChargesEnabled =
+        false
+
+      business.stripePayoutsEnabled =
+        false
+
+      business.stripeDetailsSubmitted =
+        false
+
+      business.stripeAccountReady =
+        false
+
+      business.stripeIssueActive =
+        true
+
+      business.stripeIssueMessage =
+        `Stripe account status check failed: ${
+          err?.message ||
+          'Unknown Stripe error'
+        }`
+
+      business.stripeIssueCreatedAt =
+        business.stripeIssueCreatedAt ||
+        now
+
+      business.stripeLastCheckedAt =
+        now
+
+      await this.businessRepo.save(
+        business,
+      )
+
+      return {
+        connected: false,
+        accountId:
+          business.stripeAccountId,
+
+        charges_enabled: false,
+        payouts_enabled: false,
+        details_submitted: false,
+        ready: false,
+        issueActive: true,
+        message:
+          business.stripeIssueMessage,
+      }
+    }
+  }
+
+  // =========================
   // 🔥 CONNECT
   // =========================
+
   async createConnectLink(
     businessId: number,
   ) {
@@ -483,10 +881,10 @@ export class StripeService {
             accountId,
 
           refresh_url:
-            'http://localhost:3000/dashboard/owner',
+            `${this.frontendUrl}/dashboard/owner`,
 
           return_url:
-            'http://localhost:3000/dashboard/owner',
+            `${this.frontendUrl}/dashboard/owner`,
 
           type:
             'account_onboarding',
@@ -573,24 +971,15 @@ export class StripeService {
         },
       })
 
-    if (
-      !business?.stripeAccountId
-    ) {
-      return null
-    }
-
-    const acc =
-      await this.stripe.accounts.retrieve(
-        business.stripeAccountId,
+    if (!business) {
+      throw new BadRequestException(
+        'Business not found',
       )
-
-    return {
-      charges_enabled:
-        acc.charges_enabled,
-
-      payouts_enabled:
-        acc.payouts_enabled,
     }
+
+    return this.syncStripeAccountStatus(
+      business,
+    )
   }
 
   async refundOrder(

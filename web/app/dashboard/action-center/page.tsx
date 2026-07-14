@@ -19,6 +19,11 @@ type Order = {
   stripePaymentIntentId: string
   createdAt: string
   items: any[]
+  requiresOwnerAction: boolean
+  ownerIssueType: string | null
+  ownerIssueSeverity: string | null
+  ownerActionMessage: string | null
+  ownerActionId: string | null
 }
 
 export default function ActionCenter() {
@@ -42,19 +47,18 @@ export default function ActionCenter() {
   const [autoRefresh, setAutoRefresh] =
     useState(true)
 
-  const [note, setNote] =
-    useState('')
-
-  const [sendingEmail, setSendingEmail] =
-    useState(false)
-
   async function loadIssues() {
     try {
       const res = await axios.get(
         `${API}/maintenance/issues`,
       )
 
-      setOrders(res.data)
+      setOrders(
+        res.data.filter(
+          (o: Order) =>
+            o.requiresOwnerAction === true,
+        ),
+      )
     } catch (e) {
       console.log(e)
     } finally {
@@ -161,37 +165,41 @@ export default function ActionCenter() {
     loadIssues()
   }
 
-  async function emailCustomer() {
-    if (!selected)
-      return
+  function timeAgo(dateString: string) {
+    const seconds = Math.floor(
+      (Date.now() -
+        new Date(dateString).getTime()) /
+        1000,
+    )
 
-    try {
-      setSendingEmail(true)
+    if (seconds < 60)
+      return 'just now'
 
-      await axios.post(
-        `${API}/maintenance/email-customer`,
-        {
-          orderId: selected.id,
-          email:
-            selected.customerEmail,
-          name:
-            selected.customerName,
-          note,
-        },
-      )
+    const minutes = Math.floor(
+      seconds / 60,
+    )
 
-      alert(
-        'Email sent successfully.',
-      )
-    } catch (err) {
-      console.log(err)
+    if (minutes < 60)
+      return `${minutes} minute${
+        minutes === 1 ? '' : 's'
+      } ago`
 
-      alert(
-        'Failed to send email.',
-      )
-    } finally {
-      setSendingEmail(false)
-    }
+    const hours = Math.floor(
+      minutes / 60,
+    )
+
+    if (hours < 24)
+      return `${hours} hour${
+        hours === 1 ? '' : 's'
+      } ago`
+
+    const days = Math.floor(
+      hours / 24,
+    )
+
+    return `${days} day${
+      days === 1 ? '' : 's'
+    } ago`
   }
 
   return (
@@ -348,7 +356,7 @@ export default function ActionCenter() {
 
       </div>
 
-      <div className="grid grid-cols-4 gap-4 mt-6">
+      <div className="grid grid-cols-5 gap-4 mt-6">
 
         <div className="bg-white rounded-xl shadow p-5">
           <div className="text-gray-500">
@@ -362,13 +370,13 @@ export default function ActionCenter() {
 
         <div className="bg-white rounded-xl shadow p-5">
           <div className="text-gray-500">
-            NEW
+            🚨 Critical
           </div>
 
           <div className="text-3xl font-bold mt-2">
             {
               orders.filter(
-                o => o.status === 'NEW',
+                o => o.ownerIssueSeverity === 'CRITICAL',
               ).length
             }
           </div>
@@ -376,13 +384,13 @@ export default function ActionCenter() {
 
         <div className="bg-white rounded-xl shadow p-5">
           <div className="text-gray-500">
-            PREPARING
+            ⚠️ Warning
           </div>
 
           <div className="text-3xl font-bold mt-2">
             {
               orders.filter(
-                o => o.status === 'PREPARING',
+                o => o.ownerIssueSeverity === 'WARNING',
               ).length
             }
           </div>
@@ -390,7 +398,23 @@ export default function ActionCenter() {
 
         <div className="bg-white rounded-xl shadow p-5">
           <div className="text-gray-500">
-            Revenue At Risk
+            ℹ️ Info
+          </div>
+
+          <div className="text-3xl font-bold mt-2">
+            {
+              orders.filter(
+                o =>
+                  o.ownerIssueSeverity !== 'CRITICAL' &&
+                  o.ownerIssueSeverity !== 'WARNING',
+              ).length
+            }
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow p-5">
+          <div className="text-gray-500">
+            💰 Revenue At Risk
           </div>
 
           <div className="text-3xl font-bold mt-2">
@@ -412,15 +436,57 @@ export default function ActionCenter() {
         </div>
       )}
 
-      {!loading && (
+      {!loading && filtered.length === 0 && (
+
+        <div className="bg-green-50 border border-green-300 rounded-xl p-12 text-center mt-8">
+
+          <div className="text-6xl">
+            ✅
+          </div>
+
+          <h2 className="text-2xl font-bold mt-4">
+            No issues found
+          </h2>
+
+          <p className="text-gray-600 mt-2">
+            Everything is running normally.
+          </p>
+
+        </div>
+
+      )}
+
+      {!loading && filtered.length > 0 && (
         <div className="grid gap-6 mt-8">
 
           {filtered.map((order) => (
 
             <div
               key={order.id}
-              className="bg-white rounded-xl shadow p-6 border"
+              className={`bg-white rounded-xl shadow p-6 border-l-8 ${
+                order.ownerIssueSeverity === 'CRITICAL'
+                  ? 'border-red-600'
+                  : order.ownerIssueSeverity === 'WARNING'
+                  ? 'border-yellow-500'
+                  : 'border-blue-500'
+              }`}
             >
+
+              <div className="mb-5">
+
+                <span
+                  className={`px-3 py-1 rounded-full text-sm font-bold ${
+                    order.ownerIssueSeverity === 'CRITICAL'
+                      ? 'bg-red-100 text-red-700'
+                      : order.ownerIssueSeverity === 'WARNING'
+                      ? 'bg-yellow-100 text-yellow-700'
+                      : 'bg-blue-100 text-blue-700'
+                  }`}
+                >
+                  {order.ownerIssueSeverity}
+                </span>
+
+              </div>
 
               <div className="flex justify-between">
 
@@ -473,19 +539,64 @@ export default function ActionCenter() {
                   <b>Status</b>
 
                   <div>
-                    {order.status}
+
+                    <span
+                      className={`px-3 py-1 rounded-full text-sm font-bold ${
+                        order.status === 'NEW'
+                          ? 'bg-blue-100 text-blue-700'
+                          : order.status === 'PREPARING'
+                          ? 'bg-orange-100 text-orange-700'
+                          : order.status === 'READY'
+                          ? 'bg-green-100 text-green-700'
+                          : order.status === 'REFUNDED'
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-gray-100 text-gray-700'
+                      }`}
+                    >
+                      {order.status}
+                    </span>
+
                   </div>
 
                 </div>
 
                 <div>
 
-                  <b>Issue</b>
+                  <b>Severity</b>
 
-                  <div>
+                  <div
+                    className={`font-bold ${
+                      order.ownerIssueSeverity ===
+                      'CRITICAL'
+                        ? 'text-red-600'
+                        : order.ownerIssueSeverity ===
+                          'WARNING'
+                        ? 'text-yellow-600'
+                        : 'text-blue-600'
+                    }`}
+                  >
+                    {order.ownerIssueSeverity}
+                  </div>
 
-                    {order.issueType ||
-                      'None'}
+                </div>
+
+                <div className="col-span-2">
+
+                  <div className="text-xl font-bold text-red-600">
+
+                    🚨 {order.ownerActionMessage}
+
+                  </div>
+
+                  <div className="mt-3 text-gray-500">
+
+                    Issue ID
+
+                    <div className="font-mono text-black">
+
+                      {order.ownerActionId}
+
+                    </div>
 
                   </div>
 
@@ -497,8 +608,25 @@ export default function ActionCenter() {
 
                 Payment Intent
 
-                <div className="font-mono break-all">
-                  {order.stripePaymentIntentId}
+                <div className="flex items-center gap-3">
+
+                  <div className="font-mono break-all">
+
+                    {order.stripePaymentIntentId}
+
+                  </div>
+
+                  <button
+                    onClick={() =>
+                      navigator.clipboard.writeText(
+                        order.stripePaymentIntentId,
+                      )
+                    }
+                    className="text-blue-600 text-sm"
+                  >
+                    📋 Copy
+                  </button>
+
                 </div>
 
               </div>
@@ -508,9 +636,7 @@ export default function ActionCenter() {
                 Created
 
                 <div>
-                  {new Date(
-                    order.createdAt,
-                  ).toLocaleString()}
+                  {timeAgo(order.createdAt)}
                 </div>
 
               </div>
@@ -525,30 +651,56 @@ export default function ActionCenter() {
                   }
                   className="bg-blue-600 text-white px-4 py-2 rounded"
                 >
-                  Details
+                  View Details
                 </button>
 
-                <button
-                  onClick={() =>
-                    refund(
-                      order.stripePaymentIntentId,
-                    )
-                  }
-                  className="bg-red-600 text-white px-4 py-2 rounded"
-                >
-                  Refund
-                </button>
+                {order.status === 'REFUNDED' ? (
 
-                <button
-                  onClick={() =>
-                    resolve(
-                      order.id,
-                    )
-                  }
-                  className="bg-green-600 text-white px-4 py-2 rounded"
-                >
-                  Resolve
-                </button>
+                  <button
+                    disabled
+                    className="bg-gray-300 text-gray-600 px-4 py-2 rounded cursor-not-allowed"
+                  >
+                    Refunded
+                  </button>
+
+                ) : (
+
+                  <button
+                    onClick={() =>
+                      refund(
+                        order.stripePaymentIntentId,
+                      )
+                    }
+                    className="bg-red-600 text-white px-4 py-2 rounded"
+                  >
+                    Refund Customer
+                  </button>
+
+                )}
+
+                {order.issueResolved ? (
+
+                  <button
+                    disabled
+                    className="bg-gray-300 text-gray-600 px-4 py-2 rounded cursor-not-allowed"
+                  >
+                    ✔ Resolved
+                  </button>
+
+                ) : (
+
+                  <button
+                    onClick={() =>
+                      resolve(
+                        order.id,
+                      )
+                    }
+                    className="bg-green-600 text-white px-4 py-2 rounded"
+                  >
+                    ✓ Mark as Resolved
+                  </button>
+
+                )}
 
               </div>
 
@@ -632,31 +784,52 @@ export default function ActionCenter() {
               </div>
 
               <div>
-                <div className="font-semibold">
-                  Issue
-                </div>
 
                 <div>
-                  {selected.issueType || 'None'}
+
+                  <b>Severity</b>
+
+                  <div
+                    className={`font-bold ${
+                      selected.ownerIssueSeverity ===
+                      'CRITICAL'
+                        ? 'text-red-600'
+                        : selected.ownerIssueSeverity ===
+                          'WARNING'
+                        ? 'text-yellow-600'
+                        : 'text-blue-600'
+                    }`}
+                  >
+                    {selected.ownerIssueSeverity}
+                  </div>
+
                 </div>
+
+                <div className="mt-3">
+
+                  <div className="text-2xl font-bold text-red-600">
+
+                    🚨 {selected.ownerActionMessage}
+
+                  </div>
+
+                  <div className="mt-4 text-gray-500">
+
+                    Issue ID
+
+                    <div className="font-mono text-black">
+
+                      {selected.ownerActionId}
+
+                    </div>
+
+                  </div>
+
+                </div>
+
               </div>
 
             </div>
-
-            <h3 className="text-2xl font-bold mt-8">
-              Support Notes
-            </h3>
-
-            <textarea
-              className="w-full border rounded-lg mt-4 p-4 h-32"
-              placeholder="Write internal notes or a message to the customer..."
-              value={note}
-              onChange={(e) =>
-                setNote(
-                  e.target.value,
-                )
-              }
-            />
 
             <h3 className="text-2xl font-bold mt-10">
               Ordered Items
@@ -708,18 +881,9 @@ export default function ActionCenter() {
                 }
                 className="bg-green-600 text-white px-6 py-3 rounded-lg"
               >
-                Resolve Issue
+                ✓ Mark as Resolved
               </button>
 
-              <button
-                onClick={emailCustomer}
-                disabled={sendingEmail}
-                className="bg-blue-600 text-white px-6 py-3 rounded-lg disabled:opacity-50"
-              >
-                {sendingEmail
-                  ? 'Sending...'
-                  : 'Email Customer'}
-              </button>
 
             </div>
 

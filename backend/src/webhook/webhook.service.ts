@@ -23,12 +23,19 @@ import { Business } from '../business/business.entity'
 
 import { OrderGateway } from '../order/order.gateway'
 
+import {
+  PendingOrder,
+  PendingOrderStatus,
+} from '../pending-order/pending-order.entity'
+
 @Injectable()
 export class WebhookService {
   private readonly logger =
     new Logger(WebhookService.name)
 
   private stripe: Stripe
+
+  private readonly webhookSecret: string
 
   constructor(
     @InjectRepository(Order)
@@ -37,14 +44,48 @@ export class WebhookService {
     @InjectRepository(Business)
     private businessRepo: Repository<Business>,
 
+    @InjectRepository(PendingOrder)
+    private pendingOrderRepo: Repository<PendingOrder>,
+
     private gateway: OrderGateway,
   ) {
+    const key =
+      process.env.STRIPE_SECRET_KEY
+
+    const webhookSecret =
+      process.env.STRIPE_WEBHOOK_SECRET
+
+    if (
+      !key ||
+      !key.startsWith('sk_')
+    ) {
+      throw new Error(
+        '❌ Missing or invalid STRIPE_SECRET_KEY in .env',
+      )
+    }
+
+    if (
+      !webhookSecret ||
+      !webhookSecret.startsWith('whsec_')
+    ) {
+      throw new Error(
+        '❌ Missing or invalid STRIPE_WEBHOOK_SECRET in .env',
+      )
+    }
+
+    this.webhookSecret =
+      webhookSecret
+
     this.stripe = new Stripe(
-      'sk_test_51Sxh4AKZAB5HMPha5usVVKGeyWcWBEqiFjVMGwPCVOFbbx56mJaJOcZrObsxj35zM92583ovMqnfGUI31JcL1rbP00TUzKY5xh',
+      key,
       {
         apiVersion:
           '2026-02-25.clover',
       },
+    )
+
+    this.logger.log(
+      '✅ Stripe webhook service initialized from environment',
     )
   }
 
@@ -68,11 +109,17 @@ export class WebhookService {
 
     order.requiresOwnerAction = true
 
+    order.issueResolved = false
+
+    order.issueType = issue
+
     order.ownerIssueType = issue
 
-    order.ownerIssueSeverity = severity
+    order.ownerIssueSeverity =
+      severity
 
-    order.ownerActionMessage = message
+    order.ownerActionMessage =
+      message
 
     order.ownerActionCreatedAt =
       new Date()
@@ -83,6 +130,11 @@ export class WebhookService {
       ).padStart(6, '0')}`
 
     await this.orderRepo.save(order)
+
+    this.gateway.emitOrderUpdate(
+      order.businessId,
+      order,
+    )
 
     this.logger.error(
       `[ACTION CENTER] ${issue}`,
@@ -101,6 +153,222 @@ export class WebhookService {
   }
 
   // =========================
+  // 🔥 PENDING ORDER HELPERS
+  // =========================
+
+  private async findPendingOrder(
+    pendingOrderId: number,
+    stripeSessionId: string,
+  ) {
+    if (pendingOrderId) {
+      const byId =
+        await this.pendingOrderRepo.findOne({
+          where: {
+            id: pendingOrderId,
+          },
+        })
+
+      if (byId) {
+        return byId
+      }
+    }
+
+    if (stripeSessionId) {
+      const bySession =
+        await this.pendingOrderRepo.findOne({
+          where: {
+            stripeSessionId,
+          },
+        })
+
+      if (bySession) {
+        return bySession
+      }
+    }
+
+    return null
+  }
+
+  private async markPendingCompleted(
+    pendingOrderId: number,
+    stripeSessionId: string,
+    stripePaymentIntentId: string,
+  ) {
+    try {
+      const pendingOrder =
+        await this.findPendingOrder(
+          pendingOrderId,
+          stripeSessionId,
+        )
+
+      if (!pendingOrder) {
+        this.logger.warn(
+          `PENDING_ORDER_NOT_FOUND: ${
+            pendingOrderId ||
+            stripeSessionId
+          }`,
+        )
+
+        return
+      }
+
+      pendingOrder.status =
+        PendingOrderStatus.COMPLETED
+
+      pendingOrder.stripeSessionId =
+        stripeSessionId
+
+      pendingOrder.stripePaymentIntentId =
+        stripePaymentIntentId ||
+        null
+
+      pendingOrder.failureReason =
+        null
+
+      await this.pendingOrderRepo.save(
+        pendingOrder,
+      )
+
+      this.logger.log(
+        `PendingOrder ${pendingOrder.id} marked COMPLETED.`,
+      )
+    } catch (err: any) {
+      this.logger.error(
+        'PENDING_ORDER_COMPLETE_FAILED',
+        err,
+      )
+    }
+  }
+
+  private async markPendingFailed(
+    pendingOrderId: number,
+    stripeSessionId: string,
+    stripePaymentIntentId: string,
+    reason: string,
+  ) {
+    try {
+      const pendingOrder =
+        await this.findPendingOrder(
+          pendingOrderId,
+          stripeSessionId,
+        )
+
+      if (!pendingOrder) {
+        this.logger.warn(
+          `PENDING_ORDER_FAIL_NOT_FOUND: ${
+            pendingOrderId ||
+            stripeSessionId
+          }`,
+        )
+
+        return
+      }
+
+      pendingOrder.status =
+        PendingOrderStatus.FAILED
+
+      pendingOrder.stripeSessionId =
+        stripeSessionId
+
+      pendingOrder.stripePaymentIntentId =
+        stripePaymentIntentId ||
+        null
+
+      pendingOrder.failureReason =
+        reason
+
+      await this.pendingOrderRepo.save(
+        pendingOrder,
+      )
+
+      this.logger.error(
+        `PendingOrder ${pendingOrder.id} marked FAILED: ${reason}`,
+      )
+    } catch (err: any) {
+      this.logger.error(
+        'PENDING_ORDER_FAIL_SAVE_FAILED',
+        err,
+      )
+    }
+  }
+
+  // =========================
+  // 🔥 KITCHEN ACK TIMEOUT
+  // =========================
+
+  private scheduleKitchenAckTimeout(
+    orderId: number,
+    businessId: number,
+  ) {
+    setTimeout(async () => {
+      try {
+        const latestOrder =
+          await this.orderRepo.findOne({
+            where: {
+              id: orderId,
+              businessId,
+            },
+          })
+
+        if (!latestOrder) {
+          this.logger.error(
+            `KITCHEN_ACK_CHECK_ORDER_NOT_FOUND: ${orderId}`,
+          )
+
+          return
+        }
+
+        if (
+          latestOrder.kitchenAcknowledged
+        ) {
+          this.logger.log(
+            `Kitchen acknowledged Order ${orderId}. No action needed.`,
+          )
+
+          return
+        }
+
+        if (
+          latestOrder.status ===
+            OrderStatus.REFUNDED ||
+          latestOrder.status ===
+            OrderStatus.DONE
+        ) {
+          this.logger.log(
+            `Order ${orderId} already ${latestOrder.status}. Skipping ACK issue.`,
+          )
+
+          return
+        }
+
+        latestOrder.acknowledgementRetries =
+          (latestOrder.acknowledgementRetries ||
+            0) + 1
+
+        await this.orderRepo.save(
+          latestOrder,
+        )
+
+        await this.createOwnerIssue(
+          latestOrder,
+          OwnerIssueType.KITCHEN_ACK_TIMEOUT,
+          OwnerIssueSeverity.CRITICAL,
+          'Kitchen did not confirm receiving this paid order within 30 seconds. Check the kitchen tablet/internet and refund the customer if the order was not prepared.',
+        )
+
+        this.logger.error(
+          `KITCHEN_ACK_TIMEOUT: Order ${orderId}`,
+        )
+      } catch (err: any) {
+        this.logger.error(
+          'KITCHEN_ACK_TIMEOUT_CHECK_FAILED',
+          err,
+        )
+      }
+    }, 30000)
+  }
+
+  // =========================
   // 🔥 WEBHOOK
   // =========================
 
@@ -110,10 +378,19 @@ export class WebhookService {
   ) {
     let event: Stripe.Event
 
+    if (!sig) {
+      throw new BadRequestException(
+        'Missing Stripe signature',
+      )
+    }
+
     try {
-      event = JSON.parse(
-        rawBody.toString(),
-      ) as Stripe.Event
+      event =
+        this.stripe.webhooks.constructEvent(
+          rawBody,
+          sig,
+          this.webhookSecret,
+        )
 
       console.log(
         '🔥 WEBHOOK:',
@@ -121,12 +398,13 @@ export class WebhookService {
       )
     } catch (err: any) {
       this.logger.error(
-        'WEBHOOK_PARSE_FAILED',
-        err,
+        'WEBHOOK_SIGNATURE_VERIFY_FAILED',
+        err?.message ||
+          err,
       )
 
       throw new BadRequestException(
-        'Webhook parse failed',
+        'Webhook signature verification failed',
       )
     }
 
@@ -172,6 +450,22 @@ export class WebhookService {
   private async handleCheckoutCompleted(
     session: Stripe.Checkout.Session,
   ) {
+    const stripeSessionId =
+      session.id || ''
+
+    const pendingOrderId =
+      Number(
+        session.metadata
+          ?.pendingOrderId || 0,
+      )
+
+    const paymentIntentId =
+      typeof session.payment_intent ===
+      'string'
+        ? session.payment_intent
+        : session.payment_intent
+            ?.id || ''
+
     try {
       console.log(
         '🔥 PROCESSING CHECKOUT',
@@ -179,31 +473,20 @@ export class WebhookService {
 
       console.log(
         '🔥 SESSION:',
-        session.id,
+        stripeSessionId,
       )
-
-      // ✅ REAL PAYMENT INTENT
-      const paymentIntentId =
-        typeof session.payment_intent ===
-        'string'
-          ? session.payment_intent
-          : session.payment_intent
-              ?.id || ''
 
       // =========================
       // 🔥 CUSTOMER INFO
       // =========================
 
       const customerEmail =
-        session.customer_details?.email ||
-        ''
+        session.customer_details
+          ?.email || ''
 
       const customerName =
-        session.customer_details?.name ||
-        ''
-
-      const stripeSessionId =
-        session.id || ''
+        session.customer_details
+          ?.name || ''
 
       // =========================
       // 🔥 METADATA
@@ -229,6 +512,13 @@ export class WebhookService {
           'STORE_CODE_MISSING',
         )
 
+        await this.markPendingFailed(
+          pendingOrderId,
+          stripeSessionId,
+          paymentIntentId,
+          'STORE_CODE_MISSING',
+        )
+
         return
       }
 
@@ -248,7 +538,42 @@ export class WebhookService {
           `BUSINESS_NOT_FOUND: ${storeCode}`,
         )
 
+        await this.markPendingFailed(
+          pendingOrderId,
+          stripeSessionId,
+          paymentIntentId,
+          `BUSINESS_NOT_FOUND: ${storeCode}`,
+        )
+
         return
+      }
+
+      // =========================
+      // 🔥 DUPLICATE PAYMENT CHECK
+      // =========================
+
+      if (paymentIntentId) {
+        const existingOrder =
+          await this.orderRepo.findOne({
+            where: {
+              stripePaymentIntentId:
+                paymentIntentId,
+            },
+          })
+
+        if (existingOrder) {
+          this.logger.warn(
+            `DUPLICATE_WEBHOOK_IGNORED: PaymentIntent ${paymentIntentId} already created Order ${existingOrder.id}`,
+          )
+
+          await this.markPendingCompleted(
+            pendingOrderId,
+            stripeSessionId,
+            paymentIntentId,
+          )
+
+          return
+        }
       }
 
       // =========================
@@ -291,10 +616,14 @@ export class WebhookService {
         business.processingFeePercent ??
         1.75
 
-      const platformFee = +(
-        total *
-        (processingFeePercent / 100)
-      ).toFixed(2)
+      const platformFee =
+        Number(
+          (
+            total *
+            (processingFeePercent /
+              100)
+          ).toFixed(2),
+        )
 
       console.log(
         '🔥 PROCESSING FEE:',
@@ -325,6 +654,7 @@ export class WebhookService {
         tableNumber
           ? parseInt(
               tableNumber,
+              10,
             )
           : 0
 
@@ -348,6 +678,19 @@ export class WebhookService {
         stripeSessionId
 
       // =========================
+      // 🔥 KITCHEN ACK DEFAULTS
+      // =========================
+
+      order.kitchenAcknowledged =
+        false
+
+      order.kitchenAcknowledgedAt =
+        null
+
+      order.acknowledgementRetries =
+        0
+
+      // =========================
       // 🔥 ACTION CENTER
       // =========================
 
@@ -356,6 +699,30 @@ export class WebhookService {
 
       order.issueType =
         'ORDER_RECEIVED'
+
+      order.requiresOwnerAction =
+        false
+
+      order.ownerIssueType =
+        null
+
+      order.ownerIssueSeverity =
+        null
+
+      order.ownerActionMessage =
+        null
+
+      order.ownerActionId =
+        null
+
+      order.ownerActionResolvedBy =
+        null
+
+      order.ownerActionResolvedAt =
+        null
+
+      order.ownerActionCreatedAt =
+        null
 
       // =========================
       // 🔥 STRIPE
@@ -367,6 +734,8 @@ export class WebhookService {
       console.log(
         '🔥 ABOUT TO SAVE ORDER:',
         {
+          pendingOrderId,
+
           businessId:
             order.businessId,
 
@@ -392,7 +761,16 @@ export class WebhookService {
             order,
           )
 
-        if (saved.items.length === 0) {
+        await this.markPendingCompleted(
+          pendingOrderId,
+          stripeSessionId,
+          paymentIntentId,
+        )
+
+        if (
+          !saved.items ||
+          saved.items.length === 0
+        ) {
           await this.createOwnerIssue(
             saved,
             OwnerIssueType.INVALID_ORDER_DATA,
@@ -413,6 +791,16 @@ export class WebhookService {
 
         this.logger.error(
           err?.message,
+        )
+
+        await this.markPendingFailed(
+          pendingOrderId,
+          stripeSessionId,
+          paymentIntentId,
+          `DATABASE_SAVE_FAILED: ${
+            err?.message ||
+            'Unknown database error'
+          }`,
         )
 
         return
@@ -440,6 +828,11 @@ export class WebhookService {
         this.logger.log(
           `Order ${saved.id} sent to kitchen.`,
         )
+
+        this.scheduleKitchenAckTimeout(
+          saved.id,
+          business.id,
+        )
       } catch (err) {
         await this.createOwnerIssue(
           saved,
@@ -457,6 +850,16 @@ export class WebhookService {
       this.logger.error(
         'WEBHOOK_PROCESSING_FAILED',
         err,
+      )
+
+      await this.markPendingFailed(
+        pendingOrderId,
+        stripeSessionId,
+        paymentIntentId,
+        `WEBHOOK_PROCESSING_FAILED: ${
+          err?.message ||
+          'Unknown webhook error'
+        }`,
       )
     }
   }

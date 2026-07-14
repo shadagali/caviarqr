@@ -68,8 +68,71 @@ export default function KitchenPage() {
 
   const socketRef = useRef<any>(null)
 
+  // 🔥 PREVENT DUPLICATE ACK SPAM
+  const ackedOrdersRef =
+    useRef<Set<number>>(
+      new Set(),
+    )
+
   const storeCode = "cafe1"
   const businessId = 3
+
+  // ─────────────────────────────────────
+  // KITCHEN ACKNOWLEDGEMENT
+  // ─────────────────────────────────────
+  const acknowledgeOrder = (
+    order: any,
+  ) => {
+    if (!order?.id) return
+
+    if (
+      order.status === "DONE" ||
+      order.status === "REFUNDED"
+    ) {
+      return
+    }
+
+    if (
+      order.kitchenAcknowledged === true
+    ) {
+      return
+    }
+
+    if (
+      ackedOrdersRef.current.has(
+        order.id,
+      )
+    ) {
+      return
+    }
+
+    const socket =
+      socketRef.current
+
+    if (
+      !socket ||
+      socket.connected !== true
+    ) {
+      return
+    }
+
+    ackedOrdersRef.current.add(
+      order.id,
+    )
+
+    console.log(
+      "✅ SENDING KITCHEN ACK:",
+      order.id,
+    )
+
+    socket.emit(
+      "kitchenAck",
+      {
+        orderId: order.id,
+        businessId,
+      },
+    )
+  }
 
   // ─────────────────────────────────────
   // LOAD ORDERS
@@ -151,6 +214,13 @@ export default function KitchenPage() {
 
       setPastOrders(
         historyData,
+      )
+
+      // 🔥 ACK ANY ACTIVE ORDER FOUND BY POLLING/LOAD
+      activeData.forEach(
+        (order) => {
+          acknowledgeOrder(order)
+        },
       )
     } catch (err) {
       console.log(err)
@@ -304,6 +374,48 @@ export default function KitchenPage() {
       },
     )
 
+    // 🔥 KITCHEN ACK SUCCESS
+    socket.on(
+      "kitchenAckSuccess",
+      (data: any) => {
+        console.log(
+          "✅ KITCHEN ACK SUCCESS",
+          data,
+        )
+
+        setOrders((prev) =>
+          prev.map((o) =>
+            o.id === data.orderId
+              ? {
+                  ...o,
+                  kitchenAcknowledged:
+                    true,
+                  kitchenAcknowledgedAt:
+                    new Date().toISOString(),
+                }
+              : o,
+          ),
+        )
+      },
+    )
+
+    // 🔥 KITCHEN ACK FAILED
+    socket.on(
+      "kitchenAckFailed",
+      (data: any) => {
+        console.log(
+          "❌ KITCHEN ACK FAILED",
+          data,
+        )
+
+        if (data?.orderId) {
+          ackedOrdersRef.current.delete(
+            data.orderId,
+          )
+        }
+      },
+    )
+
     // 🔥 NEW ORDER
     socket.on(
       "newOrder",
@@ -312,6 +424,9 @@ export default function KitchenPage() {
           "🔥 NEW ORDER",
           order,
         )
+
+        // 🔥 ACK IMMEDIATELY
+        acknowledgeOrder(order)
 
         setOrders((prev) => {
           const exists =
@@ -348,6 +463,8 @@ export default function KitchenPage() {
           order,
         )
 
+        acknowledgeOrder(order)
+
         setOrders((prev) =>
           prev.map((o) =>
             o.id === order.id
@@ -377,6 +494,8 @@ export default function KitchenPage() {
       socket.off("disconnect")
       socket.off("reconnect")
       socket.off("connect_error")
+      socket.off("kitchenAckSuccess")
+      socket.off("kitchenAckFailed")
       socket.off("newOrder")
       socket.off(
         "orderUpdate",
@@ -1094,6 +1213,32 @@ export default function KitchenPage() {
                           {sc.label}
                         </span>
                       </div>
+
+                      {/* ACK STATUS */}
+                      {!showHistory && (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color:
+                              o.kitchenAcknowledged
+                                ? "#4D7A19"
+                                : "#A36A00",
+                            background:
+                              o.kitchenAcknowledged
+                                ? "#EAF3DE"
+                                : "#FFF4D8",
+                            border:
+                              "0.5px solid #e0ddd7",
+                            padding:
+                              "4px 8px",
+                            borderRadius: 8,
+                          }}
+                        >
+                          {o.kitchenAcknowledged
+                            ? "Kitchen received"
+                            : "Sending kitchen confirmation..."}
+                        </div>
+                      )}
 
                       {/* ACTIONS */}
                       {!showHistory && (

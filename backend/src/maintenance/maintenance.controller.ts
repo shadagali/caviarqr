@@ -127,6 +127,15 @@ export class MaintenanceController {
   }
 
   // =========================
+  // 🔥 RECONCILE PENDING ORDERS
+  // =========================
+
+  @Post('reconcile-pending-orders')
+  async reconcilePendingOrders() {
+    return this.maintenanceService.reconcilePendingOrders()
+  }
+
+  // =========================
   // 🔥 DASHBOARD STATS
   // =========================
 

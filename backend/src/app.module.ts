@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common'
+import { ConfigModule } from '@nestjs/config'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { ServeStaticModule } from '@nestjs/serve-static'
+import { ScheduleModule } from '@nestjs/schedule'
 
 import { APP_GUARD } from '@nestjs/core'
 
@@ -24,9 +26,16 @@ import { HealthModule } from './health/health.module'
 import { Business } from './business/business.entity'
 import { MenuItem } from './menu/menu.entity'
 import { Order } from './order/order.entity'
+import { PendingOrder } from './pending-order/pending-order.entity'
 
 @Module({
   imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+
+    ScheduleModule.forRoot(),
+
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
@@ -48,26 +57,38 @@ import { Order } from './order/order.entity'
     TypeOrmModule.forRoot({
       type: 'postgres',
 
-      host: 'localhost',
+      host:
+        process.env.DB_HOST ||
+        'localhost',
 
-      port: 5433,
+      port:
+        Number(
+          process.env.DB_PORT ||
+            5433,
+        ),
 
       username:
+        process.env.DB_USERNAME ||
         'postgres',
 
       password:
+        process.env.DB_PASSWORD ||
         'postgres',
 
       database:
+        process.env.DB_NAME ||
         'tapserve',
 
       entities: [
         Business,
         MenuItem,
         Order,
+        PendingOrder,
       ],
 
-      synchronize: true,
+      synchronize:
+        process.env.NODE_ENV !==
+        'production',
     }),
 
     BusinessModule,

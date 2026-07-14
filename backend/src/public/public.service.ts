@@ -47,6 +47,16 @@ export class PublicService {
         },
       })
 
+    const paymentsReady =
+      business.stripeAccountReady ===
+      true
+
+    const paymentMessage =
+      paymentsReady
+        ? null
+        : business.stripeIssueMessage ||
+          'Online ordering is temporarily unavailable. Please ask the restaurant owner to complete payment setup.'
+
     return {
       business: {
         id: business.id,
@@ -61,11 +71,22 @@ export class PublicService {
           business.name ||
           storeCode,
 
+        // Keep old frontend compatibility
         logo:
           business.logo ||
           null,
 
         coverImage:
+          business.coverImage ||
+          business.logo ||
+          null,
+
+        // Keep new frontend compatibility
+        logoUrl:
+          business.logo ||
+          null,
+
+        coverUrl:
           business.coverImage ||
           business.logo ||
           null,
@@ -76,9 +97,20 @@ export class PublicService {
               0,
           ),
 
-        // 🔥 FIXED
         isOpen:
           business.isOpen ===
+          true,
+
+        // =========================
+        // CUSTOMER PAYMENT STATUS
+        // =========================
+
+        paymentsReady,
+
+        paymentMessage,
+
+        stripeIssueActive:
+          business.stripeIssueActive ===
           true,
       },
 

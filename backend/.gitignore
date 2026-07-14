@@ -1,9 +1,13 @@
-# compiled output
+# =========================
+# COMPILED OUTPUT
+# =========================
 /dist
-/node_modules
 /build
+/node_modules
 
-# Logs
+# =========================
+# LOGS
+# =========================
 logs
 *.log
 npm-debug.log*
@@ -12,14 +16,21 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
-# OS
+# =========================
+# OS FILES
+# =========================
 .DS_Store
+Thumbs.db
 
-# Tests
+# =========================
+# TESTS / COVERAGE
+# =========================
 /coverage
 /.nyc_output
 
-# IDEs and editors
+# =========================
+# IDEs AND EDITORS
+# =========================
 /.idea
 .project
 .classpath
@@ -28,29 +39,58 @@ lerna-debug.log*
 .settings/
 *.sublime-workspace
 
-# IDE - VSCode
+# VS CODE
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# dotenv environment variable files
+# =========================
+# ENVIRONMENT FILES
+# NEVER PUSH SECRETS
+# =========================
 .env
+.env.local
 .env.development.local
 .env.test.local
 .env.production.local
-.env.local
 
-# temp directory
+# =========================
+# UPLOADED RESTAURANT IMAGES
+# LOCAL ONLY
+# =========================
+/uploads
+uploads/
+
+# =========================
+# LOCAL DATABASE / BACKUPS
+# =========================
+*.sql
+*.dump
+*.backup
+
+# =========================
+# STRIPE LOCAL FILES
+# =========================
+.stripe/
+
+# =========================
+# TEMP FILES
+# =========================
 .temp
 .tmp
+*.local
 
-# Runtime data
+# =========================
+# RUNTIME DATA
+# =========================
 pids
 *.pid
 *.seed
 *.pid.lock
 
-# Diagnostic reports (https://nodejs.org/api/report.html)
+# =========================
+# DIAGNOSTIC REPORTS
+# =========================
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

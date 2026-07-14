@@ -181,6 +181,26 @@ const css = `
     box-shadow: var(--shadow-sm);
   }
 
+  .payment-banner {
+    background: linear-gradient(135deg, #fff7ed, #ffedd5);
+    color: #9a3412;
+    padding: 16px;
+    text-align: center;
+    font-weight: 700;
+    margin: 14px 16px 0;
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+    line-height: 1.45;
+  }
+
+  .payment-banner-sub {
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 5px;
+    color: #9a3412;
+    opacity: 0.85;
+  }
+
   .cat-section {
     padding: 22px 16px 0;
   }
@@ -590,9 +610,13 @@ export default function StorePage() {
           setBusiness(
             (prev: any) => ({
               ...prev,
+              ...res.data?.business,
               isOpen:
                 res.data?.business
                   ?.isOpen === true,
+              paymentsReady:
+                res.data?.business
+                  ?.paymentsReady === true,
             }),
           )
         } catch (err) {
@@ -849,6 +873,17 @@ export default function StorePage() {
       )
       return
     }
+
+    if (
+      business?.paymentsReady === false
+    ) {
+      alert(
+        business?.paymentMessage ||
+          "Online ordering is temporarily unavailable.",
+      )
+      return
+    }
+
     localStorage.setItem(
       "cart",
       JSON.stringify(cart),
@@ -860,7 +895,8 @@ export default function StorePage() {
 
   const showCartBar =
     cart.length > 0 &&
-    business?.isOpen === true
+    business?.isOpen === true &&
+    business?.paymentsReady !== false
 
   return (
     <>
@@ -1368,6 +1404,17 @@ export default function StorePage() {
             </div>
           )}
 
+          {business?.isOpen === true &&
+            business?.paymentsReady === false && (
+              <div className="payment-banner">
+                ⚠️ Online ordering is temporarily unavailable.
+                <div className="payment-banner-sub">
+                  {business?.paymentMessage ||
+                    "The restaurant is finishing payment setup."}
+                </div>
+              </div>
+            )}
+
           {Object.keys(grouped).map((cat) => (
             <div
               key={cat}
@@ -1406,7 +1453,8 @@ export default function StorePage() {
                     className="menu-row"
                     style={{
                       opacity:
-                        business?.isOpen === false
+                        business?.isOpen === false ||
+                        business?.paymentsReady === false
                           ? 0.45
                           : 1,
                     }}
@@ -1497,6 +1545,15 @@ export default function StorePage() {
                             className="qty-btn"
                             onClick={() => {
                               if (isOut) return
+
+                              if (business?.paymentsReady === false) {
+                                alert(
+                                  business?.paymentMessage ||
+                                    "Online ordering is temporarily unavailable.",
+                                )
+                                return
+                              }
+
                               addToCart(i)
                             }}
                           >
@@ -1508,6 +1565,15 @@ export default function StorePage() {
                           className="add-btn"
                           onClick={() => {
                             if (isOut) return
+
+                            if (business?.paymentsReady === false) {
+                              alert(
+                                business?.paymentMessage ||
+                                  "Online ordering is temporarily unavailable.",
+                              )
+                              return
+                            }
+
                             addToCart(i)
                           }}
                         >

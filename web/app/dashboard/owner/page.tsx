@@ -12,6 +12,8 @@ import {
   CartesianGrid,
 } from "recharts"
 
+const API = "http://localhost:3001"
+
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap');
 
@@ -299,6 +301,12 @@ const css = `
     padding: 20px 22px;
     margin-bottom: 12px;
     box-shadow: var(--shadow-sm);
+    transition: .18s ease;
+  }
+
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 24px rgba(0,0,0,.08);
   }
 
   .card-top {
@@ -469,6 +477,8 @@ const css = `
   .chip-green  .chip-dot { background: var(--green); }
   .chip-amber  { background: var(--amber-bg);  color: var(--amber);  }
   .chip-amber  .chip-dot { background: var(--amber); }
+  .chip-red    { background: var(--red-bg);    color: var(--red);    }
+  .chip-red    .chip-dot { background: var(--red); }
   .chip-gray   { background: var(--surface3);  color: var(--text2);  }
   .chip-gray   .chip-dot { background: var(--text3); }
   .chip-accent { background: var(--accent-dim); color: var(--accent); }
@@ -569,6 +579,9 @@ const css = `
   .btn-primary:hover { background: var(--accent-hover); }
   .btn-primary:active { transform: scale(0.98); }
 
+  .btn-success { background: var(--green); color: white; }
+  .btn-success:hover { opacity: .92; }
+
   .btn-ghost {
     background: var(--surface);
     color: var(--text);
@@ -578,6 +591,13 @@ const css = `
 
   .btn-danger { background: var(--red-bg); color: var(--red); }
   .btn-danger:hover { background: rgba(217,48,37,0.14); }
+
+  .btn-disabled {
+    background: var(--surface3);
+    color: var(--text3);
+    cursor: not-allowed;
+  }
+  .btn-disabled:hover { background: var(--surface3); }
 
   .btn-row {
     display: flex;
@@ -780,6 +800,7 @@ const statusChip = (status: string) => {
   const cls = s === "completed" || s === "paid" ? "chip-green"
     : s === "pending" ? "chip-amber"
     : s === "preparing" ? "chip-accent"
+    : s === "refunded" ? "chip-red"
     : "chip-gray"
   return (
     <span className={`chip ${cls}`}>
@@ -789,8 +810,39 @@ const statusChip = (status: string) => {
   )
 }
 
+const timeAgo = (date: string) => {
+  const diff = Date.now() - new Date(date).getTime()
+
+  const mins = Math.floor(diff / 60000)
+  const hrs = Math.floor(mins / 60)
+  const days = Math.floor(hrs / 24)
+
+  if (mins < 1) return "Just now"
+  if (mins < 60) return `${mins} min ago`
+  if (hrs < 24) return `${hrs} hr ago`
+
+  return `${days} day ago`
+}
+
+const severityChip = (severity: string) => {
+  const s = (severity || "INFO").toUpperCase()
+  const cls = s === "CRITICAL" ? "chip-red" : s === "WARNING" ? "chip-amber" : "chip-accent"
+  return (
+    <span className={`chip ${cls}`}>
+      <span className="chip-dot" />
+      {s}
+    </span>
+  )
+}
+
+const severityBorder = (severity: string) => {
+  const s = (severity || "INFO").toUpperCase()
+  return s === "CRITICAL" ? "var(--red)" : s === "WARNING" ? "var(--amber)" : "var(--accent)"
+}
+
 export default function OwnerPage() {
   const [businessId] = useState(3)
+  const [storeCode] = useState("cafe1")
 
   const [menu, setMenu] = useState<any[]>([])
   const [name, setName] = useState("")
@@ -813,12 +865,14 @@ export default function OwnerPage() {
   const [revenueChart, setRevenueChart] = useState<any[]>([])
   const [recentOrders, setRecentOrders] = useState<any[]>([])
   const [issues, setIssues] = useState<any[]>([])
+  const [issueSearch, setIssueSearch] = useState("")
+  const [stripeStatus, setStripeStatus] = useState<any>(null)
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2800) }
 
   const enablePasswordless = async () => {
     try {
-      await axios.post("http://localhost:3001/business/disable-kitchen-password", { businessId })
+      await axios.post(`${API}/business/disable-kitchen-password`, { businessId })
       showToast("Passwordless mode enabled")
       setKitchenPass("")
       setKitchenMode("passwordless")
@@ -827,7 +881,7 @@ export default function OwnerPage() {
 
   const load = async () => {
     try {
-      const res = await axios.get(`http://localhost:3001/menu/${businessId}`)
+      const res = await axios.get(`${API}/menu/${businessId}`)
       setMenu(Array.isArray(res.data) ? res.data.map((i: any) => ({ ...i })) : [])
     } catch { setMenu([]) }
   }
@@ -837,7 +891,7 @@ export default function OwnerPage() {
   useEffect(() => {
     const checkMode = async () => {
       try {
-        const res = await axios.get(`http://localhost:3001/public/store/cafe1`)
+        const res = await axios.get(`${API}/public/store/cafe1`)
         setKitchenMode(res.data?.business?.kitchenPassword ? "password" : "passwordless")
       } catch {}
     }
@@ -847,10 +901,10 @@ export default function OwnerPage() {
   const loadAnalytics = async () => {
     try {
       const [dashRes, itemsRes, chartRes, ordersRes] = await Promise.all([
-        axios.get(`http://localhost:3001/analytics/dashboard/${businessId}`),
-        axios.get(`http://localhost:3001/analytics/top-items/${businessId}`),
-        axios.get(`http://localhost:3001/analytics/revenue-chart/${businessId}`),
-        axios.get(`http://localhost:3001/analytics/recent-orders/${businessId}`),
+        axios.get(`${API}/analytics/dashboard/${businessId}`),
+        axios.get(`${API}/analytics/top-items/${businessId}`),
+        axios.get(`${API}/analytics/revenue-chart/${businessId}`),
+        axios.get(`${API}/analytics/recent-orders/${businessId}`),
       ])
       setDashboard(dashRes.data)
       setTopItems(itemsRes.data)
@@ -859,28 +913,45 @@ export default function OwnerPage() {
     } catch (err) { console.error(err) }
   }
 
+  // CHANGE 2: point Action Center loads at the order controller, scoped to this store
   const loadActionCenter = async () => {
     try {
-      const res = await axios.get(
-        "http://localhost:3001/maintenance/action-center",
-      )
-
+      const res = await axios.get(`${API}/order/action-center/${storeCode}`)
       setIssues(res.data)
     } catch {
       setIssues([])
     }
   }
 
+  const loadStripeStatus = async () => {
+    try {
+      const res = await axios.get(`${API}/stripe/status?businessId=${businessId}`)
+      setStripeStatus(res.data)
+    } catch {
+      setStripeStatus(null)
+    }
+  }
+
+  // CHANGE 15: auto-refresh Action Center every 5s, Stripe status every 30s
   useEffect(() => {
     loadAnalytics()
     loadActionCenter()
+    loadStripeStatus()
+
+    const actionInterval = setInterval(loadActionCenter, 5000)
+    const stripeInterval = setInterval(loadStripeStatus, 30000)
+
+    return () => {
+      clearInterval(actionInterval)
+      clearInterval(stripeInterval)
+    }
   }, [])
 
   const upload = async () => {
     if (!file) return ""
     try {
       const form = new FormData(); form.append("file", file)
-      const res = await axios.post("http://localhost:3001/menu/upload", form)
+      const res = await axios.post(`${API}/menu/upload`, form)
       return res.data.url
     } catch { return "" }
   }
@@ -889,7 +960,7 @@ export default function OwnerPage() {
     if (!logoFile) return ""
     try {
       const form = new FormData(); form.append("file", logoFile)
-      const res = await axios.post("http://localhost:3001/menu/upload", form)
+      const res = await axios.post(`${API}/menu/upload`, form)
       return res.data.url
     } catch { return "" }
   }
@@ -899,7 +970,7 @@ export default function OwnerPage() {
     if (!coverFile) return ""
     try {
       const form = new FormData(); form.append("file", coverFile)
-      const res = await axios.post("http://localhost:3001/menu/upload", form)
+      const res = await axios.post(`${API}/menu/upload`, form)
       return res.data.url
     } catch { return "" }
   }
@@ -907,7 +978,7 @@ export default function OwnerPage() {
   const add = async () => {
     if (!name || !price) return setMsg("Name and price are required")
     const imageUrl = await upload()
-    await axios.post("http://localhost:3001/menu/create", {
+    await axios.post(`${API}/menu/create`, {
       businessId, name, price: Number(price),
       category: category.trim().toLowerCase(),
       imageUrl, discount: discount ? Number(discount) : 0,
@@ -923,14 +994,14 @@ export default function OwnerPage() {
     const logo = await uploadLogo()
     // Change 7: send coverUrl to branding endpoint
     const coverUrl = await uploadCover()
-    await axios.post("http://localhost:3001/business/update-branding", { businessId, name: cafeName, logo, coverUrl })
+    await axios.post(`${API}/business/update-branding`, { businessId, name: cafeName, logo, coverUrl })
     showToast("Branding saved")
   }
 
   // Change 4: reload analytics after deleting item
   const del = (id: any) =>
     axios
-      .delete(`http://localhost:3001/menu/${id}`)
+      .delete(`${API}/menu/${id}`)
       .then(async () => {
         await load()
         await loadAnalytics()
@@ -940,33 +1011,60 @@ export default function OwnerPage() {
   // Change 5: reload analytics after hiding item
   const hide = (id: any) =>
     axios
-      .patch(`http://localhost:3001/menu/hide/${id}`)
+      .patch(`${API}/menu/hide/${id}`)
       .then(async () => {
         await load()
         await loadAnalytics()
       })
 
-  const saveKitchen = () => axios.post("http://localhost:3001/business/set-kitchen-password", { businessId, password: kitchenPass }).then(() => showToast("Password saved"))
+  const saveKitchen = () => axios.post(`${API}/business/set-kitchen-password`, { businessId, password: kitchenPass }).then(() => showToast("Password saved"))
 
   const saveServiceFee = async () => {
     try {
-      await axios.post("http://localhost:3001/business/set-service-fee", { businessId, fee: Number(serviceFee) })
+      await axios.post(`${API}/business/set-service-fee`, { businessId, fee: Number(serviceFee) })
       showToast("Service fee saved")
     } catch { showToast("Failed to save fee") }
   }
 
   const connectStripe = async () => {
     try {
-      const res = await axios.post("http://localhost:3001/stripe/connect", { businessId })
+      const res = await axios.post(`${API}/stripe/connect`, { businessId })
+      await loadStripeStatus()
       window.location.href = res.data.url
-    } catch { showToast("Stripe connect failed") }
+    } catch {
+      showToast("Stripe connect failed")
+    }
   }
 
   const withdraw = async () => {
     try {
-      const res = await axios.get(`http://localhost:3001/stripe/dashboard?businessId=${businessId}`)
+      const res = await axios.get(`${API}/stripe/dashboard?businessId=${businessId}`)
       window.open(res.data.url, "_blank")
     } catch { showToast("Could not open dashboard") }
+  }
+
+  // CHANGE 16: confirm before refunding
+  const refundIssue = async (issue: any) => {
+    if (!confirm("Refund this customer?")) return
+    try {
+      await axios.patch(`${API}/order/refund/${issue.stripePaymentIntentId}`)
+      await loadActionCenter()
+      showToast("✅ Customer refunded.")
+    } catch {
+      showToast("Failed to issue refund")
+    }
+  }
+
+  // CHANGE 1 + 17: confirm before resolving, hit the order controller with resolvedBy
+  const resolveIssue = async (id: any) => {
+    if (!confirm("Mark this issue resolved?")) return
+    try {
+      await axios.patch(`${API}/order/resolve/${id}`, { resolvedBy: "OWNER" })
+      await loadActionCenter()
+      showToast("✅ Issue resolved.")
+    } catch {
+      showToast("Failed to resolve issue")
+    }
   }
 
   const grouped = menu.reduce((acc: any, item: any) => {
@@ -976,6 +1074,40 @@ export default function OwnerPage() {
   }, {})
 
   const maxQty = topItems.length ? Math.max(...topItems.map((i: any) => i.quantitySold)) : 1
+
+  // CHANGE 13/14: search filter across customer, email, action id, payment intent
+  // CHANGE 21/22: sort open issues by severity, resolved issues pushed to the bottom
+  const filteredIssues = issues
+    .filter((issue: any) => {
+      if (!issueSearch) return true
+      const q = issueSearch.toLowerCase()
+      return (
+        issue.customerName?.toLowerCase().includes(q) ||
+        issue.customerEmail?.toLowerCase().includes(q) ||
+        issue.ownerActionId?.toLowerCase().includes(q) ||
+        issue.stripePaymentIntentId?.toLowerCase().includes(q)
+      )
+    })
+    .sort((a: any, b: any) => {
+      if (!!a.issueResolved !== !!b.issueResolved) return a.issueResolved ? 1 : -1
+      const score: any = { CRITICAL: 3, WARNING: 2, INFO: 1 }
+      return (score[b.ownerIssueSeverity] || 0) - (score[a.ownerIssueSeverity] || 0)
+    })
+
+  // CHANGE 19: quick stats above the cards
+  const todayStr = new Date().toDateString()
+  const stripeIssueOpen = Boolean(stripeStatus?.issueActive)
+
+  const openCount =
+    issues.filter((i: any) => !i.issueResolved).length +
+    (stripeIssueOpen ? 1 : 0)
+
+  const criticalCount =
+    issues.filter((i: any) => !i.issueResolved && (i.ownerIssueSeverity || "").toUpperCase() === "CRITICAL").length +
+    (stripeIssueOpen ? 1 : 0)
+
+  const refundedTodayCount = issues.filter((i: any) => i.status === "REFUNDED" && i.ownerActionCreatedAt && new Date(i.ownerActionCreatedAt).toDateString() === todayStr).length
+  const resolvedTodayCount = issues.filter((i: any) => i.issueResolved && i.ownerActionCreatedAt && new Date(i.ownerActionCreatedAt).toDateString() === todayStr).length
 
   const nav = [
     { id: "analytics", icon: "📈", label: "Analytics" },
@@ -1200,7 +1332,7 @@ export default function OwnerPage() {
                         <img
                           className="item-img"
                           src={i.imageUrl
-                            ? (i.imageUrl.startsWith("http") ? i.imageUrl : `http://localhost:3001${i.imageUrl}`)
+                            ? (i.imageUrl.startsWith("http") ? i.imageUrl : `${API}${i.imageUrl}`)
                             : "https://via.placeholder.com/200x100?text= "}
                           onError={(e: any) => e.currentTarget.src = "https://via.placeholder.com/200x100?text= "}
                           alt={i.name}
@@ -1356,6 +1488,84 @@ export default function OwnerPage() {
                 </div>
               </div>
 
+              {stripeStatus?.issueActive && (
+                <div
+                  className="card"
+                  style={{
+                    maxWidth: 720,
+                    borderLeft: "4px solid var(--red)",
+                    background: "var(--red-bg)",
+                  }}
+                >
+                  <div className="card-top">
+                    <div>
+                      <div className="card-title" style={{ color: "var(--red)" }}>
+                        ⚠️ Stripe account not fully ready
+                      </div>
+                      <div className="card-sub">
+                        {stripeStatus.message || "Complete Stripe onboarding so charges and payouts work correctly."}
+                      </div>
+                    </div>
+                    {severityChip("CRITICAL")}
+                  </div>
+
+                  <table className="info-tbl">
+                    <tbody>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Charges</td>
+                        <td className="info-td val">
+                          {stripeStatus.charges_enabled ? "Enabled" : "Not enabled"}
+                        </td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Payouts</td>
+                        <td className="info-td val">
+                          {stripeStatus.payouts_enabled ? "Enabled" : "Not enabled"}
+                        </td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Details Submitted</td>
+                        <td className="info-td val">
+                          {stripeStatus.details_submitted ? "Yes" : "No"}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <div className="btn-row">
+                    <button className="btn btn-primary" onClick={connectStripe}>
+                      Continue Stripe Setup
+                    </button>
+                    <button className="btn btn-ghost" onClick={loadStripeStatus}>
+                      Refresh Status
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {stripeStatus && !stripeStatus.issueActive && (
+                <div
+                  className="card"
+                  style={{
+                    maxWidth: 720,
+                    borderLeft: "4px solid var(--green)",
+                    background: "var(--green-bg)",
+                  }}
+                >
+                  <div className="card-top">
+                    <div>
+                      <div className="card-title" style={{ color: "var(--green)" }}>
+                        ✅ Stripe account ready
+                      </div>
+                      <div className="card-sub">
+                        Charges, payouts, and account details are ready.
+                      </div>
+                    </div>
+                    {severityChip("INFO")}
+                  </div>
+                </div>
+              )}
+
               <div className="card" style={{ maxWidth: 520 }}>
                 <div className="card-top">
                   <div>
@@ -1389,111 +1599,230 @@ export default function OwnerPage() {
           )}
 
           {/* ── ACTION CENTER ── */}
-
           {activeSection === "action" && (
             <div>
               <div className="ph">
                 <div className="ph-left">
-                  <div className="ph-title">
-                    Action Center
-                  </div>
+                  <div className="ph-title">Action Center</div>
+                  <div className="ph-sub">Failed orders and customer issues</div>
+                </div>
+                <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={loadActionCenter}>↻ Refresh</button>
+              </div>
 
-                  <div className="ph-sub">
-                    Failed orders and customer issues
-                  </div>
+              {/* CHANGE 19: stats */}
+              <div className="stat-grid">
+                <div className="stat-card">
+                  <div className="stat-label">Open Issues</div>
+                  <div className="stat-value">{openCount}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Critical Issues</div>
+                  <div className="stat-value" style={{ color: criticalCount > 0 ? "var(--red)" : "var(--text)" }}>{criticalCount}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Refunded Today</div>
+                  <div className="stat-value">{refundedTodayCount}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Resolved Today</div>
+                  <div className="stat-value" style={{ color: "var(--green)" }}>{resolvedTodayCount}</div>
                 </div>
               </div>
 
-              {issues.length === 0 && (
-                <div className="card">
-                  No active issues
+              {stripeStatus?.issueActive && (
+                <div
+                  className="card"
+                  style={{
+                    borderLeft: "4px solid var(--red)",
+                    background: "var(--red-bg)",
+                  }}
+                >
+                  <div className="card-top">
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {severityChip("CRITICAL")}
+                      <div>
+                        <div className="card-title">Stripe Account Issue</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)" }}>
+                          STORE-STRIPE-{businessId}
+                        </div>
+                      </div>
+                    </div>
+                    {statusChip("ACTION_REQUIRED")}
+                  </div>
+
+                  <table className="info-tbl">
+                    <tbody>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Issue</td>
+                        <td className="info-td val">
+                          {stripeStatus.message || "Stripe account is not fully ready."}
+                        </td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Charges</td>
+                        <td className="info-td val">
+                          {stripeStatus.charges_enabled ? "Enabled" : "Not enabled"}
+                        </td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Payouts</td>
+                        <td className="info-td val">
+                          {stripeStatus.payouts_enabled ? "Enabled" : "Not enabled"}
+                        </td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Details Submitted</td>
+                        <td className="info-td val">
+                          {stripeStatus.details_submitted ? "Yes" : "No"}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+
+                  <div className="btn-row">
+                    <button className="btn btn-primary" onClick={connectStripe}>
+                      Continue Stripe Setup
+                    </button>
+                    <button className="btn btn-ghost" onClick={loadStripeStatus}>
+                      Refresh Status
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {issues.map((issue: any) => (
+              {/* CHANGE 13: search bar */}
+              <input
+                className="inp"
+                style={{ marginBottom: 14 }}
+                placeholder="Search customer, payment, action ID…"
+                value={issueSearch}
+                onChange={e => setIssueSearch(e.target.value)}
+              />
+
+              {/* CHANGE 18: empty state */}
+              {filteredIssues.length === 0 && !stripeStatus?.issueActive && (
+                <div className="empty" style={{ background: "var(--green-bg)", border: "1px solid var(--border2)", borderRadius: "var(--r-lg)" }}>
+                  <div className="empty-icon">✅</div>
+                  <div className="empty-title">No active issues</div>
+                  <div className="empty-sub">Everything is running smoothly.</div>
+                </div>
+              )}
+
+              {filteredIssues.map((issue: any) => (
                 <div
                   key={issue.id}
                   className="card"
+                  style={{
+                    borderLeft: `4px solid ${severityBorder(issue.ownerIssueSeverity)}`,
+                    opacity: issue.issueResolved ? 0.6 : 1,
+                  }}
                 >
-                  <h3>
-                    Order #{issue.id}
-                  </h3>
+                  <div className="card-top">
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {severityChip(issue.ownerIssueSeverity)}
+                      <div>
+                        <div className="card-title">Order #{issue.id}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)" }}>{issue.ownerActionId}</div>
+                      </div>
+                    </div>
+                    {statusChip(issue.status)}
+                  </div>
 
-                  <br />
+                  <table className="info-tbl">
+                    <tbody>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Customer</td>
+                        <td className="info-td val">
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div
+                              style={{
+                                width: 34,
+                                height: 34,
+                                borderRadius: "50%",
+                                background: "var(--accent-light)",
+                                display: "flex",
+                                justifyContent: "center",
+                                alignItems: "center",
+                                fontWeight: 700,
+                              }}
+                            >
+                              {(issue.customerName || "?").substring(0, 2).toUpperCase()}
+                            </div>
+                            {issue.customerName || "Unknown"}
+                          </div>
+                        </td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Email</td>
+                        <td className="info-td val">{issue.customerEmail || "Unknown"}</td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Table</td>
+                        <td className="info-td val">{issue.tableNumber ?? "—"}</td>
+                      </tr>
+                      <tr className="info-tr">
+                        <td className="info-td lbl">Created</td>
+                        <td className="info-td val">{issue.ownerActionCreatedAt ? timeAgo(issue.ownerActionCreatedAt) : "—"}</td>
+                      </tr>
+                    </tbody>
+                  </table>
 
-                  <p>
-                    Customer:
-                    {" "}
-                    {issue.customerName ||
-                      "Unknown"}
-                  </p>
+                  {issue.items?.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <div className="field-label" style={{ marginBottom: 6 }}>Items</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        {issue.items.map((item: any, idx: number) => (
+                          <div key={idx} style={{ fontSize: 13 }}>{item.quantity}x {item.name}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-                  <p>
-                    Email:
-                    {" "}
-                    {issue.customerEmail ||
-                      "Unknown"}
-                  </p>
+                  {/* CHANGE 5: human-readable issue message, keyed off ownerIssueType */}
+                  <div style={{ marginTop: 12, fontSize: 13, fontWeight: 600, color: "var(--red)" }}>
+                    {issue.ownerIssueType === "SOCKET_EMIT_FAILED"
+                      ? "Kitchen never received this paid order."
+                      : issue.ownerIssueType === "DATABASE_SAVE_FAILED"
+                      ? "The order could not be saved."
+                      : issue.ownerIssueType === "INVALID_ORDER_DATA"
+                      ? "Customer payment succeeded but order data was corrupted."
+                      : issue.ownerIssueType === "ORDER_STUCK_NEW"
+                      ? "Order has been stuck in NEW status."
+                      : issue.ownerActionMessage || "General issue"}
+                  </div>
 
-                  <p>
-                    Issue:
-                    {" "}
-                    {issue.issueType ||
-                      "General"}
-                  </p>
+                  <div style={{ marginTop: 12, fontSize: 42, fontWeight: 800, letterSpacing: -1, color: "var(--green)" }}>
+                    ${Number(issue.total || 0).toFixed(2)}
+                  </div>
 
-                  <p>
-                    Status:
-                    {" "}
-                    {issue.status}
-                  </p>
-
-                  <p>
-                    Total:
-                    $
-                    {issue.total}
-                  </p>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 10,
-                      marginTop: 15,
-                    }}
-                  >
+                  <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontFamily: "monospace", fontSize: 12, wordBreak: "break-all", color: "var(--text2)" }}>
+                      {issue.stripePaymentIntentId}
+                    </div>
                     <button
-                      className="btn btn-danger"
-                      onClick={async () => {
-                        await axios.patch(
-                          `http://localhost:3001/order/refund/${issue.stripePaymentIntentId}`,
-                        )
-
-                        loadActionCenter()
-
-                        showToast(
-                          "Refund issued",
-                        )
+                      className="btn btn-ghost"
+                      style={{ padding: "3px 8px", fontSize: 11 }}
+                      onClick={() => {
+                        navigator.clipboard.writeText(issue.stripePaymentIntentId)
+                        showToast("Payment ID copied")
                       }}
                     >
-                      Refund
+                      📋 Copy
                     </button>
+                  </div>
 
-                    <button
-                      className="btn btn-primary"
-                      onClick={async () => {
-                        await axios.patch(
-                          `http://localhost:3001/maintenance/resolve/${issue.id}`,
-                        )
+                  <div className="btn-row">
+                    {issue.status === "REFUNDED" ? (
+                      <button className="btn btn-disabled" disabled>✓ Refunded</button>
+                    ) : (
+                      <button className="btn btn-danger" onClick={() => refundIssue(issue)}>Refund Customer</button>
+                    )}
 
-                        loadActionCenter()
-
-                        showToast(
-                          "Issue resolved",
-                        )
-                      }}
-                    >
-                      Resolve
-                    </button>
+                    {issue.issueResolved ? (
+                      <button className="btn btn-disabled" disabled>✓ Resolved</button>
+                    ) : (
+                      <button className="btn btn-success" onClick={() => resolveIssue(issue.id)}>Mark Resolved</button>
+                    )}
                   </div>
                 </div>
               ))}

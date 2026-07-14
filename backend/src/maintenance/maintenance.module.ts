@@ -9,6 +9,7 @@ import { BusinessModule } from '../business/business.module'
 
 import { Order } from '../order/order.entity'
 import { Business } from '../business/business.entity'
+import { PendingOrder } from '../pending-order/pending-order.entity'
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { Business } from '../business/business.entity'
     TypeOrmModule.forFeature([
       Order,
       Business,
+      PendingOrder,
     ]),
   ],
 
