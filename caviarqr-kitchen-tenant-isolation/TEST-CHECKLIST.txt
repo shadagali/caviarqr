@@ -1,0 +1,15 @@
+CAVIARQR MULTI-CAFE ISOLATION TEST
+
+[ ] Restart backend with 0 TypeScript errors.
+[ ] Restart frontend with 0 TypeScript errors.
+[ ] Login cafe1 kitchen -> /dashboard/kitchen.
+[ ] Login cafe2 kitchen in a separate browser/incognito window -> /dashboard/kitchen.
+[ ] cafe1 browser localStorage has cafe1, cafe2 browser has cafe2.
+[ ] Place cafe1 order -> cafe1 receives it, cafe2 does not.
+[ ] Place cafe2 order -> cafe2 receives it, cafe1 does not.
+[ ] Mark cafe1 order done -> cafe2 data does not change.
+[ ] Refresh both pages -> tenant identity remains correct.
+[ ] Tamper cafe2 localStorage storeCode/businessId to cafe1 and refresh -> server restores cafe2.
+[ ] A cafe2 token cannot PATCH /kitchen-auth/orders/<cafe1-order-id>/status (must return 404).
+[ ] Socket logs show different rooms: business-<cafe1 businessId> and business-<cafe2 businessId>.
+[ ] In production, a cafe without a kitchen password cannot log in.

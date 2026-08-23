@@ -6,16 +6,19 @@ import {
   Patch,
   Param,
   BadRequestException,
+  UseGuards,
 } from '@nestjs/common'
 
 import { BusinessService } from '../business/business.service'
 import { MaintenanceService } from './maintenance.service'
+import { MaintenanceJwtGuard } from '../maintenance-auth/maintenance-jwt.guard'
 
 @Controller('maintenance')
+@UseGuards(MaintenanceJwtGuard)
 export class MaintenanceController {
   constructor(
-    private businessService: BusinessService,
-    private maintenanceService: MaintenanceService,
+    private readonly businessService: BusinessService,
+    private readonly maintenanceService: MaintenanceService,
   ) {}
 
   // =========================
@@ -30,15 +33,17 @@ export class MaintenanceController {
       tables?: number
     },
   ) {
-    const { storeCode } = body
+    const storeCode =
+      String(body?.storeCode || '')
+        .trim()
+        .toLowerCase()
 
-    const tables = Number(
-      body.tables || 10,
-    )
+    const tables =
+      Number(body?.tables || 10)
 
     if (
       !storeCode ||
-      storeCode.trim().length < 3
+      storeCode.length < 3
     ) {
       throw new BadRequestException(
         'Valid storeCode required',
@@ -46,6 +51,7 @@ export class MaintenanceController {
     }
 
     if (
+      Number.isNaN(tables) ||
       tables <= 0 ||
       tables > 100
     ) {
@@ -63,10 +69,23 @@ export class MaintenanceController {
       business =
         await this.businessService.create({
           storeCode,
-          email: `${storeCode}@caviarqr.com`,
-          password: 'temp123',
+          email:
+            `${storeCode}@caviarqr.com`,
+          password:
+            'temp123',
         })
     }
+
+    const frontendUrl =
+      process.env.FRONTEND_URL ||
+      process.env.WEB_URL ||
+      'http://localhost:3000'
+
+    const cleanFrontendUrl =
+      frontendUrl.replace(
+        /\/+$/,
+        '',
+      )
 
     const links: {
       table: number
@@ -80,7 +99,8 @@ export class MaintenanceController {
     ) {
       links.push({
         table: i,
-        url: `http://localhost:3000/store/${storeCode}?table=${i}`,
+        url:
+          `${cleanFrontendUrl}/store/${storeCode}?table=${i}`,
       })
     }
 
@@ -103,7 +123,8 @@ export class MaintenanceController {
 
     return {
       success: true,
-      count: stores.length,
+      count:
+        stores.length,
       stores,
     }
   }
@@ -114,7 +135,13 @@ export class MaintenanceController {
 
   @Get('action-center')
   async getActionCenter() {
-    return this.maintenanceService.getIssues()
+    const issues =
+      await this.maintenanceService.getIssues()
+
+    return {
+      success: true,
+      issues,
+    }
   }
 
   // =========================
@@ -123,7 +150,13 @@ export class MaintenanceController {
 
   @Get('issues')
   async getIssues() {
-    return this.maintenanceService.getIssues()
+    const issues =
+      await this.maintenanceService.getIssues()
+
+    return {
+      success: true,
+      issues,
+    }
   }
 
   // =========================
@@ -150,7 +183,13 @@ export class MaintenanceController {
 
   @Get('orders')
   async getAllOrders() {
-    return this.maintenanceService.getAllOrders()
+    const orders =
+      await this.maintenanceService.getAllOrders()
+
+    return {
+      success: true,
+      orders,
+    }
   }
 
   // =========================
@@ -162,16 +201,35 @@ export class MaintenanceController {
     @Param('storeCode')
     storeCode: string,
   ) {
-    return this.maintenanceService.getCafeDetails(
-      storeCode,
-    )
+    const cleanStoreCode =
+      String(storeCode || '')
+        .trim()
+        .toLowerCase()
+
+    if (!cleanStoreCode) {
+      throw new BadRequestException(
+        'Valid store code is required.',
+      )
+    }
+
+    const data =
+      await this.maintenanceService.getCafeDetails(
+        cleanStoreCode,
+      )
+
+    return {
+      success: true,
+      ...data,
+    }
   }
 
   // =========================
   // 🔥 UPDATE PROCESSING FEE
   // =========================
 
-  @Patch('cafe/:storeCode/processing-fee')
+  @Patch(
+    'cafe/:storeCode/processing-fee',
+  )
   async updateProcessingFee(
     @Param('storeCode')
     storeCode: string,
@@ -181,9 +239,31 @@ export class MaintenanceController {
       processingFeePercent: number
     },
   ) {
+    const cleanStoreCode =
+      String(storeCode || '')
+        .trim()
+        .toLowerCase()
+
+    if (!cleanStoreCode) {
+      throw new BadRequestException(
+        'Valid store code is required.',
+      )
+    }
+
+    const fee =
+      Number(
+        body?.processingFeePercent,
+      )
+
+    if (Number.isNaN(fee)) {
+      throw new BadRequestException(
+        'Valid processing fee is required.',
+      )
+    }
+
     return this.maintenanceService.updateProcessingFee(
-      storeCode,
-      body.processingFeePercent,
+      cleanStoreCode,
+      fee,
     )
   }
 
@@ -193,10 +273,65 @@ export class MaintenanceController {
 
   @Patch('resolve/:id')
   async resolveIssue(
-    @Param('id') id: string,
+    @Param('id')
+    id: string,
   ) {
+    const orderId =
+      Number(id)
+
+    if (
+      !orderId ||
+      Number.isNaN(orderId)
+    ) {
+      throw new BadRequestException(
+        'Valid order id is required.',
+      )
+    }
+
     return this.maintenanceService.resolveIssue(
-      Number(id),
+      orderId,
+    )
+  }
+
+  // =========================
+  // 💳 REFUND ORDER
+  // =========================
+
+  @Patch('refund/:id')
+  async refundOrder(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: {
+      reason?: string
+    },
+  ) {
+    const orderId =
+      Number(id)
+
+    if (
+      !orderId ||
+      Number.isNaN(orderId)
+    ) {
+      throw new BadRequestException(
+        'Valid order id is required.',
+      )
+    }
+
+    const reason =
+      String(
+        body?.reason ||
+          'Refunded by CaviarQR maintenance.',
+      ).trim()
+
+    return this.maintenanceService.refundOrder(
+      orderId,
+      {
+        reason,
+        performedBy:
+          'MAINTENANCE_ADMIN',
+      },
     )
   }
 
@@ -210,12 +345,37 @@ export class MaintenanceController {
     body: {
       orderId: number
       email: string
-      name: string
+      name?: string
       note: string
     },
   ) {
     return this.maintenanceService.emailCustomer(
       body,
+    )
+  }
+
+  // =========================
+  // 🔥 CAVIARQR PLATFORM BALANCE
+  // =========================
+
+  @Get('platform-balance')
+  async getPlatformBalance() {
+    return this.maintenanceService.getPlatformBalance()
+  }
+
+  // =========================
+  // 🔥 WITHDRAW CAVIARQR COMMISSION
+  // =========================
+
+  @Post('platform-withdraw')
+  async withdrawPlatformBalance(
+    @Body()
+    body: {
+      amount?: number
+    },
+  ) {
+    return this.maintenanceService.withdrawPlatformBalance(
+      body?.amount,
     )
   }
 }

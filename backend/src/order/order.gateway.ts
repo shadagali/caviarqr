@@ -1,165 +1,289 @@
 import {
+  Logger,
+} from '@nestjs/common'
+
+import {
+  InjectRepository,
+} from '@nestjs/typeorm'
+
+import {
+  ConnectedSocket,
+  MessageBody,
+  SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
-  SubscribeMessage,
-  MessageBody,
-  ConnectedSocket,
 } from '@nestjs/websockets'
 
-import { Server, Socket } from 'socket.io'
+import {
+  Repository,
+} from 'typeorm'
 
-import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import {
+  Server,
+  Socket,
+} from 'socket.io'
 
-import { Order } from './order.entity'
+import {
+  Order,
+} from './order.entity'
+
+import {
+  KitchenSession,
+  verifyKitchenToken,
+} from '../kitchen-auth/kitchen-token'
+
+function socketOrigins() {
+  const values = [
+    process.env.FRONTEND_URL,
+    process.env.WEB_URL,
+
+    process.env.NODE_ENV !==
+    'production'
+      ? 'http://localhost:3000'
+      : undefined,
+
+    process.env.NODE_ENV !==
+    'production'
+      ? 'http://127.0.0.1:3000'
+      : undefined,
+  ]
+
+  return Array.from(
+    new Set(
+      values.filter(
+        (value): value is string =>
+          Boolean(
+            value &&
+              value.trim(),
+          ),
+      ),
+    ),
+  )
+}
 
 @WebSocketGateway({
-  cors: { origin: '*' },
+  cors: {
+    origin: socketOrigins(),
+    credentials: true,
+  },
 })
 export class OrderGateway {
+  private readonly logger =
+    new Logger(OrderGateway.name)
+
   @WebSocketServer()
   server: Server
 
   constructor(
     @InjectRepository(Order)
-    private readonly orderRepo: Repository<Order>,
+    private readonly orderRepo:
+      Repository<Order>,
   ) {}
 
   @SubscribeMessage('join')
-  handleJoin(
-    @MessageBody()
-    businessId: number,
-
+  async joinKitchen(
     @ConnectedSocket()
     client: Socket,
   ) {
-    const finalBusinessId =
-      Number(businessId)
+    try {
+      const kitchen =
+        this.authenticate(client)
 
-    client.join(
-      `business-${finalBusinessId}`,
-    )
+      client.data.kitchen =
+        kitchen
 
-    console.log(
-      '🔥 CLIENT JOINED:',
-      finalBusinessId,
-    )
+      const room =
+        this.room(
+          kitchen.businessId,
+        )
 
-    client.emit('joined', {
-      businessId: finalBusinessId,
-    })
+      await client.join(room)
+
+      this.logger.log(
+        `Kitchen joined ${room}`,
+      )
+
+      client.emit(
+        'kitchenJoined',
+        {
+          businessId:
+            kitchen.businessId,
+          storeCode:
+            kitchen.storeCode,
+        },
+      )
+
+      return {
+        success: true,
+      }
+    } catch (error: any) {
+      this.logger.warn(
+        `Rejected unauthorised kitchen socket ${client.id}: ${
+          error?.message ||
+          'invalid session'
+        }`,
+      )
+
+      client.emit(
+        'kitchenAuthFailed',
+        {
+          message:
+            'Kitchen session is invalid or expired.',
+        },
+      )
+
+      client.disconnect(true)
+
+      return {
+        success: false,
+      }
+    }
   }
 
   @SubscribeMessage('kitchenAck')
-  async handleKitchenAck(
-    @MessageBody()
-    body: {
-      orderId: number
-      businessId: number
-    },
-
+  async kitchenAck(
     @ConnectedSocket()
     client: Socket,
+
+    @MessageBody()
+    payload: {
+      orderId?: unknown
+    },
   ) {
-    const orderId =
-      Number(body?.orderId)
+    let orderId = 0
 
-    const businessId =
-      Number(body?.businessId)
+    try {
+      const kitchen =
+        this.sessionFor(client)
 
-    if (!orderId || !businessId) {
-      console.log(
-        '❌ INVALID KITCHEN ACK:',
-        body,
+      orderId = Number(
+        payload?.orderId,
+      )
+
+      if (
+        !Number.isInteger(orderId) ||
+        orderId < 1
+      ) {
+        throw new Error(
+          'Invalid order id.',
+        )
+      }
+
+      const order =
+        await this.orderRepo
+          .findOne({
+            where: {
+              id: orderId,
+              businessId:
+                kitchen.businessId,
+              storeCode:
+                kitchen.storeCode,
+            },
+          })
+
+      if (!order) {
+        // The client never learns whether this id
+        // exists in a different cafe.
+        throw new Error(
+          'Order is not assigned to this kitchen.',
+        )
+      }
+
+      const now = new Date()
+
+      if (
+        order.kitchenAcknowledged !==
+        true
+      ) {
+        order.kitchenAcknowledged =
+          true
+        order.kitchenAcknowledgedAt =
+          now
+      }
+
+      order.lastKitchenAckAt =
+        now
+
+      order.kitchenAckCount =
+        Math.max(
+          0,
+          Number(
+            order.kitchenAckCount ||
+              0,
+          ),
+        ) + 1
+
+      const saved =
+        await this.orderRepo.save(
+          order,
+        )
+
+      client.emit(
+        'kitchenAckSuccess',
+        {
+          orderId:
+            saved.id,
+        },
+      )
+
+      this.emitOrderUpdate(
+        kitchen.businessId,
+        saved,
+      )
+
+      return {
+        success: true,
+      }
+    } catch (error: any) {
+      this.logger.warn(
+        `Kitchen ACK rejected for order ${orderId || 'unknown'}: ${
+          error?.message ||
+          'invalid request'
+        }`,
       )
 
       client.emit(
         'kitchenAckFailed',
         {
-          orderId,
+          orderId:
+            orderId || null,
           message:
-            'Invalid kitchen acknowledgement payload.',
+            'Kitchen acknowledgement was rejected.',
         },
       )
 
       return {
-        ok: false,
+        success: false,
       }
-    }
-
-    const order =
-      await this.orderRepo.findOne({
-        where: {
-          id: orderId,
-          businessId,
-        },
-      })
-
-    if (!order) {
-      console.log(
-        '❌ KITCHEN ACK ORDER NOT FOUND:',
-        orderId,
-      )
-
-      client.emit(
-        'kitchenAckFailed',
-        {
-          orderId,
-          message:
-            'Order not found for acknowledgement.',
-        },
-      )
-
-      return {
-        ok: false,
-      }
-    }
-
-    order.kitchenAcknowledged = true
-    order.kitchenAcknowledgedAt =
-      new Date()
-
-    await this.orderRepo.save(order)
-
-    console.log(
-      '✅ KITCHEN ACK RECEIVED:',
-      order.id,
-    )
-
-    this.emitOrderUpdate(
-      businessId,
-      order,
-    )
-
-    client.emit(
-      'kitchenAckSuccess',
-      {
-        orderId: order.id,
-      },
-    )
-
-    return {
-      ok: true,
-      orderId: order.id,
     }
   }
 
   emitNewOrder(
     businessId: number,
-    order: any,
+    order: Order,
   ) {
-    const finalBusinessId =
+    const cleanBusinessId =
       Number(businessId)
 
-    console.log(
-      '🔥 EMIT NEW ORDER:',
-      finalBusinessId,
-      order.id,
-    )
+    if (
+      !Number.isInteger(
+        cleanBusinessId,
+      ) ||
+      cleanBusinessId < 1 ||
+      Number(order.businessId) !==
+        cleanBusinessId
+    ) {
+      this.logger.error(
+        'Blocked cross-tenant newOrder socket emission.',
+      )
+      return
+    }
 
     this.server
       .to(
-        `business-${finalBusinessId}`,
+        this.room(
+          cleanBusinessId,
+        ),
       )
       .emit(
         'newOrder',
@@ -169,24 +293,100 @@ export class OrderGateway {
 
   emitOrderUpdate(
     businessId: number,
-    order: any,
+    order: Order,
   ) {
-    const finalBusinessId =
+    const cleanBusinessId =
       Number(businessId)
 
-    console.log(
-      '🔥 EMIT ORDER UPDATE:',
-      finalBusinessId,
-      order.id,
-    )
+    if (
+      !Number.isInteger(
+        cleanBusinessId,
+      ) ||
+      cleanBusinessId < 1 ||
+      Number(order.businessId) !==
+        cleanBusinessId
+    ) {
+      this.logger.error(
+        'Blocked cross-tenant orderUpdate socket emission.',
+      )
+      return
+    }
 
     this.server
       .to(
-        `business-${finalBusinessId}`,
+        this.room(
+          cleanBusinessId,
+        ),
       )
       .emit(
         'orderUpdate',
         order,
       )
+  }
+
+  private sessionFor(
+    client: Socket,
+  ) {
+    const existing =
+      client.data
+        .kitchen as
+        | KitchenSession
+        | undefined
+
+    if (existing) {
+      return existing
+    }
+
+    const kitchen =
+      this.authenticate(client)
+
+    client.data.kitchen =
+      kitchen
+
+    return kitchen
+  }
+
+  private authenticate(
+    client: Socket,
+  ) {
+    const authToken =
+      typeof client.handshake
+        .auth?.token === 'string'
+        ? client.handshake
+            .auth.token
+        : ''
+
+    const header =
+      String(
+        client.handshake
+          .headers
+          .authorization || '',
+      )
+
+    const bearer =
+      /^Bearer\s+(.+)$/i.exec(
+        header,
+      )?.[1] || ''
+
+    const token =
+      String(
+        authToken || bearer,
+      ).trim()
+
+    if (!token) {
+      throw new Error(
+        'Missing kitchen socket token.',
+      )
+    }
+
+    return verifyKitchenToken(
+      token,
+    )
+  }
+
+  private room(
+    businessId: number,
+  ) {
+    return `business-${businessId}`
   }
 }

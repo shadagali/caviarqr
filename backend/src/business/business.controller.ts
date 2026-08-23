@@ -11,12 +11,14 @@ import { BusinessService } from './business.service'
 @Controller('business')
 export class BusinessController {
   constructor(
-    private readonly businessService: BusinessService,
+    private readonly businessService:
+      BusinessService,
   ) {}
 
   // =========================
   // 🔥 SIGNUP
   // =========================
+
   @Post('signup')
   async signup(
     @Body()
@@ -34,6 +36,7 @@ export class BusinessController {
   // =========================
   // 🔥 LOGIN
   // =========================
+
   @Post('login')
   async login(
     @Body()
@@ -48,24 +51,92 @@ export class BusinessController {
   }
 
   // =========================
+  // 🔐 FORGOT PASSWORD
+  // =========================
+
+  @Post('forgot-password')
+  async forgotPassword(
+    @Body()
+    body: {
+      email: string
+    },
+  ) {
+    return this.businessService
+      .forgotPassword(
+        String(
+          body.email || '',
+        ),
+      )
+  }
+
+  // =========================
+  // 🔐 RESET PASSWORD
+  // =========================
+
+  @Post('reset-password')
+  async resetPassword(
+    @Body()
+    body: {
+      token: string
+      password: string
+    },
+  ) {
+    return this.businessService
+      .resetPassword(
+        String(
+          body.token || '',
+        ),
+        String(
+          body.password || '',
+        ),
+      )
+  }
+
+  // =========================
+  // 🔥 COUNTRY / CURRENCY
+  // =========================
+
+  @Patch(
+    'country-currency/:businessId',
+  )
+  async setCountryAndCurrency(
+    @Param('businessId')
+    businessId: string,
+
+    @Body()
+    body: {
+      countryCode: string
+    },
+  ) {
+    return this.businessService
+      .setCountryAndCurrency(
+        Number(businessId),
+        body.countryCode,
+      )
+  }
+
+  // =========================
   // 🔥 KITCHEN LOGIN
   // =========================
+
   @Post('kitchen-login')
   async kitchenLogin(
     @Body()
     body: {
       storeCode: string
-      password: string
+      password?: string
     },
   ) {
-    return this.businessService.kitchenLogin(
-      body,
-    )
+    return this.businessService
+      .kitchenLogin(
+        body,
+      )
   }
 
   // =========================
   // 🔥 SET KITCHEN PASSWORD
   // =========================
+
   @Post('set-kitchen-password')
   async setKitchenPassword(
     @Body()
@@ -74,15 +145,19 @@ export class BusinessController {
       password: string
     },
   ) {
-    return this.businessService.setKitchenPassword(
-      body.businessId,
-      body.password,
-    )
+    return this.businessService
+      .setKitchenPassword(
+        Number(
+          body.businessId,
+        ),
+        body.password,
+      )
   }
 
   // =========================
   // 🔥 DISABLE PASSWORD
   // =========================
+
   @Post(
     'disable-kitchen-password',
   )
@@ -92,14 +167,18 @@ export class BusinessController {
       businessId: number
     },
   ) {
-    return this.businessService.disableKitchenPassword(
-      body.businessId,
-    )
+    return this.businessService
+      .disableKitchenPassword(
+        Number(
+          body.businessId,
+        ),
+      )
   }
 
   // =========================
   // 🔥 SERVICE FEE
   // =========================
+
   @Post('set-service-fee')
   async setServiceFee(
     @Body()
@@ -108,15 +187,21 @@ export class BusinessController {
       fee: number
     },
   ) {
-    return this.businessService.setServiceFee(
-      body.businessId,
-      body.fee,
-    )
+    return this.businessService
+      .setServiceFee(
+        Number(
+          body.businessId,
+        ),
+        Number(
+          body.fee,
+        ),
+      )
   }
 
   // =========================
   // 🔥 BRANDING
   // =========================
+
   @Post('update-branding')
   async updateBranding(
     @Body()
@@ -126,25 +211,32 @@ export class BusinessController {
       logo?: string
     },
   ) {
-    return this.businessService.updateBranding(
-      body.businessId,
-      body.name,
-      body.logo,
-    )
+    return this.businessService
+      .updateBranding(
+        Number(
+          body.businessId,
+        ),
+        body.name,
+        body.logo,
+      )
   }
 
   // =========================
   // 🔥 OPEN / CLOSE KITCHEN
   // =========================
+
   @Patch(
     'toggle-open/:businessId',
   )
   async toggleOpen(
     @Param('businessId')
-    businessId: number,
+    businessId: string,
   ) {
-    return this.businessService.toggleOpen(
-      Number(businessId),
-    )
+    return this.businessService
+      .toggleOpen(
+        Number(
+          businessId,
+        ),
+      )
   }
 }

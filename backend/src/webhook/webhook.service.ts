@@ -12,6 +12,8 @@ import { Repository } from 'typeorm'
 
 import Stripe from 'stripe'
 
+import { Resend } from 'resend'
+
 import {
   Order,
   OrderStatus,
@@ -28,12 +30,23 @@ import {
   PendingOrderStatus,
 } from '../pending-order/pending-order.entity'
 
+import {
+  SupportThread,
+  SupportThreadStatus,
+} from '../support/support-thread.entity'
+
+import {
+  createSupportAccessToken,
+} from '../support/support-token'
+
 @Injectable()
 export class WebhookService {
   private readonly logger =
     new Logger(WebhookService.name)
 
   private stripe: Stripe
+
+  private resend: Resend | null = null
 
   private readonly webhookSecret: string
 
@@ -47,6 +60,9 @@ export class WebhookService {
     @InjectRepository(PendingOrder)
     private pendingOrderRepo: Repository<PendingOrder>,
 
+    @InjectRepository(SupportThread)
+    private supportThreadRepo: Repository<SupportThread>,
+
     private gateway: OrderGateway,
   ) {
     const key =
@@ -55,12 +71,31 @@ export class WebhookService {
     const webhookSecret =
       process.env.STRIPE_WEBHOOK_SECRET
 
+    const isProduction =
+      process.env.NODE_ENV ===
+      'production'
+
+    if (!key) {
+      throw new Error(
+        'Missing STRIPE_SECRET_KEY.',
+      )
+    }
+
     if (
-      !key ||
+      isProduction &&
+      !key.startsWith('sk_live_')
+    ) {
+      throw new Error(
+        'Production requires a Stripe live secret key.',
+      )
+    }
+
+    if (
+      !isProduction &&
       !key.startsWith('sk_')
     ) {
       throw new Error(
-        '❌ Missing or invalid STRIPE_SECRET_KEY in .env',
+        'Invalid STRIPE_SECRET_KEY.',
       )
     }
 
@@ -69,7 +104,7 @@ export class WebhookService {
       !webhookSecret.startsWith('whsec_')
     ) {
       throw new Error(
-        '❌ Missing or invalid STRIPE_WEBHOOK_SECRET in .env',
+        'Missing or invalid STRIPE_WEBHOOK_SECRET.',
       )
     }
 
@@ -83,6 +118,21 @@ export class WebhookService {
           '2026-02-25.clover',
       },
     )
+
+    const resendKey =
+      String(
+        process.env.RESEND_API_KEY ||
+          '',
+      ).trim()
+
+    if (resendKey) {
+      this.resend =
+        new Resend(resendKey)
+    } else {
+      this.logger.warn(
+        'RESEND_API_KEY is not configured. Paid orders will still reach the kitchen, but CaviarQR receipt emails will not be sent.',
+      )
+    }
 
     this.logger.log(
       '✅ Stripe webhook service initialized from environment',
@@ -149,6 +199,803 @@ export class WebhookService {
 
         message,
       }),
+    )
+  }
+
+  // =========================
+  // 💳 STRIPE FEE HELPERS
+  // =========================
+
+  private async getStripePaymentFinancials(
+    paymentIntentId: string,
+  ): Promise<{
+    stripeChargeId: string | null
+    stripeBalanceTransactionId: string | null
+    stripeFee: number | null
+  }> {
+    if (!paymentIntentId) {
+      return {
+        stripeChargeId: null,
+        stripeBalanceTransactionId: null,
+        stripeFee: null,
+      }
+    }
+
+    try {
+      const paymentIntent =
+        await this.stripe.paymentIntents.retrieve(
+          paymentIntentId,
+          {
+            expand: [
+              'latest_charge.balance_transaction',
+            ],
+          },
+        )
+
+      let charge: Stripe.Charge | null =
+        null
+
+      if (
+        typeof paymentIntent.latest_charge ===
+        'string'
+      ) {
+        charge =
+          await this.stripe.charges.retrieve(
+            paymentIntent.latest_charge,
+            {
+              expand: [
+                'balance_transaction',
+              ],
+            },
+          )
+      } else if (
+        paymentIntent.latest_charge &&
+        typeof paymentIntent.latest_charge ===
+          'object'
+      ) {
+        charge =
+          paymentIntent.latest_charge as Stripe.Charge
+      }
+
+      if (!charge) {
+        this.logger.warn(
+          `STRIPE_CHARGE_NOT_AVAILABLE: ${paymentIntentId}`,
+        )
+
+        return {
+          stripeChargeId: null,
+          stripeBalanceTransactionId: null,
+          stripeFee: null,
+        }
+      }
+
+      let balanceTransaction:
+        | Stripe.BalanceTransaction
+        | null = null
+
+      if (
+        typeof charge.balance_transaction ===
+        'string'
+      ) {
+        balanceTransaction =
+          await this.stripe.balanceTransactions.retrieve(
+            charge.balance_transaction,
+          )
+      } else if (
+        charge.balance_transaction &&
+        typeof charge.balance_transaction ===
+          'object'
+      ) {
+        balanceTransaction =
+          charge.balance_transaction as Stripe.BalanceTransaction
+      }
+
+      if (!balanceTransaction) {
+        this.logger.warn(
+          `STRIPE_BALANCE_TRANSACTION_NOT_AVAILABLE: ${charge.id}`,
+        )
+
+        return {
+          stripeChargeId:
+            charge.id,
+          stripeBalanceTransactionId:
+            null,
+          stripeFee:
+            null,
+        }
+      }
+
+      const feeCents =
+        Number(
+          balanceTransaction.fee,
+        )
+
+      if (
+        !Number.isInteger(
+          feeCents,
+        ) ||
+        feeCents < 0
+      ) {
+        this.logger.warn(
+          `INVALID_STRIPE_FEE: ${balanceTransaction.id}`,
+        )
+
+        return {
+          stripeChargeId:
+            charge.id,
+          stripeBalanceTransactionId:
+            balanceTransaction.id,
+          stripeFee:
+            null,
+        }
+      }
+
+      return {
+        stripeChargeId:
+          charge.id,
+        stripeBalanceTransactionId:
+          balanceTransaction.id,
+        stripeFee:
+          Number(
+            (
+              feeCents / 100
+            ).toFixed(2),
+          ),
+      }
+    } catch (err: any) {
+      this.logger.error(
+        `STRIPE_FEE_LOOKUP_FAILED: ${paymentIntentId}`,
+        err?.message || err,
+      )
+
+      /*
+       * Never block a paid order from reaching
+       * the kitchen because fee reporting failed.
+       * A null fee is intentionally distinguishable
+       * from an actual $0.00 Stripe fee.
+       */
+      return {
+        stripeChargeId: null,
+        stripeBalanceTransactionId: null,
+        stripeFee: null,
+      }
+    }
+  }
+
+  // =========================
+  // 🧾 RECEIPT + SUPPORT
+  // =========================
+
+  private escapeHtml(
+    value: unknown,
+  ) {
+    return String(
+      value ?? '',
+    )
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+  }
+
+  private formatReceiptMoney(
+    amount: number,
+    currency: string,
+  ) {
+    const normalized =
+      String(
+        currency || 'usd',
+      ).toLowerCase() === 'inr'
+        ? 'INR'
+        : 'USD'
+
+    return new Intl.NumberFormat(
+      normalized === 'INR'
+        ? 'en-IN'
+        : 'en-US',
+      {
+        style: 'currency',
+        currency: normalized,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      },
+    ).format(
+      Number.isFinite(
+        Number(amount),
+      )
+        ? Number(amount)
+        : 0,
+    )
+  }
+
+  private getFrontendUrl() {
+    return String(
+      process.env.FRONTEND_URL ||
+        process.env.WEB_URL ||
+        'http://localhost:3000',
+    ).replace(
+      /\/+$/,
+      '',
+    )
+  }
+
+  private async ensureSupportThread(
+    order: Order,
+  ): Promise<SupportThread | null> {
+    try {
+      let thread =
+        await this.supportThreadRepo
+          .findOne({
+            where: {
+              orderId:
+                order.id,
+            },
+          })
+
+      if (!thread) {
+        const created =
+          this.supportThreadRepo
+            .create({
+              orderId:
+                order.id,
+
+              businessId:
+                order.businessId,
+
+              storeCode:
+                order.storeCode,
+
+              customerEmail:
+                order.customerEmail,
+
+              customerName:
+                order.customerName,
+
+              status:
+                SupportThreadStatus
+                  .AVAILABLE,
+
+              restaurantUnreadCount:
+                0,
+
+              customerUnreadCount:
+                0,
+
+              lastMessageAt:
+                null,
+
+              resolvedAt:
+                null,
+            })
+
+        try {
+          thread =
+            await this
+              .supportThreadRepo
+              .save(created)
+        } catch (error: any) {
+          /*
+           * Duplicate webhook deliveries can race here.
+           * The unique orderId index makes creation safe;
+           * if another request created it first, just load it.
+           */
+          thread =
+            await this
+              .supportThreadRepo
+              .findOne({
+                where: {
+                  orderId:
+                    order.id,
+                },
+              })
+
+          if (!thread) {
+            throw error
+          }
+        }
+      }
+
+      if (
+        order.supportThreadId !==
+        thread.id
+      ) {
+        order.supportThreadId =
+          thread.id
+
+        await this.orderRepo.save(
+          order,
+        )
+      }
+
+      return thread
+    } catch (error: any) {
+      this.logger.error(
+        `SUPPORT_THREAD_CREATE_FAILED: Order ${order.id}`,
+        error?.message ||
+          error,
+      )
+
+      return null
+    }
+  }
+
+  private async claimReceiptEmailAttempt(
+    orderId: number,
+  ) {
+    const now =
+      new Date()
+
+    const retryCutoff =
+      new Date(
+        Date.now() -
+          2 * 60 * 1000,
+      )
+
+    const result =
+      await this.orderRepo
+        .createQueryBuilder()
+        .update(Order)
+        .set({
+          receiptEmailLastAttemptAt:
+            now,
+
+          receiptEmailAttempts:
+            () =>
+              '"receiptEmailAttempts" + 1',
+        })
+        .where(
+          'id = :orderId',
+          {
+            orderId,
+          },
+        )
+        .andWhere(
+          '"receiptEmailSentAt" IS NULL',
+        )
+        .andWhere(
+          `(
+            "receiptEmailLastAttemptAt" IS NULL
+            OR "receiptEmailLastAttemptAt" < :retryCutoff
+          )`,
+          {
+            retryCutoff,
+          },
+        )
+        .execute()
+
+    return Number(
+      result.affected || 0,
+    ) === 1
+  }
+
+  private async sendReceiptEmail(
+    order: Order,
+    business: Business,
+    supportThread: SupportThread,
+  ) {
+    if (
+      order.receiptEmailSentAt
+    ) {
+      return
+    }
+
+    const email =
+      String(
+        order.customerEmail ||
+          '',
+      )
+        .trim()
+        .toLowerCase()
+
+    if (!email) {
+      this.logger.warn(
+        `RECEIPT_EMAIL_SKIPPED_NO_EMAIL: Order ${order.id}`,
+      )
+
+      return
+    }
+
+    if (!this.resend) {
+      await this.orderRepo.update(
+        order.id,
+        {
+          receiptEmailFailureMessage:
+            'RESEND_API_KEY is not configured.',
+        },
+      )
+
+      return
+    }
+
+    const claimed =
+      await this
+        .claimReceiptEmailAttempt(
+          order.id,
+        )
+
+    if (!claimed) {
+      return
+    }
+
+    try {
+      const token =
+        createSupportAccessToken(
+          supportThread.id,
+        )
+
+      const helpUrl =
+        `${this.getFrontendUrl()}/help/${encodeURIComponent(
+          token,
+        )}`
+
+      const cafeName =
+        String(
+          (business as any)
+            ?.cafeName ||
+            (business as any)
+              ?.name ||
+            order.storeCode ||
+            'Restaurant',
+        ).trim()
+
+      const currency =
+        String(
+          order.currency ||
+            'usd',
+        ).toLowerCase()
+
+      const safeItems =
+        Array.isArray(order.items)
+          ? order.items
+          : []
+
+      const itemSubtotal =
+        safeItems.reduce(
+          (
+            sum,
+            item,
+          ) =>
+            sum +
+            Number(
+              item.price || 0,
+            ) *
+              Number(
+                item.qty || 1,
+              ),
+          0,
+        )
+
+      const customerFee =
+        Math.max(
+          0,
+          Number(
+            (
+              Number(
+                order.total ||
+                  0,
+              ) -
+              itemSubtotal
+            ).toFixed(2),
+          ),
+        )
+
+      const itemText =
+        safeItems
+          .map(
+            (item) =>
+              `${item.name} × ${Number(
+                item.qty || 1,
+              )} — ${this.formatReceiptMoney(
+                Number(
+                  item.price || 0,
+                ) *
+                  Number(
+                    item.qty || 1,
+                  ),
+                currency,
+              )}`,
+          )
+          .join('\n')
+
+      const itemHtml =
+        safeItems
+          .map((item) => {
+            const quantity =
+              Number(
+                item.qty || 1,
+              )
+
+            const lineTotal =
+              Number(
+                item.price || 0,
+              ) *
+              quantity
+
+            const note =
+              String(
+                item.note || '',
+              ).trim()
+
+            return `
+              <tr>
+                <td style="padding: 10px 0; vertical-align: top;">
+                  <div style="font-weight: 700; color: #191919;">
+                    ${this.escapeHtml(
+                      item.name,
+                    )}
+                  </div>
+                  <div style="margin-top: 3px; font-size: 12px; color: #767676;">
+                    Qty ${quantity}
+                  </div>
+                  ${
+                    note
+                      ? `
+                        <div style="margin-top: 4px; font-size: 12px; color: #767676;">
+                          Note: ${this.escapeHtml(
+                            note,
+                          )}
+                        </div>
+                      `
+                      : ''
+                  }
+                </td>
+                <td style="padding: 10px 0; text-align: right; vertical-align: top; font-weight: 700; color: #191919;">
+                  ${this.escapeHtml(
+                    this.formatReceiptMoney(
+                      lineTotal,
+                      currency,
+                    ),
+                  )}
+                </td>
+              </tr>
+            `
+          })
+          .join('')
+
+      const from =
+        process.env
+          .RECEIPT_EMAIL_FROM ||
+        process.env
+          .MAINTENANCE_EMAIL_FROM ||
+        'CaviarQR <onboarding@resend.dev>'
+
+      const subject =
+        `${cafeName} receipt · Order #${order.id}`
+
+      const text =
+        `${cafeName}
+CaviarQR receipt
+
+Order #${order.id}
+Table ${order.tableNumber ?? '-'}
+
+${itemText}
+
+Subtotal: ${this.formatReceiptMoney(
+          itemSubtotal,
+          currency,
+        )}${
+          customerFee > 0
+            ? `\nService fee: ${this.formatReceiptMoney(
+                customerFee,
+                currency,
+              )}`
+            : ''
+        }
+Total: ${this.formatReceiptMoney(
+          Number(
+            order.total || 0,
+          ),
+          currency,
+        )}
+
+Payment successful.
+
+Need help with this order?
+${helpUrl}
+
+Powered by CaviarQR`
+
+      const html =
+        `
+          <div style="margin: 0; padding: 24px; background: #f6f6f6; font-family: Arial, Helvetica, sans-serif; color: #191919;">
+            <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border: 1px solid #ebebeb; border-radius: 18px; overflow: hidden;">
+              <div style="padding: 24px 24px 18px; border-bottom: 1px solid #ebebeb;">
+                <div style="font-size: 12px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; color: #ff3008;">
+                  CaviarQR
+                </div>
+
+                <h1 style="margin: 8px 0 4px; font-size: 25px; line-height: 1.15;">
+                  ${this.escapeHtml(
+                    cafeName,
+                  )}
+                </h1>
+
+                <div style="font-size: 13px; color: #767676;">
+                  Payment successful · Order #${order.id}
+                  ${
+                    order.tableNumber !==
+                    null
+                      ? ` · Table ${order.tableNumber}`
+                      : ''
+                  }
+                </div>
+              </div>
+
+              <div style="padding: 14px 24px 4px;">
+                <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                  ${itemHtml}
+                </table>
+              </div>
+
+              <div style="padding: 14px 24px 24px; border-top: 1px solid #ebebeb;">
+                <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 6px 0; color: #767676;">
+                      Subtotal
+                    </td>
+                    <td style="padding: 6px 0; text-align: right; font-weight: 700;">
+                      ${this.escapeHtml(
+                        this.formatReceiptMoney(
+                          itemSubtotal,
+                          currency,
+                        ),
+                      )}
+                    </td>
+                  </tr>
+
+                  ${
+                    customerFee > 0
+                      ? `
+                        <tr>
+                          <td style="padding: 6px 0; color: #767676;">
+                            Service fee
+                          </td>
+                          <td style="padding: 6px 0; text-align: right; font-weight: 700;">
+                            ${this.escapeHtml(
+                              this.formatReceiptMoney(
+                                customerFee,
+                                currency,
+                              ),
+                            )}
+                          </td>
+                        </tr>
+                      `
+                      : ''
+                  }
+
+                  <tr>
+                    <td style="padding: 12px 0 0; font-size: 18px; font-weight: 800;">
+                      Total
+                    </td>
+                    <td style="padding: 12px 0 0; text-align: right; font-size: 18px; font-weight: 800;">
+                      ${this.escapeHtml(
+                        this.formatReceiptMoney(
+                          Number(
+                            order.total ||
+                              0,
+                          ),
+                          currency,
+                        ),
+                      )}
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
+              <div style="padding: 22px 24px 26px; background: #fff7f5; border-top: 1px solid #ffe0d8; text-align: center;">
+                <div style="font-size: 16px; font-weight: 800;">
+                  Need help with this order?
+                </div>
+
+                <div style="margin-top: 6px; font-size: 13px; line-height: 1.5; color: #767676;">
+                  Message the restaurant through CaviarQR about a missing item, incorrect order, refund request, or another problem.
+                </div>
+
+                <a
+                  href="${this.escapeHtml(
+                    helpUrl,
+                  )}"
+                  style="display: inline-block; margin-top: 16px; padding: 12px 20px; border-radius: 10px; background: #ff3008; color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 800;"
+                >
+                  Get Help With This Order
+                </a>
+              </div>
+
+              <div style="padding: 16px 24px; text-align: center; font-size: 11px; color: #999999;">
+                Powered by CaviarQR
+              </div>
+            </div>
+          </div>
+        `
+
+      const result =
+        await this.resend
+          .emails.send({
+            from,
+            to: email,
+            subject,
+            text,
+            html,
+          })
+
+      if (
+        result.error
+      ) {
+        throw new Error(
+          result.error.message ||
+            'Resend receipt email failed.',
+        )
+      }
+
+      const sentAt =
+        new Date()
+
+      await this.orderRepo.update(
+        order.id,
+        {
+          receiptEmailSentAt:
+            sentAt,
+
+          receiptEmailFailureMessage:
+            null,
+        },
+      )
+
+      order.receiptEmailSentAt =
+        sentAt
+
+      order.receiptEmailFailureMessage =
+        null
+
+      this.logger.log(
+        `RECEIPT_EMAIL_SENT: Order ${order.id} -> ${email}`,
+      )
+    } catch (error: any) {
+      const message =
+        String(
+          error?.message ||
+            error ||
+            'Unknown receipt email error',
+        ).slice(
+          0,
+          2_000,
+        )
+
+      await this.orderRepo.update(
+        order.id,
+        {
+          receiptEmailFailureMessage:
+            message,
+        },
+      )
+
+      this.logger.error(
+        `RECEIPT_EMAIL_FAILED: Order ${order.id}`,
+        message,
+      )
+    }
+  }
+
+  private async prepareSupportAndReceipt(
+    order: Order,
+    business: Business,
+  ) {
+    const supportThread =
+      await this
+        .ensureSupportThread(
+          order,
+        )
+
+    if (!supportThread) {
+      return
+    }
+
+    await this.sendReceiptEmail(
+      order,
+      business,
+      supportThread,
     )
   }
 
@@ -224,6 +1071,9 @@ export class WebhookService {
 
       pendingOrder.failureReason =
         null
+
+      pendingOrder.completedAt =
+        new Date()
 
       await this.pendingOrderRepo.save(
         pendingOrder,
@@ -414,7 +1264,9 @@ export class WebhookService {
 
     if (
       event.type ===
-      'checkout.session.completed'
+        'checkout.session.completed' ||
+      event.type ===
+        'checkout.session.async_payment_succeeded'
     ) {
       const session =
         event.data
@@ -422,6 +1274,35 @@ export class WebhookService {
 
       await this.handleCheckoutCompleted(
         session,
+      )
+    }
+
+    if (
+      event.type ===
+      'checkout.session.async_payment_failed'
+    ) {
+      const session =
+        event.data
+          .object as Stripe.Checkout.Session
+
+      const pendingOrderId =
+        Number(
+          session.metadata
+            ?.pendingOrderId || 0,
+        )
+
+      const paymentIntentId =
+        typeof session.payment_intent ===
+        'string'
+          ? session.payment_intent
+          : session.payment_intent
+              ?.id || ''
+
+      await this.markPendingFailed(
+        pendingOrderId,
+        session.id || '',
+        paymentIntentId,
+        'STRIPE_ASYNC_PAYMENT_FAILED',
       )
     }
 
@@ -453,7 +1334,7 @@ export class WebhookService {
     const stripeSessionId =
       session.id || ''
 
-    const pendingOrderId =
+    const metadataPendingOrderId =
       Number(
         session.metadata
           ?.pendingOrderId || 0,
@@ -471,41 +1352,100 @@ export class WebhookService {
         '🔥 PROCESSING CHECKOUT',
       )
 
+      if (!paymentIntentId) {
+        throw new Error(
+          'PAYMENT_INTENT_ID_MISSING',
+        )
+      }
+
       console.log(
         '🔥 SESSION:',
         stripeSessionId,
       )
 
-      // =========================
-      // 🔥 CUSTOMER INFO
-      // =========================
-
-      const customerEmail =
-        session.customer_details
-          ?.email || ''
-
-      const customerName =
-        session.customer_details
-          ?.name || ''
-
-      // =========================
-      // 🔥 METADATA
-      // =========================
-
-      const storeCode =
-        session.metadata?.storeCode
-
-      const itemsRaw =
-        session.metadata?.items
-
-      const tableNumber =
-        session.metadata
-          ?.tableNumber
-
       console.log(
         '🔥 METADATA:',
         session.metadata,
       )
+
+      // =========================
+      // 🔥 PAYMENT STATUS
+      // =========================
+
+      if (
+        session.payment_status !==
+        'paid'
+      ) {
+        this.logger.warn(
+          `CHECKOUT_NOT_PAID: Session ${stripeSessionId} has payment status ${session.payment_status}.`,
+        )
+
+        return
+      }
+
+      // =========================
+      // 🔥 PENDING ORDER
+      // Trusted source of items, totals,
+      // table number, fees and currency.
+      // =========================
+
+      const pendingOrder =
+        await this.findPendingOrder(
+          metadataPendingOrderId,
+          stripeSessionId,
+        )
+
+      if (!pendingOrder) {
+        this.logger.error(
+          `PENDING_ORDER_NOT_FOUND: ${
+            metadataPendingOrderId ||
+            stripeSessionId
+          }`,
+        )
+
+        return
+      }
+
+      const pendingOrderId =
+        pendingOrder.id
+
+      const metadataBusinessId =
+        Number(
+          session.metadata
+            ?.businessId || 0,
+        )
+
+      if (
+        metadataBusinessId &&
+        metadataBusinessId !==
+          pendingOrder.businessId
+      ) {
+        throw new Error(
+          `METADATA_BUSINESS_MISMATCH: PendingOrder belongs to ${pendingOrder.businessId}, Stripe metadata uses ${metadataBusinessId}.`,
+        )
+      }
+
+      const clientReferenceId =
+        String(
+          session.client_reference_id ||
+          '',
+        ).trim()
+
+      if (
+        clientReferenceId &&
+        clientReferenceId !==
+          String(pendingOrderId)
+      ) {
+        throw new Error(
+          `CLIENT_REFERENCE_MISMATCH: PendingOrder is ${pendingOrderId}, Stripe client_reference_id is ${clientReferenceId}.`,
+        )
+      }
+
+      const storeCode =
+        String(
+          pendingOrder.storeCode ||
+          '',
+        ).trim()
 
       if (!storeCode) {
         this.logger.error(
@@ -520,6 +1460,70 @@ export class WebhookService {
         )
 
         return
+      }
+
+      const metadataStoreCode =
+        String(
+          session.metadata
+            ?.storeCode || '',
+        ).trim()
+
+      if (
+        metadataStoreCode &&
+        metadataStoreCode !==
+          storeCode
+      ) {
+        throw new Error(
+          `STORE_CODE_MISMATCH: PendingOrder uses ${storeCode}, Stripe metadata uses ${metadataStoreCode}.`,
+        )
+      }
+
+      // =========================
+      // 🔥 CURRENCY
+      // =========================
+
+      const currency =
+        String(
+          pendingOrder.currency ||
+          '',
+        ).toLowerCase()
+
+      const sessionCurrency =
+        String(
+          session.currency ||
+          '',
+        ).toLowerCase()
+
+      const metadataCurrency =
+        String(
+          session.metadata
+            ?.currency || '',
+        ).toLowerCase()
+
+      if (
+        currency !== 'usd'
+      ) {
+        throw new Error(
+          `INVALID_PENDING_ORDER_CURRENCY: ${currency || 'MISSING'}. CaviarQR US launch accepts USD only.`,
+        )
+      }
+
+      if (
+        !sessionCurrency ||
+        sessionCurrency !== currency
+      ) {
+        throw new Error(
+          `CHECKOUT_CURRENCY_MISMATCH: Expected ${currency}, received ${sessionCurrency || 'MISSING'}.`,
+        )
+      }
+
+      if (
+        metadataCurrency &&
+        metadataCurrency !== currency
+      ) {
+        throw new Error(
+          `METADATA_CURRENCY_MISMATCH: Expected ${currency}, received ${metadataCurrency}.`,
+        )
       }
 
       // =========================
@@ -548,6 +1552,15 @@ export class WebhookService {
         return
       }
 
+      if (
+        business.id !==
+        pendingOrder.businessId
+      ) {
+        throw new Error(
+          `BUSINESS_MISMATCH: PendingOrder belongs to ${pendingOrder.businessId}, store belongs to ${business.id}.`,
+        )
+      }
+
       // =========================
       // 🔥 DUPLICATE PAYMENT CHECK
       // =========================
@@ -572,66 +1585,115 @@ export class WebhookService {
             paymentIntentId,
           )
 
+          /*
+           * A duplicate webhook must not create another
+           * Order, but it can safely retry setup for a
+           * receipt that was not successfully delivered.
+           */
+          void this
+            .prepareSupportAndReceipt(
+              existingOrder,
+              business,
+            )
+
           return
         }
       }
 
       // =========================
-      // 🔥 ITEMS
+      // 🔥 AMOUNT VERIFICATION
       // =========================
 
-      let items: any[] = []
-
-      if (itemsRaw) {
-        try {
-          items =
-            JSON.parse(itemsRaw)
-        } catch {
-          this.logger.error(
-            'INVALID_ORDER_DATA',
-          )
-
-          items = []
-        }
-      }
-
-      // =========================
-      // 🔥 TOTALS
-      // =========================
-
-      const total =
+      const stripeTotalCents =
         Number(
-          (
-            (session.amount_total ||
-              0) / 100
-          ).toFixed(2),
+          session.amount_total,
         )
 
-      // =========================
-      // 🔥 PLATFORM FEE
-      // Uses the cafe's configured processing fee
-      // =========================
+      const pendingTotalCents =
+        Math.round(
+          Number(
+            pendingOrder.total ||
+            0,
+          ) * 100,
+        )
 
-      const processingFeePercent =
-        business.processingFeePercent ??
-        1.75
+      if (
+        !Number.isInteger(
+          stripeTotalCents,
+        ) ||
+        stripeTotalCents < 1
+      ) {
+        throw new Error(
+          'INVALID_STRIPE_TOTAL',
+        )
+      }
+
+      if (
+        !Number.isInteger(
+          pendingTotalCents,
+        ) ||
+        pendingTotalCents < 1
+      ) {
+        throw new Error(
+          'INVALID_PENDING_ORDER_TOTAL',
+        )
+      }
+
+      if (
+        stripeTotalCents !==
+        pendingTotalCents
+      ) {
+        throw new Error(
+          `CHECKOUT_TOTAL_MISMATCH: Expected ${pendingTotalCents}, received ${stripeTotalCents}.`,
+        )
+      }
+
+      const items =
+        Array.isArray(
+          pendingOrder.items,
+        )
+          ? pendingOrder.items
+          : []
+
+      if (items.length === 0) {
+        throw new Error(
+          'INVALID_ORDER_DATA: PendingOrder has no items.',
+        )
+      }
+
+      const total =
+        pendingTotalCents / 100
 
       const platformFee =
         Number(
-          (
-            total *
-            (processingFeePercent /
-              100)
+          Number(
+            pendingOrder.platformFee ||
+            0,
           ).toFixed(2),
         )
 
-      console.log(
-        '🔥 PROCESSING FEE:',
-        {
-          processingFeePercent,
-          platformFee,
-        },
-      )
+      const stripeFinancials =
+        await this.getStripePaymentFinancials(
+          paymentIntentId,
+        )
+
+      const tableNumber =
+        Number(
+          pendingOrder.tableNumber ||
+          0,
+        )
+
+      // =========================
+      // 🔥 CUSTOMER INFO
+      // =========================
+
+      const customerEmail =
+        session.customer_details
+          ?.email || ''
+
+      const customerName =
+        session.customer_details
+          ?.name || ''
 
       // =========================
       // 🔥 CREATE ORDER
@@ -646,16 +1708,20 @@ export class WebhookService {
       order.storeCode =
         business.storeCode
 
-      order.items = items
+      order.items =
+        items
 
-      order.total = total
+      order.total =
+        total
+
+      order.currency =
+        currency
 
       order.tableNumber =
-        tableNumber
-          ? parseInt(
-              tableNumber,
-              10,
-            )
+        Number.isInteger(
+          tableNumber,
+        )
+          ? tableNumber
           : 0
 
       order.status =
@@ -673,6 +1739,21 @@ export class WebhookService {
 
       order.customerName =
         customerName
+
+      order.supportThreadId =
+        null
+
+      order.receiptEmailSentAt =
+        null
+
+      order.receiptEmailLastAttemptAt =
+        null
+
+      order.receiptEmailAttempts =
+        0
+
+      order.receiptEmailFailureMessage =
+        null
 
       order.stripeSessionId =
         stripeSessionId
@@ -731,6 +1812,15 @@ export class WebhookService {
       order.stripePaymentIntentId =
         paymentIntentId
 
+      order.stripeChargeId =
+        stripeFinancials.stripeChargeId
+
+      order.stripeBalanceTransactionId =
+        stripeFinancials.stripeBalanceTransactionId
+
+      order.stripeFee =
+        stripeFinancials.stripeFee
+
       console.log(
         '🔥 ABOUT TO SAVE ORDER:',
         {
@@ -745,11 +1835,26 @@ export class WebhookService {
           total:
             order.total,
 
+          currency:
+            order.currency,
+
+          platformFee:
+            order.platformFee,
+
           tableNumber:
             order.tableNumber,
 
           stripePaymentIntentId:
             order.stripePaymentIntentId,
+
+          stripeChargeId:
+            order.stripeChargeId,
+
+          stripeBalanceTransactionId:
+            order.stripeBalanceTransactionId,
+
+          stripeFee:
+            order.stripeFee,
         },
       )
 
@@ -767,18 +1872,6 @@ export class WebhookService {
           paymentIntentId,
         )
 
-        if (
-          !saved.items ||
-          saved.items.length === 0
-        ) {
-          await this.createOwnerIssue(
-            saved,
-            OwnerIssueType.INVALID_ORDER_DATA,
-            OwnerIssueSeverity.CRITICAL,
-            'Order metadata could not be parsed.',
-          )
-        }
-
         console.log(
           '✅ SAVE SUCCESS:',
           saved,
@@ -793,6 +1886,34 @@ export class WebhookService {
           err?.message,
         )
 
+        const concurrentOrder =
+          await this.orderRepo.findOne({
+            where: {
+              stripePaymentIntentId:
+                paymentIntentId,
+            },
+          })
+
+        if (concurrentOrder) {
+          this.logger.warn(
+            `CONCURRENT_DUPLICATE_WEBHOOK_IGNORED: PaymentIntent ${paymentIntentId} already created Order ${concurrentOrder.id}`,
+          )
+
+          await this.markPendingCompleted(
+            pendingOrderId,
+            stripeSessionId,
+            paymentIntentId,
+          )
+
+          void this
+            .prepareSupportAndReceipt(
+              concurrentOrder,
+              business,
+            )
+
+          return
+        }
+
         await this.markPendingFailed(
           pendingOrderId,
           stripeSessionId,
@@ -803,7 +1924,7 @@ export class WebhookService {
           }`,
         )
 
-        return
+        throw err
       }
 
       console.log(
@@ -846,6 +1967,18 @@ export class WebhookService {
           err,
         )
       }
+
+      /*
+       * Receipt delivery is deliberately outside the
+       * order-save and kitchen-delivery critical path.
+       * Email/support failures must never make a paid
+       * kitchen order look failed to Stripe.
+       */
+      void this
+        .prepareSupportAndReceipt(
+          saved,
+          business,
+        )
     } catch (err: any) {
       this.logger.error(
         'WEBHOOK_PROCESSING_FAILED',
@@ -853,7 +1986,7 @@ export class WebhookService {
       )
 
       await this.markPendingFailed(
-        pendingOrderId,
+        metadataPendingOrderId,
         stripeSessionId,
         paymentIntentId,
         `WEBHOOK_PROCESSING_FAILED: ${
@@ -861,6 +1994,13 @@ export class WebhookService {
           'Unknown webhook error'
         }`,
       )
+
+      /*
+       * A paid order that failed during critical processing
+       * must not return a successful webhook response.
+       * Re-throw so Stripe retries the event.
+       */
+      throw err
     }
   }
 }

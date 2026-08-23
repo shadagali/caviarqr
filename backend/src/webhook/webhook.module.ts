@@ -7,6 +7,7 @@ import { WebhookController } from './webhook.controller'
 import { Order } from '../order/order.entity'
 import { Business } from '../business/business.entity'
 import { PendingOrder } from '../pending-order/pending-order.entity'
+import { SupportThread } from '../support/support-thread.entity'
 
 import { OrderModule } from '../order/order.module'
 
@@ -18,6 +19,7 @@ import { OrderModule } from '../order/order.module'
       Order,
       Business,
       PendingOrder,
+      SupportThread,
     ]),
   ],
 

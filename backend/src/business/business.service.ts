@@ -7,12 +7,31 @@ import {
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
-import { Business } from './business.entity'
+import {
+  Business,
+  BusinessCountryCode,
+  BusinessCurrency,
+} from './business.entity'
 
 import * as bcrypt from 'bcrypt'
 
+import {
+  createHash,
+  createHmac,
+  timingSafeEqual,
+} from 'crypto'
+
+import { Resend } from 'resend'
+
 @Injectable()
 export class BusinessService {
+  private readonly resend =
+    process.env.RESEND_API_KEY
+      ? new Resend(
+          process.env.RESEND_API_KEY,
+        )
+      : null
+
   constructor(
     @InjectRepository(Business)
     private businessRepo: Repository<Business>,
@@ -21,6 +40,7 @@ export class BusinessService {
   // =========================
   // 🔥 SIGNUP
   // =========================
+
   async signup(data: {
     email: string
     password: string
@@ -31,13 +51,27 @@ export class BusinessService {
         .toLowerCase()
         .trim()
 
+    const storeCode =
+      String(
+        data.storeCode || '',
+      ).trim()
+
+    if (
+      !email ||
+      !data.password ||
+      !storeCode
+    ) {
+      throw new BadRequestException(
+        'Email, password and store code are required',
+      )
+    }
+
     const existing =
       await this.businessRepo.findOne({
         where: [
           { email },
           {
-            storeCode:
-              data.storeCode,
+            storeCode,
           },
         ],
       })
@@ -57,10 +91,21 @@ export class BusinessService {
     const business =
       this.businessRepo.create({
         email,
-        password: hashed,
-        storeCode:
-          data.storeCode,
-        isOpen: true,
+
+        password:
+          hashed,
+
+        storeCode,
+
+        isOpen:
+          true,
+
+        countryCode:
+          BusinessCountryCode
+            .UNITED_STATES,
+
+        currency:
+          BusinessCurrency.USD,
       })
 
     const saved =
@@ -69,16 +114,27 @@ export class BusinessService {
       )
 
     return {
-      id: saved.id,
-      email: saved.email,
+      id:
+        saved.id,
+
+      email:
+        saved.email,
+
       storeCode:
         saved.storeCode,
+
+      countryCode:
+        saved.countryCode,
+
+      currency:
+        saved.currency,
     }
   }
 
   // =========================
   // 🔥 LOGIN
   // =========================
+
   async login(data: {
     email: string
     password: string
@@ -99,7 +155,9 @@ export class BusinessService {
 
     const business =
       await this.businessRepo.findOne({
-        where: { email },
+        where: {
+          email,
+        },
       })
 
     if (!business) {
@@ -121,29 +179,542 @@ export class BusinessService {
     }
 
     return {
-      id: business.id,
-      email: business.email,
+      id:
+        business.id,
+
+      email:
+        business.email,
+
       storeCode:
         business.storeCode,
+
       stripeAccountId:
         business.stripeAccountId,
+
       isOpen:
         business.isOpen,
+
+      countryCode:
+        business.countryCode,
+
+      currency:
+        business.currency,
+    }
+  }
+
+  // =========================
+  // 🔐 FORGOT PASSWORD
+  // =========================
+
+  async forgotPassword(
+    rawEmail: string,
+  ) {
+    const email =
+      String(rawEmail || '')
+        .trim()
+        .toLowerCase()
+
+    if (
+      !email ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+        email,
+      )
+    ) {
+      throw new BadRequestException(
+        'Enter a valid email address.',
+      )
+    }
+
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          email,
+        },
+      })
+
+    /*
+     * Always return the same response when the
+     * account does not exist so this endpoint
+     * cannot be used to discover owner emails.
+     */
+    if (!business) {
+      return {
+        success: true,
+        message:
+          'If an account exists for this email, a reset link has been sent.',
+      }
+    }
+
+    const secret =
+      String(
+        process.env
+          .PASSWORD_RESET_SECRET ||
+          '',
+      ).trim()
+
+    if (!secret) {
+      throw new BadRequestException(
+        'Password reset service is not configured.',
+      )
+    }
+
+    if (!this.resend) {
+      throw new BadRequestException(
+        'Email service is not configured. Add RESEND_API_KEY to backend .env and restart the backend.',
+      )
+    }
+
+    const passwordFingerprint =
+      createHash('sha256')
+        .update(
+          business.password,
+        )
+        .digest('hex')
+
+    const payload =
+      Buffer.from(
+        JSON.stringify({
+          email:
+            business.email,
+          exp:
+            Date.now() +
+            30 * 60 * 1000,
+          passwordFingerprint,
+        }),
+        'utf8',
+      ).toString(
+        'base64url',
+      )
+
+    const signature =
+      createHmac(
+        'sha256',
+        secret,
+      )
+        .update(payload)
+        .digest(
+          'base64url',
+        )
+
+    const token =
+      `${payload}.${signature}`
+
+    const frontendUrl =
+      String(
+        process.env
+          .FRONTEND_URL ||
+          process.env
+            .WEB_URL ||
+          'http://localhost:3000',
+      ).replace(
+        /\/+$/,
+        '',
+      )
+
+    const resetUrl =
+      `${frontendUrl}/reset-password?token=${encodeURIComponent(
+        token,
+      )}`
+
+    const from =
+      process.env
+        .PASSWORD_RESET_EMAIL_FROM ||
+      process.env
+        .MAINTENANCE_EMAIL_FROM ||
+      'CaviarQR <onboarding@resend.dev>'
+
+    const result =
+      await this.resend.emails.send({
+        from,
+
+        to:
+          business.email,
+
+        subject:
+          'Reset your CaviarQR password',
+
+        text:
+          `You requested a CaviarQR password reset.
+
+Open this link to create a new password:
+
+${resetUrl}
+
+This link expires in 30 minutes.
+
+If you did not request this reset, you can ignore this email.`,
+
+        html:
+          `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+              <h2 style="margin: 0 0 12px;">
+                Reset your CaviarQR password
+              </h2>
+
+              <p>
+                We received a request to reset your CaviarQR password.
+              </p>
+
+              <p style="margin: 24px 0;">
+                <a
+                  href="${resetUrl}"
+                  style="display: inline-block; padding: 12px 18px; background: #111827; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 700;"
+                >
+                  Reset Password
+                </a>
+              </p>
+
+              <p>
+                This link expires in 30 minutes.
+              </p>
+
+              <p>
+                If you did not request this reset, you can ignore this email.
+              </p>
+            </div>
+          `,
+      })
+
+    if (result.error) {
+      throw new BadRequestException(
+        result.error.message ||
+          'Reset email could not be sent.',
+      )
+    }
+
+    return {
+      success: true,
+      message:
+        'If an account exists for this email, a reset link has been sent.',
+    }
+  }
+
+  // =========================
+  // 🔐 RESET PASSWORD
+  // =========================
+
+  async resetPassword(
+    rawToken: string,
+    rawPassword: string,
+  ) {
+    const token =
+      String(
+        rawToken || '',
+      ).trim()
+
+    const password =
+      String(
+        rawPassword || '',
+      )
+
+    if (!token) {
+      throw new BadRequestException(
+        'Reset token is required.',
+      )
+    }
+
+    if (
+      password.length < 8
+    ) {
+      throw new BadRequestException(
+        'Password must be at least 8 characters.',
+      )
+    }
+
+    const secret =
+      String(
+        process.env
+          .PASSWORD_RESET_SECRET ||
+          '',
+      ).trim()
+
+    if (!secret) {
+      throw new BadRequestException(
+        'Password reset service is not configured.',
+      )
+    }
+
+    const parts =
+      token.split('.')
+
+    if (
+      parts.length !== 2
+    ) {
+      throw new BadRequestException(
+        'Invalid or expired reset link.',
+      )
+    }
+
+    const [
+      payload,
+      providedSignature,
+    ] = parts
+
+    const expectedSignature =
+      createHmac(
+        'sha256',
+        secret,
+      )
+        .update(payload)
+        .digest(
+          'base64url',
+        )
+
+    const providedBuffer =
+      Buffer.from(
+        providedSignature,
+        'utf8',
+      )
+
+    const expectedBuffer =
+      Buffer.from(
+        expectedSignature,
+        'utf8',
+      )
+
+    if (
+      providedBuffer.length !==
+        expectedBuffer.length ||
+      !timingSafeEqual(
+        providedBuffer,
+        expectedBuffer,
+      )
+    ) {
+      throw new BadRequestException(
+        'Invalid or expired reset link.',
+      )
+    }
+
+    let decoded: {
+      email?: string
+      exp?: number
+      passwordFingerprint?: string
+    }
+
+    try {
+      decoded =
+        JSON.parse(
+          Buffer.from(
+            payload,
+            'base64url',
+          ).toString(
+            'utf8',
+          ),
+        )
+    } catch {
+      throw new BadRequestException(
+        'Invalid or expired reset link.',
+      )
+    }
+
+    if (
+      !decoded.email ||
+      !decoded.exp ||
+      !decoded.passwordFingerprint ||
+      decoded.exp <
+        Date.now()
+    ) {
+      throw new BadRequestException(
+        'Invalid or expired reset link.',
+      )
+    }
+
+    const email =
+      String(
+        decoded.email,
+      )
+        .trim()
+        .toLowerCase()
+
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          email,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Invalid or expired reset link.',
+      )
+    }
+
+    const currentFingerprint =
+      createHash('sha256')
+        .update(
+          business.password,
+        )
+        .digest('hex')
+
+    const providedFingerprint =
+      Buffer.from(
+        decoded.passwordFingerprint,
+        'utf8',
+      )
+
+    const currentFingerprintBuffer =
+      Buffer.from(
+        currentFingerprint,
+        'utf8',
+      )
+
+    if (
+      providedFingerprint.length !==
+        currentFingerprintBuffer.length ||
+      !timingSafeEqual(
+        providedFingerprint,
+        currentFingerprintBuffer,
+      )
+    ) {
+      throw new BadRequestException(
+        'Invalid or expired reset link.',
+      )
+    }
+
+    business.password =
+      await bcrypt.hash(
+        password,
+        12,
+      )
+
+    await this.businessRepo.save(
+      business,
+    )
+
+    return {
+      success: true,
+      message:
+        'Password updated successfully.',
+    }
+  }
+
+  // =========================
+  // 🔥 COUNTRY / CURRENCY
+  // =========================
+
+  async setCountryAndCurrency(
+    businessId: number,
+    countryCode:
+      | BusinessCountryCode
+      | string,
+  ) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          id:
+            businessId,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Business not found',
+      )
+    }
+
+    const normalizedCountry =
+      String(
+        countryCode || '',
+      )
+        .trim()
+        .toUpperCase()
+
+    let nextCountry:
+      BusinessCountryCode
+
+    let nextCurrency:
+      BusinessCurrency
+
+    if (
+      normalizedCountry ===
+      BusinessCountryCode
+        .UNITED_STATES
+    ) {
+      nextCountry =
+        BusinessCountryCode
+          .UNITED_STATES
+
+      nextCurrency =
+        BusinessCurrency.USD
+    } else if (
+      normalizedCountry ===
+      BusinessCountryCode.INDIA
+    ) {
+      nextCountry =
+        BusinessCountryCode.INDIA
+
+      nextCurrency =
+        BusinessCurrency.INR
+    } else {
+      throw new BadRequestException(
+        'Country must be US or IN.',
+      )
+    }
+
+    business.countryCode =
+      nextCountry
+
+    business.currency =
+      nextCurrency
+
+    /*
+     * Reset Stripe readiness after
+     * a country change.
+     *
+     * Stripe status logic will
+     * re-check whether the connected
+     * account country matches the
+     * selected café country.
+     */
+    business.stripeAccountReady =
+      false
+
+    business.stripeIssueActive =
+      false
+
+    business.stripeIssueMessage =
+      null
+
+    const saved =
+      await this.businessRepo.save(
+        business,
+      )
+
+    return {
+      success:
+        true,
+
+      countryCode:
+        saved.countryCode,
+
+      currency:
+        saved.currency,
     }
   }
 
   // =========================
   // 🔥 KITCHEN LOGIN
   // =========================
+
   async kitchenLogin(data: {
     storeCode: string
     password?: string
   }) {
+    const storeCode =
+      String(
+        data.storeCode || '',
+      ).trim()
+
+    if (!storeCode) {
+      throw new UnauthorizedException(
+        'Invalid credentials',
+      )
+    }
+
     const business =
       await this.businessRepo.findOne({
         where: {
-          storeCode:
-            data.storeCode,
+          storeCode,
         },
       })
 
@@ -160,6 +731,7 @@ export class BusinessService {
       return {
         businessId:
           business.id,
+
         storeCode:
           business.storeCode,
       }
@@ -186,6 +758,7 @@ export class BusinessService {
     return {
       businessId:
         business.id,
+
       storeCode:
         business.storeCode,
     }
@@ -194,14 +767,25 @@ export class BusinessService {
   // =========================
   // 🔥 SET KITCHEN PASSWORD
   // =========================
+
   async setKitchenPassword(
     businessId: number,
     password: string,
   ) {
+    if (
+      !password ||
+      !password.trim()
+    ) {
+      throw new BadRequestException(
+        'Kitchen password is required',
+      )
+    }
+
     const business =
       await this.businessRepo.findOne({
         where: {
-          id: businessId,
+          id:
+            businessId,
         },
       })
 
@@ -226,16 +810,32 @@ export class BusinessService {
     )
 
     return {
-      success: true,
+      success:
+        true,
     }
   }
 
   // =========================
   // 🔥 DISABLE PASSWORD
   // =========================
+
   async disableKitchenPassword(
     businessId: number,
   ) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          id:
+            businessId,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Business not found',
+      )
+    }
+
     await this.businessRepo.update(
       businessId,
       {
@@ -245,33 +845,69 @@ export class BusinessService {
     )
 
     return {
-      success: true,
+      success:
+        true,
     }
   }
 
   // =========================
   // 🔥 SERVICE FEE
   // =========================
+
   async setServiceFee(
     businessId: number,
     fee: number,
   ) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          id:
+            businessId,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Business not found',
+      )
+    }
+
+    const normalizedFee =
+      Number(fee)
+
+    if (
+      !Number.isFinite(
+        normalizedFee,
+      ) ||
+      normalizedFee < 0 ||
+      normalizedFee > 100
+    ) {
+      throw new BadRequestException(
+        'Service fee must be between 0 and 100.',
+      )
+    }
+
     await this.businessRepo.update(
       businessId,
       {
         serviceFee:
-          Number(fee) || 0,
+          normalizedFee,
       },
     )
 
     return {
-      success: true,
+      success:
+        true,
+
+      serviceFee:
+        normalizedFee,
     }
   }
 
   // =========================
   // 🔥 BRANDING UPDATE
   // =========================
+
   async updateBranding(
     businessId: number,
     name?: string,
@@ -280,7 +916,8 @@ export class BusinessService {
     const business =
       await this.businessRepo.findOne({
         where: {
-          id: businessId,
+          id:
+            businessId,
         },
       })
 
@@ -294,26 +931,40 @@ export class BusinessService {
       business.logo
 
     if (logo) {
-      const cleaned = logo
-        .replace(
-          /^\/+/g,
-          '',
-        )
-        .replace(
-          /^uploads\//g,
-          '',
-        )
+      const cleaned =
+        logo
+          .replace(
+            /^\/+/g,
+            '',
+          )
+          .replace(
+            /^uploads\//g,
+            '',
+          )
 
-      finalLogo = `/uploads/${cleaned}`
+      finalLogo =
+        cleaned
+          ? `/uploads/${cleaned}`
+          : null
     }
+
+    const cleanedName =
+      typeof name ===
+        'string'
+        ? name.trim()
+        : ''
 
     await this.businessRepo.update(
       businessId,
       {
-        ...(name
-          ? { name }
+        ...(cleanedName
+          ? {
+              name:
+                cleanedName,
+            }
           : {}),
-        ...(finalLogo
+
+        ...(logo
           ? {
               logo:
                 finalLogo,
@@ -323,21 +974,26 @@ export class BusinessService {
     )
 
     return {
-      success: true,
-      logo: finalLogo,
+      success:
+        true,
+
+      logo:
+        finalLogo,
     }
   }
 
   // =========================
   // 🔥 TOGGLE OPEN/CLOSED
   // =========================
+
   async toggleOpen(
     businessId: number,
   ) {
     const business =
       await this.businessRepo.findOne({
         where: {
-          id: businessId,
+          id:
+            businessId,
         },
       })
 
@@ -347,41 +1003,55 @@ export class BusinessService {
       )
     }
 
-    // 🔥 FORCE FRESH VALUE
     const newValue =
       !business.isOpen
 
     await this.businessRepo.update(
       businessId,
       {
-        isOpen: newValue,
+        isOpen:
+          newValue,
       },
     )
 
-    // 🔥 REFETCH
     const updated =
       await this.businessRepo.findOne({
         where: {
-          id: businessId,
+          id:
+            businessId,
         },
       })
 
     return {
-      success: true,
+      success:
+        true,
+
       isOpen:
-        updated?.isOpen,
+        updated?.isOpen ===
+        true,
     }
   }
 
   // =========================
   // 🔥 FIND STORE
   // =========================
+
   async findByStoreCode(
     storeCode: string,
   ) {
+    const normalizedStoreCode =
+      String(
+        storeCode || '',
+      ).trim()
+
+    if (!normalizedStoreCode) {
+      return null
+    }
+
     return this.businessRepo.findOne({
       where: {
-        storeCode,
+        storeCode:
+          normalizedStoreCode,
       },
     })
   }
@@ -389,6 +1059,7 @@ export class BusinessService {
   // =========================
   // 🔥 CREATE
   // =========================
+
   async create(data: {
     email: string
     password: string
@@ -399,13 +1070,29 @@ export class BusinessService {
         .toLowerCase()
         .trim()
 
+    const storeCode =
+      String(
+        data.storeCode || '',
+      ).trim()
+
+    if (
+      !email ||
+      !data.password ||
+      !storeCode
+    ) {
+      throw new BadRequestException(
+        'Email, password and store code are required',
+      )
+    }
+
     const existing =
       await this.businessRepo.findOne({
         where: [
-          { email },
           {
-            storeCode:
-              data.storeCode,
+            email,
+          },
+          {
+            storeCode,
           },
         ],
       })
@@ -423,10 +1110,21 @@ export class BusinessService {
     const business =
       this.businessRepo.create({
         email,
-        password: hashed,
-        storeCode:
-          data.storeCode,
-        isOpen: true,
+
+        password:
+          hashed,
+
+        storeCode,
+
+        isOpen:
+          true,
+
+        countryCode:
+          BusinessCountryCode
+            .UNITED_STATES,
+
+        currency:
+          BusinessCurrency.USD,
       })
 
     return this.businessRepo.save(
@@ -437,6 +1135,7 @@ export class BusinessService {
   // =========================
   // 🔥 GET ALL STORE CODES
   // =========================
+
   async getAllStoreCodes() {
     const businesses =
       await this.businessRepo.find({
@@ -445,8 +1144,18 @@ export class BusinessService {
         ],
       })
 
-    return businesses.map(
-      (b) => b.storeCode,
-    )
+    return businesses
+      .map(
+        (business) =>
+          business.storeCode,
+      )
+      .filter(
+        (
+          storeCode,
+        ): storeCode is string =>
+          typeof storeCode ===
+            'string' &&
+          storeCode.length > 0,
+      )
   }
 }

@@ -1,29 +1,109 @@
-import { NextRequest, NextResponse } from "next/server"
+import {
+  NextRequest,
+  NextResponse,
+} from 'next/server'
 
-export async function POST(req: NextRequest) {
+const API =
+  process.env.NEXT_PUBLIC_API_URL ||
+  'http://127.0.0.1:3001'
+
+export async function POST(
+  request: NextRequest,
+) {
   try {
-    const body = await req.json()
+    const body =
+      await request.json()
 
-    console.log("🔥 PROXY HIT:", body)
+    const email =
+      String(
+        body?.email || '',
+      )
+        .trim()
+        .toLowerCase()
 
-    const res = await fetch("http://127.0.0.1:3001/business/forgot-password", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    if (!email) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            'Email is required.',
+        },
+        {
+          status: 400,
+        },
+      )
+    }
+
+    const backendUrl =
+      `${API.replace(/\/+$/, '')}/business/forgot-password`
+
+    console.log(
+      '🔐 FORGOT PASSWORD PROXY:',
+      backendUrl,
+    )
+
+    const response =
+      await fetch(
+        backendUrl,
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type':
+              'application/json',
+          },
+
+          body:
+            JSON.stringify({
+              email,
+            }),
+
+          cache: 'no-store',
+        },
+      )
+
+    const text =
+      await response.text()
+
+    let data: any
+
+    try {
+      data =
+        text
+          ? JSON.parse(text)
+          : {}
+    } catch {
+      data = {
+        success: false,
+        message:
+          text ||
+          'Invalid response from backend.',
+      }
+    }
+
+    return NextResponse.json(
+      data,
+      {
+        status:
+          response.status,
       },
-      body: JSON.stringify(body),
-    })
+    )
+  } catch (error: any) {
+    console.error(
+      '❌ FORGOT PASSWORD PROXY ERROR:',
+      error,
+    )
 
-    const text = await res.text()
-    console.log("📩 BACKEND RESPONSE:", text)
-
-    return new NextResponse(text, {
-      status: res.status,
-      headers: { "Content-Type": "application/json" },
-    })
-
-  } catch (err: any) {
-    console.log("❌ PROXY ERROR:", err)
-    return NextResponse.json({ error: "Proxy failed" }, { status: 500 })
+    return NextResponse.json(
+      {
+        success: false,
+        message:
+          error?.message ||
+          'Backend could not be reached.',
+      },
+      {
+        status: 502,
+      },
+    )
   }
 }

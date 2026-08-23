@@ -1,0 +1,11 @@
+README.txt
+TEST-CHECKLIST.txt
+apply-fix.ps1
+backend/src/app.module.ts
+backend/src/kitchen-auth/kitchen-auth.controller.ts
+backend/src/kitchen-auth/kitchen-auth.module.ts
+backend/src/kitchen-auth/kitchen-session.guard.ts
+backend/src/kitchen-auth/kitchen-token.ts
+backend/src/order/order.gateway.ts
+web/app/dashboard/kitchen/page.tsx
+web/app/login/page.tsx

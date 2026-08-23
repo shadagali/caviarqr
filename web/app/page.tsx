@@ -9,7 +9,7 @@ export default function Home() {
     { label: 'Owner Login', path: '/login', primary: true },
     { label: 'Register Tags', path: '/login/register' },
     { label: 'Kitchen Login', path: '/login' },
-    { label: 'Maintenance', path: '/maintenance' },
+    { label: 'Maintenance', path: '/maintenance/login' },
   ]
 
   return (
@@ -216,6 +216,27 @@ export default function Home() {
 
         .footer-dash { width: 18px; height: 0.5px; background: rgba(139,115,85,0.3); }
         .footer-dot { width: 2px; height: 2px; border-radius: 50%; background: rgba(139,115,85,0.35); }
+
+        .support {
+          margin-top: 1rem;
+          font-family: 'Cormorant Garamond', Georgia, serif;
+          font-size: 0.78rem;
+          font-weight: 300;
+          letter-spacing: 0.08em;
+          color: var(--gold);
+          text-align: center;
+        }
+
+        .support a {
+          color: inherit;
+          text-decoration: none;
+          transition: opacity 0.15s ease;
+        }
+
+        .support a:hover {
+          opacity: 0.65;
+          text-decoration: underline;
+        }
       `}</style>
 
       <div className="root">
@@ -268,6 +289,13 @@ export default function Home() {
             <div className="footer-dot" style={{ opacity: 0.5 }} />
             <div className="footer-dot" style={{ opacity: 0.25 }} />
             <div className="footer-dash" />
+          </div>
+
+          <div className="support">
+            Support -{' '}
+            <a href="mailto:caviarqr@gmail.com">
+              caviarqr@gmail.com
+            </a>
           </div>
 
         </div>

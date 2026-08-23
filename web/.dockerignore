@@ -1,0 +1,34 @@
+# Dependencies and Next.js build output
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+
+# Local/runtime environment files
+.env
+.env.*
+!.env.example
+.npmrc
+
+# Logs and temp files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.tmp
+temp
+tmp
+
+# Git / editor / OS metadata
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Local backups
+.caviarqr-backups
+*.bak

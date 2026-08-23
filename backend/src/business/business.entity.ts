@@ -1,8 +1,18 @@
 import {
+  Column,
   Entity,
   PrimaryGeneratedColumn,
-  Column,
 } from 'typeorm'
+
+export enum BusinessCurrency {
+  USD = 'usd',
+  INR = 'inr',
+}
+
+export enum BusinessCountryCode {
+  UNITED_STATES = 'US',
+  INDIA = 'IN',
+}
 
 @Entity()
 export class Business {
@@ -31,6 +41,29 @@ export class Business {
   storeCode: string
 
   // =========================
+  // COUNTRY AND CURRENCY
+  // =========================
+
+  @Column({
+    type: 'varchar',
+    length: 2,
+    default:
+      BusinessCountryCode
+        .UNITED_STATES,
+  })
+  countryCode:
+    BusinessCountryCode
+
+  @Column({
+    type: 'varchar',
+    length: 3,
+    default:
+      BusinessCurrency.USD,
+  })
+  currency:
+    BusinessCurrency
+
+  // =========================
   // STRIPE
   // =========================
 
@@ -43,26 +76,31 @@ export class Business {
     | null
 
   @Column({
+    type: 'boolean',
     default: false,
   })
   stripeChargesEnabled: boolean
 
   @Column({
+    type: 'boolean',
     default: false,
   })
   stripePayoutsEnabled: boolean
 
   @Column({
+    type: 'boolean',
     default: false,
   })
   stripeDetailsSubmitted: boolean
 
   @Column({
+    type: 'boolean',
     default: false,
   })
   stripeAccountReady: boolean
 
   @Column({
+    type: 'boolean',
     default: false,
   })
   stripeIssueActive: boolean
@@ -131,7 +169,9 @@ export class Business {
     type: 'varchar',
     nullable: true,
   })
-  name: string | null
+  name:
+    | string
+    | null
 
   @Column({
     type: 'varchar',
@@ -145,7 +185,9 @@ export class Business {
     type: 'varchar',
     nullable: true,
   })
-  logo: string | null
+  logo:
+    | string
+    | null
 
   @Column({
     type: 'varchar',
@@ -160,6 +202,7 @@ export class Business {
   // =========================
 
   @Column({
+    type: 'boolean',
     default: true,
   })
   isOpen: boolean

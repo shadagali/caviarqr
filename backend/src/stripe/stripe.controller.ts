@@ -1,171 +1,171 @@
 import {
-  Controller,
-  Post,
   Body,
+  Controller,
   Get,
+  HttpCode,
+  HttpStatus,
+  Post,
   Query,
-  BadRequestException,
 } from '@nestjs/common'
 
-import { StripeService } from './stripe.service'
+import {
+  Throttle,
+} from '@nestjs/throttler'
+
+import {
+  CreateCheckoutDto,
+} from './dto/create-checkout.dto'
+
+import {
+  StripeBusinessDto,
+} from './dto/stripe-business.dto'
+
+import {
+  StripeService,
+} from './stripe.service'
 
 @Controller('stripe')
 export class StripeController {
   constructor(
-    private readonly service: StripeService,
+    private readonly service:
+      StripeService,
   ) {}
 
-  // =========================
-  // 🔥 CHECKOUT
-  // =========================
+  // =====================================
+  // PUBLIC CUSTOMER CHECKOUT
+  // =====================================
+
   @Post('checkout')
-  async checkout(
-    @Body()
-    body: {
-      businessId: number
-      storeCode: string
-      tableNumber: number
-      items: any[]
+  @HttpCode(HttpStatus.OK)
+  @Throttle({
+    default: {
+      limit: 10,
+      ttl: 60_000,
     },
+  })
+  checkout(
+    @Body()
+    dto: CreateCheckoutDto,
   ) {
-    return this.service.createCheckoutSession(
-      body,
-    )
+    return this.service
+      .createCheckoutSession(dto)
   }
 
-  // =========================
-  // 🔥 CONNECT STRIPE
-  // =========================
+  // =====================================
+  // OWNER STRIPE CONNECT ONBOARDING
+  // =====================================
+
   @Post('connect')
-  async connect(
-    @Body()
-    body: {
-      businessId: number
+  @HttpCode(HttpStatus.OK)
+  @Throttle({
+    default: {
+      limit: 10,
+      ttl: 60_000,
     },
+  })
+  connect(
+    @Body()
+    dto: StripeBusinessDto,
   ) {
-    if (!body?.businessId) {
-      throw new BadRequestException(
-        'businessId required',
+    return this.service
+      .createConnectLink(
+        dto.businessId,
       )
-    }
-
-    return this.service.createConnectLink(
-      Number(body.businessId),
-    )
   }
 
-  // =========================
-  // 🔥 CONNECT (BROWSER TEST)
-  // =========================
-  @Get('connect')
-  async connectGet(
-    @Query('businessId')
-    businessId: string,
+  // =====================================
+  // OWNER STRIPE DASHBOARD LINK
+  // =====================================
+
+  @Post('dashboard')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({
+    default: {
+      limit: 10,
+      ttl: 60_000,
+    },
+  })
+  dashboard(
+    @Body()
+    dto: StripeBusinessDto,
   ) {
-    const id = Number(
-      businessId || 1,
-    )
-
-    if (!id) {
-      throw new BadRequestException(
-        'Invalid businessId',
+    return this.service
+      .getDashboardLink(
+        dto.businessId,
       )
-    }
-
-    return this.service.createConnectLink(
-      id,
-    )
   }
 
-  // =========================
-  // 🔥 WITHDRAW / DASHBOARD
-  // =========================
-  @Get('dashboard')
-  async dashboard(
-    @Query('businessId')
-    businessId: string,
-  ) {
-    const id = Number(
-      businessId,
-    )
+  // =====================================
+  // OWNER CONNECTED ACCOUNT BALANCE
+  // =====================================
 
-    if (!id) {
-      throw new BadRequestException(
-        'Invalid businessId',
-      )
-    }
-
-    return this.service.getDashboardLink(
-      id,
-    )
-  }
-
-  // =========================
-  // 🔥 BALANCE
-  // =========================
   @Get('balance')
-  async balance(
-    @Query('businessId')
-    businessId: string,
-  ) {
-    const id = Number(
-      businessId,
-    )
-
-    if (!id) {
-      throw new BadRequestException(
-        'Invalid businessId',
-      )
-    }
-
-    return this.service.getBalance(
-      id,
-    )
-  }
-
-  // =========================
-  // 🔥 STATUS
-  // =========================
-  @Get('status')
-  async status(
-    @Query('businessId')
-    businessId: string,
-  ) {
-    const id = Number(
-      businessId,
-    )
-
-    if (!id) {
-      throw new BadRequestException(
-        'Invalid businessId',
-      )
-    }
-
-    return this.service.isStripeReady(
-      id,
-    )
-  }
-
-  // =========================
-  // 🔥 REFUND
-  // =========================
-  @Post('refund')
-  async refund(
-    @Body()
-    body: {
-      paymentIntentId: string
+  @Throttle({
+    default: {
+      limit: 20,
+      ttl: 60_000,
     },
+  })
+  balance(
+    @Query()
+    query: StripeBusinessDto,
   ) {
-    if (
-      !body?.paymentIntentId
-    ) {
-      throw new BadRequestException(
-        'paymentIntentId required',
+    return this.service
+      .getBalance(
+        query.businessId,
       )
-    }
+  }
 
-    return this.service.refundOrder(
-      body.paymentIntentId,
-    )
+  // =====================================
+  // PUBLIC SAFE STRIPE STATUS REFRESH
+  // =====================================
+
+  @Get('status')
+  @Throttle({
+    default: {
+      limit: 20,
+      ttl: 60_000,
+    },
+  })
+  async status(
+    @Query()
+    query: StripeBusinessDto,
+  ) {
+    const status =
+      await this.service
+        .isStripeReady(
+          query.businessId,
+        )
+
+    /*
+     * Do not expose the connected
+     * Stripe account ID publicly.
+     *
+     * Calling isStripeReady() also
+     * refreshes and persists the latest
+     * Stripe readiness state.
+     */
+    return {
+      connected:
+        status.connected,
+
+      charges_enabled:
+        status.charges_enabled,
+
+      payouts_enabled:
+        status.payouts_enabled,
+
+      details_submitted:
+        status.details_submitted,
+
+      ready:
+        status.ready,
+
+      issueActive:
+        status.issueActive,
+
+      message:
+        status.message,
+    }
   }
 }

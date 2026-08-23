@@ -19,6 +19,8 @@ import {
 
 import Stripe from 'stripe'
 
+import { Resend } from 'resend'
+
 import {
   Order,
   OrderStatus,
@@ -33,6 +35,13 @@ import {
   PendingOrderStatus,
 } from '../pending-order/pending-order.entity'
 
+import { StripeService } from '../stripe/stripe.service'
+
+import {
+  MaintenanceAuditAction,
+  MaintenanceAuditLog,
+} from './maintenance-audit-log.entity'
+
 @Injectable()
 export class MaintenanceService {
   private readonly logger =
@@ -41,6 +50,8 @@ export class MaintenanceService {
     )
 
   private stripe: Stripe
+
+  private resend: Resend | null = null
 
   private reconciliationRunning = false
 
@@ -53,14 +64,40 @@ export class MaintenanceService {
 
     @InjectRepository(PendingOrder)
     private pendingOrderRepo: Repository<PendingOrder>,
+
+    @InjectRepository(MaintenanceAuditLog)
+    private auditRepo: Repository<MaintenanceAuditLog>,
+
+    private stripeService: StripeService,
   ) {
+    const key =
+      process.env.STRIPE_SECRET_KEY
+
+    if (
+      !key ||
+      !key.startsWith('sk_')
+    ) {
+      throw new Error(
+        '❌ Missing or invalid STRIPE_SECRET_KEY in .env',
+      )
+    }
+
     this.stripe = new Stripe(
-      'sk_test_51Sxh4AKZAB5HMPha5usVVKGeyWcWBEqiFjVMGwPCVOFbbx56mJaJOcZrObsxj35zM92583ovMqnfGUI31JcL1rbP00TUzKY5xh',
+      key,
       {
         apiVersion:
           '2026-02-25.clover',
       },
     )
+
+    const resendKey =
+      process.env.RESEND_API_KEY
+
+    if (resendKey) {
+      this.resend = new Resend(
+        resendKey,
+      )
+    }
   }
 
   // =========================
@@ -79,6 +116,7 @@ export class MaintenanceService {
 
     order.requiresOwnerAction = true
     order.issueResolved = false
+    order.issueType = issue
 
     order.ownerIssueType = issue
     order.ownerIssueSeverity = severity
@@ -87,13 +125,92 @@ export class MaintenanceService {
     order.ownerActionCreatedAt =
       new Date()
 
-    order.ownerActionId =
-      `ACT-${String(
-        order.id,
-      ).padStart(6, '0')}`
+    order.ownerActionResolvedAt =
+      null
+
+    order.ownerActionResolvedBy =
+      null
+
+    if (!order.ownerActionId) {
+      order.ownerActionId =
+        `ACT-${String(
+          order.id,
+        ).padStart(6, '0')}`
+    }
+
+    this.logger.warn(
+      JSON.stringify({
+        actionCenter: true,
+        issueId: order.ownerActionId,
+        issue,
+        severity,
+        orderId: order.id,
+        customer:
+          order.customerName,
+        email:
+          order.customerEmail,
+        paymentIntent:
+          order.stripePaymentIntentId,
+        message,
+        createdAt:
+          order.ownerActionCreatedAt,
+      }),
+    )
 
     return this.orderRepo.save(
       order,
+    )
+  }
+
+  private escapeEmailHtml(
+    value: string,
+  ) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  }
+
+  // =========================
+  // 🧾 AUDIT LOG HELPER
+  // =========================
+
+  private async createAuditLog(data: {
+    action: MaintenanceAuditAction
+    order?: Order | null
+    performedBy?: string | null
+    reason?: string | null
+    metadata?: Record<string, unknown> | null
+  }) {
+    const order =
+      data.order || null
+
+    const audit =
+      this.auditRepo.create({
+        action: data.action,
+
+        orderId:
+          order?.id || null,
+
+        businessId:
+          order?.businessId || null,
+
+        storeCode:
+          order?.storeCode || null,
+
+        performedBy:
+          data.performedBy || null,
+
+        reason:
+          data.reason || null,
+
+        metadata:
+          data.metadata || null,
+      })
+
+    return this.auditRepo.save(
+      audit,
     )
   }
 
@@ -165,8 +282,6 @@ export class MaintenanceService {
 
     for (const pending of pendingOrders) {
       try {
-        // No Stripe session means payment was never opened properly.
-        // This is not a customer-paid issue.
         if (!pending.stripeSessionId) {
           pending.status =
             PendingOrderStatus.EXPIRED
@@ -181,7 +296,6 @@ export class MaintenanceService {
           results.push({
             pendingOrderId:
               pending.id,
-
             status:
               'EXPIRED_NO_SESSION',
           })
@@ -204,7 +318,6 @@ export class MaintenanceService {
         pending.stripePaymentIntentId =
           paymentIntentId || null
 
-        // Paid in Stripe but our normal webhook flow did not complete.
         if (
           session.payment_status ===
             'paid' ||
@@ -250,10 +363,8 @@ export class MaintenanceService {
             results.push({
               pendingOrderId:
                 pending.id,
-
               orderId:
                 existingOrder.id,
-
               status:
                 'ORDER_ALREADY_EXISTS',
             })
@@ -285,7 +396,6 @@ export class MaintenanceService {
             results.push({
               pendingOrderId:
                 pending.id,
-
               status:
                 'FAILED_BUSINESS_NOT_FOUND',
             })
@@ -422,10 +532,8 @@ export class MaintenanceService {
           results.push({
             pendingOrderId:
               pending.id,
-
             orderId:
               saved.id,
-
             status:
               'RECOVERED_PAID_ORDER',
           })
@@ -433,7 +541,6 @@ export class MaintenanceService {
           continue
         }
 
-        // Customer never completed payment.
         if (
           session.status ===
             'expired' ||
@@ -453,7 +560,6 @@ export class MaintenanceService {
           results.push({
             pendingOrderId:
               pending.id,
-
             status:
               'EXPIRED_UNPAID',
           })
@@ -464,7 +570,6 @@ export class MaintenanceService {
         results.push({
           pendingOrderId:
             pending.id,
-
           status:
             'STILL_PENDING',
         })
@@ -485,10 +590,8 @@ export class MaintenanceService {
         results.push({
           pendingOrderId:
             pending.id,
-
           status:
             'ERROR',
-
           message:
             err?.message,
         })
@@ -498,7 +601,6 @@ export class MaintenanceService {
     return {
       checked:
         pendingOrders.length,
-
       results,
     }
   }
@@ -524,35 +626,729 @@ export class MaintenanceService {
   // =========================
 
   async resolveIssue(id: number) {
+    const orderId =
+      Number(id)
+
+    if (
+      !orderId ||
+      Number.isNaN(orderId)
+    ) {
+      throw new BadRequestException(
+        'Valid order id is required.',
+      )
+    }
+
     const order =
       await this.orderRepo.findOne({
         where: {
-          id,
+          id: orderId,
         },
       })
 
     if (!order) {
       throw new BadRequestException(
-        'Order not found',
+        'Order not found.',
       )
     }
 
     order.issueResolved = true
-    order.issueType = ''
     order.requiresOwnerAction = false
+    order.issueType = 'RESOLVED'
+
     order.ownerIssueType = null
     order.ownerIssueSeverity = null
-    order.ownerActionMessage = null
+    order.ownerActionMessage =
+      'Resolved by CaviarQR maintenance.'
+
     order.ownerActionResolvedAt =
       new Date()
+
     order.ownerActionResolvedBy =
-      'MAINTENANCE'
+      'MAINTENANCE_ADMIN'
 
     await this.orderRepo.save(order)
 
     return {
       success: true,
+      message: 'Issue resolved.',
       orderId: order.id,
+    }
+  }
+
+  // =========================
+  // 💳 REFUND ORDER
+  // =========================
+
+  async refundOrder(
+    id: number,
+    body?: {
+      reason?: string
+      performedBy?: string
+    },
+  ) {
+    const orderId =
+      Number(id)
+
+    if (
+      !orderId ||
+      Number.isNaN(orderId)
+    ) {
+      throw new BadRequestException(
+        'Valid order id is required.',
+      )
+    }
+
+    const order =
+      await this.orderRepo.findOne({
+        where: {
+          id: orderId,
+        },
+      })
+
+    if (!order) {
+      throw new BadRequestException(
+        'Order not found.',
+      )
+    }
+
+    if (
+      order.status ===
+        OrderStatus.REFUNDED ||
+      order.refundProcessed ||
+      order.refundId
+    ) {
+      throw new BadRequestException(
+        'A refund already exists for this order. Check Stripe before attempting another refund.',
+      )
+    }
+
+    if (
+      !order.stripePaymentIntentId
+    ) {
+      throw new BadRequestException(
+        'This order does not have a Stripe payment intent.',
+      )
+    }
+
+    const reason =
+      String(
+        body?.reason ||
+          'Refunded by CaviarQR maintenance.',
+      ).trim()
+
+    const performedBy =
+      String(
+        body?.performedBy ||
+          'MAINTENANCE_ADMIN',
+      ).trim()
+
+    const previousStatus =
+      order.status
+
+    order.refundRequested =
+      true
+
+    order.refundRequestedAt =
+      new Date()
+
+    order.refundLastAttemptAt =
+      new Date()
+
+    order.refundReason =
+      reason
+
+    order.refundedBy =
+      performedBy
+
+    order.refundFailureMessage =
+      null
+
+    await this.orderRepo.save(
+      order,
+    )
+
+    await this.createAuditLog({
+      action:
+        MaintenanceAuditAction.REFUND_REQUESTED,
+
+      order,
+
+      performedBy,
+
+      reason,
+
+      metadata: {
+        paymentIntentId:
+          order.stripePaymentIntentId,
+
+        orderTotal:
+          order.total,
+
+        previousStatus,
+      },
+    })
+
+    let refund: Stripe.Refund
+
+    // Only errors from the Stripe refund request
+    // are handled in this catch block.
+    try {
+      refund =
+        await this.stripe.refunds.create(
+          {
+            payment_intent:
+              order.stripePaymentIntentId,
+
+            reverse_transfer:
+              true,
+
+            refund_application_fee:
+              true,
+
+            metadata: {
+              orderId:
+                String(order.id),
+
+              businessId:
+                String(
+                  order.businessId,
+                ),
+
+              storeCode:
+                order.storeCode || '',
+
+              performedBy,
+            },
+          },
+          {
+            idempotencyKey:
+              `maintenance-refund-order-${order.id}`,
+          },
+        )
+    } catch (err: any) {
+      const errorMessage =
+        err?.message ||
+        'Stripe rejected the refund request.'
+
+      const outcomeUnknown =
+        err?.type ===
+          'StripeConnectionError' ||
+        err?.type ===
+          'StripeAPIError'
+
+      order.refundProcessed =
+        false
+
+      order.stripeRefundStatus =
+        outcomeUnknown
+          ? 'unknown'
+          : 'failed'
+
+      order.refundFailureMessage =
+        errorMessage
+
+      order.refundLastAttemptAt =
+        new Date()
+
+      order.requiresOwnerAction =
+        true
+
+      order.issueResolved =
+        false
+
+      order.issueType =
+        outcomeUnknown
+          ? OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+          : OwnerIssueType.REFUND_FAILED
+
+      order.ownerIssueType =
+        outcomeUnknown
+          ? OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+          : OwnerIssueType.REFUND_FAILED
+
+      order.ownerIssueSeverity =
+        OwnerIssueSeverity.CRITICAL
+
+      order.ownerActionMessage =
+        outcomeUnknown
+          ? `Stripe refund outcome is unknown: ${errorMessage}. Check Stripe before retrying.`
+          : `Stripe refund request failed: ${errorMessage}`
+
+      order.ownerActionCreatedAt =
+        order.ownerActionCreatedAt ||
+        new Date()
+
+      await this.orderRepo.save(
+        order,
+      )
+
+      try {
+        await this.createAuditLog({
+          action:
+            MaintenanceAuditAction.REFUND_FAILED,
+
+          order,
+
+          performedBy,
+
+          reason,
+
+          metadata: {
+            paymentIntentId:
+              order.stripePaymentIntentId,
+
+            error:
+              errorMessage,
+
+            outcomeUnknown,
+
+            stage:
+              'STRIPE_REFUND_CREATE',
+          },
+        })
+      } catch (auditError: any) {
+        this.logger.error(
+          `REFUND_FAILURE_AUDIT_LOG_FAILED: ${order.id}`,
+          auditError,
+        )
+      }
+
+      this.logger.error(
+        `STRIPE_REFUND_CREATE_FAILED: ${order.id}`,
+        err,
+      )
+
+      throw new BadRequestException(
+        outcomeUnknown
+          ? 'The Stripe refund outcome is unknown. Check Stripe before trying again.'
+          : errorMessage,
+      )
+    }
+
+    const refundedAmount =
+      Number(
+        (
+          refund.amount /
+          100
+        ).toFixed(2),
+      )
+
+    const refundDate =
+      new Date(
+        refund.created * 1000,
+      )
+
+    const refundStatus =
+      refund.status ||
+      'pending'
+
+    const transferReversal =
+      refund.transfer_reversal ||
+      refund.source_transfer_reversal
+
+    const transferReversalId =
+      typeof transferReversal ===
+      'string'
+        ? transferReversal
+        : transferReversal?.id ||
+          null
+
+    order.refundId =
+      refund.id
+
+    order.stripeRefundStatus =
+      refundStatus
+
+    order.refundAmount =
+      refundedAmount
+
+    order.refundAt =
+      refundDate
+
+    order.refundLastAttemptAt =
+      new Date()
+
+    order.transferReversalId =
+      transferReversalId
+
+    order.refundTransferReversed =
+      Boolean(
+        transferReversalId,
+      )
+
+    // =========================
+    // REFUND PENDING OR FAILED
+    // =========================
+
+    if (
+      refundStatus !==
+      'succeeded'
+    ) {
+      const terminalFailure =
+        refundStatus ===
+          'failed' ||
+        refundStatus ===
+          'canceled'
+
+      const statusMessage =
+        terminalFailure
+          ? refund.failure_reason ||
+            `Stripe refund ${refundStatus}.`
+          : `Stripe refund is currently ${refundStatus}.`
+
+      order.refundProcessed =
+        false
+
+      order.refundApplicationFee =
+        false
+
+      order.refundFailureMessage =
+        terminalFailure
+          ? statusMessage
+          : null
+
+      order.requiresOwnerAction =
+        true
+
+      order.issueResolved =
+        false
+
+      order.issueType =
+        terminalFailure
+          ? OwnerIssueType.REFUND_FAILED
+          : OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+
+      order.ownerIssueType =
+        terminalFailure
+          ? OwnerIssueType.REFUND_FAILED
+          : OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+
+      order.ownerIssueSeverity =
+        terminalFailure
+          ? OwnerIssueSeverity.CRITICAL
+          : OwnerIssueSeverity.WARNING
+
+      order.ownerActionMessage =
+        `${statusMessage} Check Stripe before attempting another refund.`
+
+      order.ownerActionCreatedAt =
+        order.ownerActionCreatedAt ||
+        new Date()
+
+      await this.orderRepo.save(
+        order,
+      )
+
+      if (terminalFailure) {
+        try {
+          await this.createAuditLog({
+            action:
+              MaintenanceAuditAction.REFUND_FAILED,
+
+            order,
+
+            performedBy,
+
+            reason,
+
+            metadata: {
+              refundId:
+                refund.id,
+
+              paymentIntentId:
+                order.stripePaymentIntentId,
+
+              refundAmount:
+                refundedAmount,
+
+              stripeRefundStatus:
+                refundStatus,
+
+              failureReason:
+                refund.failure_reason,
+
+              stage:
+                'STRIPE_REFUND_STATUS',
+            },
+          })
+        } catch (auditError: any) {
+          this.logger.error(
+            `REFUND_STATUS_AUDIT_LOG_FAILED: ${order.id}`,
+            auditError,
+          )
+        }
+
+        throw new BadRequestException(
+          statusMessage,
+        )
+      }
+
+      return {
+        success: false,
+        pending: true,
+        message:
+          statusMessage,
+        orderId:
+          order.id,
+        refundId:
+          refund.id,
+        refundAmount:
+          refundedAmount,
+        refundDate:
+          order.refundAt,
+        stripeRefundStatus:
+          refundStatus,
+        applicationFeeRefunded:
+          false,
+        transferReversed:
+          order.refundTransferReversed,
+        transferReversalId:
+          order.transferReversalId,
+      }
+    }
+
+    // =========================
+    // SUCCESSFUL REFUND
+    // =========================
+
+    order.status =
+      OrderStatus.REFUNDED
+
+    order.lastStatusAt =
+      refundDate
+
+    order.refundProcessed =
+      true
+
+    order.refundApplicationFee =
+      true
+
+    order.refundFailureMessage =
+      null
+
+    const reversalRecorded =
+      Boolean(
+        order.transferReversalId,
+      )
+
+    if (reversalRecorded) {
+      order.issueResolved =
+        true
+
+      order.requiresOwnerAction =
+        false
+
+      order.issueType =
+        'REFUNDED'
+
+      order.ownerIssueType =
+        null
+
+      order.ownerIssueSeverity =
+        null
+
+      order.ownerActionMessage =
+        `Customer refunded ${refundedAmount.toFixed(
+          2,
+        )}. Application fee refunded and cafe transfer reversed.`
+
+      order.ownerActionResolvedAt =
+        new Date()
+
+      order.ownerActionResolvedBy =
+        performedBy
+
+      order.ownerActionAt =
+        new Date()
+
+      order.ownerActionBy =
+        performedBy
+
+      order.resolutionReason =
+        'CUSTOMER_REFUNDED'
+    } else {
+      order.issueResolved =
+        false
+
+      order.requiresOwnerAction =
+        true
+
+      order.issueType =
+        OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+
+      order.ownerIssueType =
+        OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+
+      order.ownerIssueSeverity =
+        OwnerIssueSeverity.CRITICAL
+
+      order.ownerActionMessage =
+        `Stripe refund ${refund.id} succeeded, but no transfer-reversal ID was returned. Verify the cafe transfer in Stripe.`
+
+      order.ownerActionCreatedAt =
+        new Date()
+
+      order.ownerActionResolvedAt =
+        null
+
+      order.ownerActionResolvedBy =
+        null
+
+      order.ownerActionAt =
+        new Date()
+
+      order.ownerActionBy =
+        performedBy
+
+      order.resolutionReason =
+        'REFUND_RECONCILIATION_REQUIRED'
+    }
+
+    try {
+      await this.orderRepo.save(
+        order,
+      )
+    } catch (databaseError: any) {
+      this.logger.error(
+        `REFUND_SUCCEEDED_DATABASE_UPDATE_FAILED: ${order.id} REFUND: ${refund.id}`,
+        databaseError,
+      )
+
+      throw new BadRequestException(
+        `Stripe refund ${refund.id} succeeded, but the database update failed. Do not create another refund. Reconcile the order using the Stripe refund ID.`,
+      )
+    }
+
+    let auditLogged =
+      true
+
+    try {
+      await this.createAuditLog({
+        action:
+          MaintenanceAuditAction.ORDER_REFUNDED,
+
+        order,
+
+        performedBy,
+
+        reason,
+
+        metadata: {
+          refundId:
+            refund.id,
+
+          paymentIntentId:
+            order.stripePaymentIntentId,
+
+          refundAmount:
+            refundedAmount,
+
+          refundDate:
+            refundDate.toISOString(),
+
+          stripeRefundStatus:
+            refundStatus,
+
+          applicationFeeRefunded:
+            order.refundApplicationFee,
+
+          transferReversed:
+            order.refundTransferReversed,
+
+          transferReversalId:
+            order.transferReversalId,
+
+          previousStatus,
+
+          newStatus:
+            OrderStatus.REFUNDED,
+        },
+      })
+    } catch (auditError: any) {
+      auditLogged =
+        false
+
+      this.logger.error(
+        `REFUND_SUCCEEDED_AUDIT_LOG_FAILED: ${order.id} REFUND: ${refund.id}`,
+        auditError,
+      )
+
+      order.requiresOwnerAction =
+        true
+
+      order.issueResolved =
+        false
+
+      order.issueType =
+        OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+
+      order.ownerIssueType =
+        OwnerIssueType.REFUND_RECONCILIATION_REQUIRED
+
+      order.ownerIssueSeverity =
+        OwnerIssueSeverity.CRITICAL
+
+      order.ownerActionMessage =
+        `Stripe refund ${refund.id} succeeded, but its audit log could not be saved.`
+
+      order.ownerActionCreatedAt =
+        new Date()
+
+      try {
+        await this.orderRepo.save(
+          order,
+        )
+      } catch (
+        reconciliationSaveError: any
+      ) {
+        this.logger.error(
+          `REFUND_AUDIT_RECONCILIATION_SAVE_FAILED: ${order.id}`,
+          reconciliationSaveError,
+        )
+      }
+    }
+
+    return {
+      success: true,
+
+      message:
+        auditLogged &&
+        reversalRecorded
+          ? 'Order refunded successfully.'
+          : 'Order refunded, but maintenance reconciliation is required.',
+
+      orderId:
+        order.id,
+
+      refundId:
+        refund.id,
+
+      refundAmount:
+        refundedAmount,
+
+      refundDate:
+        order.refundAt,
+
+      stripeRefundStatus:
+        refundStatus,
+
+      applicationFeeRefunded:
+        order.refundApplicationFee,
+
+      transferReversed:
+        order.refundTransferReversed,
+
+      transferReversalId:
+        order.transferReversalId,
+
+      auditLogged,
+
+      reconciliationRequired:
+        !auditLogged ||
+        !reversalRecorded,
+
+      status:
+        order.status,
     }
   }
 
@@ -563,15 +1359,159 @@ export class MaintenanceService {
   async emailCustomer(body: {
     orderId: number
     email: string
-    name: string
+    name?: string
     note: string
   }) {
-    console.log('EMAIL CUSTOMER')
-    console.log(body)
+    const orderId =
+      Number(body.orderId)
+
+    if (
+      !orderId ||
+      Number.isNaN(orderId)
+    ) {
+      throw new BadRequestException(
+        'Valid orderId is required.',
+      )
+    }
+
+    const order =
+      await this.orderRepo.findOne({
+        where: {
+          id: orderId,
+        },
+      })
+
+    if (!order) {
+      throw new BadRequestException(
+        'Order not found.',
+      )
+    }
+
+    const email =
+      String(
+        body.email ||
+          order.customerEmail ||
+          '',
+      )
+        .trim()
+        .toLowerCase()
+
+    if (!email) {
+      throw new BadRequestException(
+        'This order has no customer email.',
+      )
+    }
+
+    const note =
+      String(body.note || '').trim()
+
+    if (!note) {
+      throw new BadRequestException(
+        'Email note is required.',
+      )
+    }
+
+    if (!this.resend) {
+      throw new BadRequestException(
+        'Email service is not configured. Add RESEND_API_KEY to backend .env and restart backend.',
+      )
+    }
+
+    const customerName =
+      String(
+        body.name ||
+          order.customerName ||
+          'there',
+      ).trim()
+
+    const from =
+      process.env.MAINTENANCE_EMAIL_FROM ||
+      'CaviarQR <onboarding@resend.dev>'
+
+    const subject =
+      `Update on your CaviarQR order #${order.id}`
+
+    const safeName =
+      this.escapeEmailHtml(
+        customerName,
+      )
+
+    const safeNote =
+      this.escapeEmailHtml(note).replace(
+        /\n/g,
+        '<br />',
+      )
+
+    const safeCafe =
+      this.escapeEmailHtml(
+        order.storeCode || 'CaviarQR',
+      )
+
+    const total =
+      Number(order.total || 0).toFixed(2)
+
+    const text =
+      `Hi ${customerName},
+
+${note}
+
+Order: #${order.id}
+Cafe: ${order.storeCode || 'CaviarQR'}
+Total: $${total}
+
+CaviarQR Support`
+
+    const html =
+      `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+          <h2 style="margin: 0 0 12px;">CaviarQR Order Update</h2>
+
+          <p>Hi ${safeName},</p>
+
+          <p>${safeNote}</p>
+
+          <div style="margin-top: 18px; padding: 14px; border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;">
+            <p style="margin: 0;"><strong>Order:</strong> #${order.id}</p>
+            <p style="margin: 4px 0 0;"><strong>Cafe:</strong> ${safeCafe}</p>
+            <p style="margin: 4px 0 0;"><strong>Total:</strong> $${total}</p>
+          </div>
+
+          <p style="margin-top: 18px;">CaviarQR Support</p>
+        </div>
+      `
+
+    const result =
+      await this.resend.emails.send({
+        from,
+        to: email,
+        subject,
+        text,
+        html,
+      })
+
+    if (result.error) {
+      throw new BadRequestException(
+        result.error.message ||
+          'Email failed to send.',
+      )
+    }
+
+    order.ownerActionMessage =
+      `Customer emailed by maintenance: ${note.slice(
+        0,
+        250,
+      )}`
+
+    await this.orderRepo.save(order)
 
     return {
       success: true,
-      message: 'Email queued',
+      message: 'Email sent successfully.',
+      emailId:
+        result.data?.id || null,
+      orderId:
+        order.id,
+      to: email,
     }
   }
 
@@ -597,7 +1537,8 @@ export class MaintenanceService {
 
     const revenue =
       orders.reduce(
-        (sum, o) => sum + o.total,
+        (sum, o) =>
+          sum + o.total,
         0,
       )
 
@@ -638,7 +1579,8 @@ export class MaintenanceService {
 
     const totalRevenue =
       orders.reduce(
-        (sum, o) => sum + o.total,
+        (sum, o) =>
+          sum + o.total,
         0,
       )
 
@@ -784,7 +1726,7 @@ export class MaintenanceService {
         todayOrders.reduce(
           (s, o) =>
             s +
-            o.platformFee,
+            (o.platformFee || 0),
           0,
         ),
 
@@ -792,7 +1734,7 @@ export class MaintenanceService {
         monthOrders.reduce(
           (s, o) =>
             s +
-            o.platformFee,
+            (o.platformFee || 0),
           0,
         ),
 
@@ -800,7 +1742,7 @@ export class MaintenanceService {
         orders.reduce(
           (s, o) =>
             s +
-            o.platformFee,
+            (o.platformFee || 0),
           0,
         ),
 
@@ -883,5 +1825,25 @@ export class MaintenanceService {
       processingFeePercent:
         business.processingFeePercent,
     }
+  }
+
+  // =========================
+  // 🔥 CAVIARQR COMMISSION BALANCE
+  // =========================
+
+  async getPlatformBalance() {
+    return this.stripeService.getPlatformBalance()
+  }
+
+  // =========================
+  // 🔥 WITHDRAW CAVIARQR COMMISSION
+  // =========================
+
+  async withdrawPlatformBalance(
+    amount?: number,
+  ) {
+    return this.stripeService.withdrawPlatformBalance(
+      amount,
+    )
   }
 }

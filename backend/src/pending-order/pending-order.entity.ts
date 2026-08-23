@@ -1,44 +1,109 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  Entity,
+  Index,
+  PrimaryGeneratedColumn,
   UpdateDateColumn,
+} from 'typeorm'
+
+import type {
+  ValueTransformer,
 } from 'typeorm'
 
 export enum PendingOrderStatus {
   CREATED = 'CREATED',
-
-  CHECKOUT_CREATED =
-    'CHECKOUT_CREATED',
-
+  CHECKOUT_CREATED = 'CHECKOUT_CREATED',
   COMPLETED = 'COMPLETED',
-
   FAILED = 'FAILED',
-
   EXPIRED = 'EXPIRED',
 }
 
+export type PendingOrderItem = {
+  id: number
+  name: string
+  qty: number
+
+  // Customer cooking / allergy request
+  note?: string
+
+  unitPriceCents: number
+  price: number
+}
+
+const decimalNumberTransformer: ValueTransformer = {
+  to: (
+    value: number | null | undefined,
+  ) => value,
+
+  from: (
+    value: string | number | null,
+  ) => {
+    if (value === null) {
+      return null
+    }
+
+    return Number(value)
+  },
+}
+
+@Index(
+  'IDX_pending_order_business_created',
+  ['businessId', 'createdAt'],
+)
+@Index(
+  'IDX_pending_order_store_created',
+  ['storeCode', 'createdAt'],
+)
+@Index(
+  'IDX_pending_order_status_created',
+  ['status', 'createdAt'],
+)
+@Index(
+  'UQ_pending_order_checkout_request',
+  ['checkoutRequestId'],
+  {
+    unique: true,
+    where: '"checkoutRequestId" IS NOT NULL',
+  },
+)
+@Index(
+  'UQ_pending_order_stripe_session',
+  ['stripeSessionId'],
+  {
+    unique: true,
+    where: '"stripeSessionId" IS NOT NULL',
+  },
+)
+@Index(
+  'UQ_pending_order_payment_intent',
+  ['stripePaymentIntentId'],
+  {
+    unique: true,
+    where: '"stripePaymentIntentId" IS NOT NULL',
+  },
+)
 @Entity()
 export class PendingOrder {
   @PrimaryGeneratedColumn()
   id: number
 
-  // =========================
-  // BUSINESS
-  // =========================
+  @Column({
+    type: 'uuid',
+    nullable: true,
+  })
+  checkoutRequestId: string | null
 
-  @Column()
+  @Column({
+    type: 'int',
+  })
   businessId: number
 
   @Column({
     type: 'varchar',
+    length: 100,
   })
   storeCode: string
-
-  // =========================
-  // ORDER DATA
-  // =========================
 
   @Column({
     type: 'int',
@@ -47,53 +112,73 @@ export class PendingOrder {
   tableNumber: number
 
   @Column({
-    type: 'json',
+    type: 'jsonb',
+    default: () => "'[]'::jsonb",
   })
-  items: any
+  items: PendingOrderItem[]
 
   @Column({
-    type: 'float',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
     default: 0,
+    transformer: decimalNumberTransformer,
   })
   subtotal: number
 
   @Column({
-    type: 'float',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
     default: 0,
+    transformer: decimalNumberTransformer,
   })
   serviceFeeAmount: number
 
   @Column({
-    type: 'float',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
     default: 0,
+    transformer: decimalNumberTransformer,
+  })
+  platformFee: number
+
+  @Column({
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    default: 0,
+    transformer: decimalNumberTransformer,
   })
   total: number
 
-  // =========================
-  // STRIPE
-  // =========================
+  @Column({
+    type: 'varchar',
+    length: 3,
+    default: 'usd',
+  })
+  currency: string
 
   @Column({
     type: 'varchar',
+    length: 255,
     nullable: true,
   })
   stripeSessionId: string | null
 
   @Column({
     type: 'varchar',
+    length: 255,
     nullable: true,
   })
   stripePaymentIntentId: string | null
 
-  // =========================
-  // STATUS
-  // =========================
-
   @Column({
     type: 'enum',
     enum: PendingOrderStatus,
-    default:
-      PendingOrderStatus.CREATED,
+    enumName: 'pending_order_status_enum',
+    default: PendingOrderStatus.CREATED,
   })
   status: PendingOrderStatus
 
@@ -108,20 +193,27 @@ export class PendingOrder {
   })
   failureReason: string | null
 
-  // =========================
-  // CREATED / UPDATED
-  // =========================
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  completedAt: Date | null
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  expiresAt: Date | null
 
   @CreateDateColumn({
     type: 'timestamptz',
-    default: () =>
-      'CURRENT_TIMESTAMP',
+    default: () => 'CURRENT_TIMESTAMP',
   })
   createdAt: Date
 
   @UpdateDateColumn({
     type: 'timestamptz',
-    nullable: true,
+    default: () => 'CURRENT_TIMESTAMP',
   })
   updatedAt: Date
 }

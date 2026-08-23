@@ -4,8 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiFetch } from '@/lib/api'
 
-// ✅ FIXED LINE (only change)
-const API = "http://127.0.0.1:3001"
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
 
 export default function LoginPage() {
   const router = useRouter()
@@ -17,19 +16,90 @@ export default function LoginPage() {
 
   const handleLogin = async () => {
     setError('')
-    const endpoint = role === 'owner'
-      ? `${API}/business/login`
-      : `${API}/business/kitchen-login`
+
+    const endpoint =
+      role === 'owner'
+        ? `${API}/business/login`
+        : `${API}/kitchen-auth/login`
+
     const res = await apiFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storeCode, email, password }),
+      body: JSON.stringify({
+        storeCode: storeCode.trim(),
+        email: email.trim(),
+        password,
+      }),
     })
-    if (!res.success) { setError(res.message || 'Login failed'); return }
-    localStorage.setItem('token', res.token)
-    localStorage.setItem('storeCode', res.storeCode)
+
+    if (res?.success === false) {
+      setError(res.message || 'Login failed')
+      return
+    }
+
+    const returnedStoreCode = String(
+      res.storeCode || '',
+    ).trim()
+
+    const returnedBusinessId = Number(
+      res.id ?? res.businessId,
+    )
+
+    if (!returnedStoreCode) {
+      setError('Invalid account response')
+      return
+    }
+
+    if (
+      !Number.isInteger(returnedBusinessId) ||
+      returnedBusinessId < 1
+    ) {
+      setError('Invalid account response')
+      return
+    }
+
+    if (
+      role === 'kitchen' &&
+      (
+        typeof res.token !== 'string' ||
+        !res.token.trim()
+      )
+    ) {
+      setError('Secure kitchen session was not returned')
+      return
+    }
+
+    // Never allow a previous cafe session to leak into this login.
+    localStorage.removeItem('businessId')
+    localStorage.removeItem('storeCode')
+    localStorage.removeItem('role')
+    localStorage.removeItem('token')
+
+    localStorage.setItem(
+      'storeCode',
+      returnedStoreCode,
+    )
     localStorage.setItem('role', role)
-    router.push(role === 'owner' ? '/dashboard/owner' : '/dashboard/kitchen')
+
+    if (
+      Number.isInteger(returnedBusinessId) &&
+      returnedBusinessId > 0
+    ) {
+      localStorage.setItem(
+        'businessId',
+        String(returnedBusinessId),
+      )
+    }
+
+    if (typeof res.token === 'string' && res.token) {
+      localStorage.setItem('token', res.token)
+    }
+
+    router.replace(
+      role === 'owner'
+        ? '/dashboard/owner'
+        : '/dashboard/kitchen',
+    )
   }
 
   return (
@@ -163,7 +233,6 @@ export default function LoginPage() {
         }
       `}</style>
 
-      {/* UI unchanged */}
       <div className="page">
         <div className="brand">
           <h1>CaviarQR</h1>
@@ -171,11 +240,13 @@ export default function LoginPage() {
         </div>
 
         <div className="card">
+          {/* ROLE SWITCH */}
           <div className="seg">
             <button className={`seg-btn${role === 'owner' ? ' active' : ''}`} onClick={() => setRole('owner')}>Owner</button>
             <button className={`seg-btn${role === 'kitchen' ? ' active' : ''}`} onClick={() => setRole('kitchen')}>Kitchen</button>
           </div>
 
+          {/* INPUTS */}
           <div className="fields">
             <div className="field">
               <span className="field-icon">
@@ -183,14 +254,12 @@ export default function LoginPage() {
               </span>
               <input placeholder="Store code" onChange={e => setStoreCode(e.target.value)} />
             </div>
-
             <div className="field">
               <span className="field-icon">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 7l10 7 10-7"/></svg>
               </span>
               <input placeholder="Email address" type="email" onChange={e => setEmail(e.target.value)} />
             </div>
-
             <div className="field">
               <span className="field-icon">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
@@ -199,6 +268,7 @@ export default function LoginPage() {
             </div>
           </div>
 
+          {/* LOGIN */}
           <button className="login-btn" onClick={handleLogin}>
             {role === 'owner' ? 'Sign in as Owner' : 'Sign in as Kitchen'}
           </button>

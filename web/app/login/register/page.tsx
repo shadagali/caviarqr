@@ -4,12 +4,18 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiFetch } from '@/lib/api'
 
-const API = process.env.NEXT_PUBLIC_API_URL
+const API =
+  process.env.NEXT_PUBLIC_API_URL ||
+  'http://127.0.0.1:4101'
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap');
 
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 
   :root {
     --bg: #f5f5f7;
@@ -117,7 +123,9 @@ const css = `
     box-shadow: 0 0 0 3px rgba(29,29,31,0.1);
   }
 
-  .reg-input::placeholder { color: var(--text3); }
+  .reg-input::placeholder {
+    color: var(--text3);
+  }
 
   .reg-btn {
     width: 100%;
@@ -135,8 +143,18 @@ const css = `
     margin-bottom: 14px;
   }
 
-  .reg-btn:hover { background: var(--accent-hover); }
-  .reg-btn:active { transform: scale(0.99); }
+  .reg-btn:hover {
+    background: var(--accent-hover);
+  }
+
+  .reg-btn:active {
+    transform: scale(0.99);
+  }
+
+  .reg-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
 
   .reg-error {
     font-size: 12.5px;
@@ -171,89 +189,274 @@ const css = `
 export default function RegisterPage() {
   const router = useRouter()
 
-  const [storeCode, setStoreCode] = useState('')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [storeCode, setStoreCode] =
+    useState('')
+
+  const [email, setEmail] =
+    useState('')
+
+  const [password, setPassword] =
+    useState('')
+
+  const [error, setError] =
+    useState('')
+
+  const [loading, setLoading] =
+    useState(false)
 
   const handle = async () => {
-    setLoading(true)
-    setError('')
-
-    const res = await apiFetch(`${API}/business/signup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storeCode, email, password }),
-    })
-
-    setLoading(false)
-
-    if (!res.success) {
-      setError(res.message)
+    if (loading) {
       return
     }
 
-    localStorage.setItem('token', res.token)
-    localStorage.setItem('storeCode', res.storeCode)
+    const cleanStoreCode =
+      storeCode.trim()
 
-    router.push('/dashboard/kitchen')
+    const cleanEmail =
+      email.trim().toLowerCase()
+
+    if (
+      !cleanStoreCode ||
+      !cleanEmail ||
+      !password
+    ) {
+      setError(
+        'Store code, email and password are required',
+      )
+      return
+    }
+
+    setLoading(true)
+    setError('')
+
+    try {
+      const res =
+        await apiFetch(
+          `${API}/business/signup`,
+          {
+            method: 'POST',
+
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+
+            body: JSON.stringify({
+              storeCode:
+                cleanStoreCode,
+
+              email:
+                cleanEmail,
+
+              password,
+            }),
+          },
+        )
+
+      if (!res?.success) {
+        setError(
+          res?.message ||
+            'Could not create account',
+        )
+        return
+      }
+
+      const newBusinessId =
+        Number(res.id)
+
+      const newStoreCode =
+        String(
+          res.storeCode ||
+            cleanStoreCode,
+        ).trim()
+
+      if (
+        !Number.isInteger(
+          newBusinessId,
+        ) ||
+        newBusinessId < 1 ||
+        !newStoreCode
+      ) {
+        setError(
+          'Invalid registration response',
+        )
+        return
+      }
+
+      /*
+       * Clear any previous restaurant or
+       * kitchen session before signing into
+       * the newly created owner account.
+       */
+      localStorage.removeItem(
+        'businessId',
+      )
+
+      localStorage.removeItem(
+        'storeCode',
+      )
+
+      localStorage.removeItem(
+        'role',
+      )
+
+      localStorage.removeItem(
+        'token',
+      )
+
+      localStorage.setItem(
+        'businessId',
+        String(newBusinessId),
+      )
+
+      localStorage.setItem(
+        'storeCode',
+        newStoreCode,
+      )
+
+      localStorage.setItem(
+        'role',
+        'owner',
+      )
+
+      if (
+        typeof res.token ===
+          'string' &&
+        res.token
+      ) {
+        localStorage.setItem(
+          'token',
+          res.token,
+        )
+      }
+
+      /*
+       * Registration creates the OWNER.
+       * Never send a newly registered
+       * restaurant directly to Kitchen.
+       */
+      router.replace(
+        '/dashboard/owner',
+      )
+    } catch (err: any) {
+      setError(
+        err?.message ||
+          'Could not create account',
+      )
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
     <>
       <style>{css}</style>
+
       <div className="reg-page">
         <div className="reg-card">
+          <div className="reg-mark">
+            🍴
+          </div>
 
-          <div className="reg-mark">🍴</div>
-          <div className="reg-title">Create your store</div>
-          <div className="reg-sub">Set up your CaviarQR restaurant account</div>
+          <div className="reg-title">
+            Create your store
+          </div>
+
+          <div className="reg-sub">
+            Set up your CaviarQR restaurant account
+          </div>
 
           <div className="reg-fields">
             <div className="reg-field">
-              <div className="reg-label">Store Code</div>
+              <div className="reg-label">
+                Store Code
+              </div>
+
               <input
                 className="reg-input"
                 placeholder="e.g. cafe1"
                 value={storeCode}
-                onChange={e => setStoreCode(e.target.value)}
+                disabled={loading}
+                onChange={(e) =>
+                  setStoreCode(
+                    e.target.value,
+                  )
+                }
               />
             </div>
+
             <div className="reg-field">
-              <div className="reg-label">Email</div>
+              <div className="reg-label">
+                Email
+              </div>
+
               <input
                 className="reg-input"
                 type="email"
                 placeholder="you@example.com"
                 value={email}
-                onChange={e => setEmail(e.target.value)}
+                disabled={loading}
+                onChange={(e) =>
+                  setEmail(
+                    e.target.value,
+                  )
+                }
               />
             </div>
+
             <div className="reg-field">
-              <div className="reg-label">Password</div>
+              <div className="reg-label">
+                Password
+              </div>
+
               <input
                 className="reg-input"
                 type="password"
                 placeholder="Create a password"
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                disabled={loading}
+                onChange={(e) =>
+                  setPassword(
+                    e.target.value,
+                  )
+                }
+                onKeyDown={(e) => {
+                  if (
+                    e.key === 'Enter'
+                  ) {
+                    void handle()
+                  }
+                }}
               />
             </div>
           </div>
 
-          <button className="reg-btn" onClick={handle} disabled={loading}>
-            {loading ? 'Creating account…' : 'Create Account'}
+          <button
+            className="reg-btn"
+            onClick={() => {
+              void handle()
+            }}
+            disabled={loading}
+          >
+            {loading
+              ? 'Creating account…'
+              : 'Create Account'}
           </button>
 
-          {error && <div className="reg-error">{error}</div>}
+          {error && (
+            <div className="reg-error">
+              {error}
+            </div>
+          )}
 
           <div className="reg-divider" />
 
           <div className="reg-footer">
-            Already have an account? <a href="/login">Sign in</a>
+            Already have an account?{' '}
+            <a href="/login">
+              Sign in
+            </a>
           </div>
-
         </div>
       </div>
     </>

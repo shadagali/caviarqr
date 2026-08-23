@@ -1,0 +1,44 @@
+# Dependencies and build output
+node_modules
+dist
+coverage
+
+# Local/runtime secrets
+.env
+.env.*
+!.env.example
+.npmrc
+
+# Local customer/runtime data
+uploads
+uploads/**
+*.dump
+*.sql
+*.bak
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and temp files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.tmp
+temp
+tmp
+
+# Git / editor / OS metadata
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Project-local backup directories
+.caviarqr-backups

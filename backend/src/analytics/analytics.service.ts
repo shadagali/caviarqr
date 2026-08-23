@@ -2,7 +2,10 @@ import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
-import { Order } from '../order/order.entity'
+import {
+  Order,
+  OrderStatus,
+} from '../order/order.entity'
 
 @Injectable()
 export class AnalyticsService {
@@ -10,6 +13,120 @@ export class AnalyticsService {
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
   ) {}
+
+  // ====================================
+  // NET REVENUE HELPERS
+  // ====================================
+
+  private money(
+    value: unknown,
+  ): number {
+    const number =
+      Number(value || 0)
+
+    return Number.isFinite(number)
+      ? number
+      : 0
+  }
+
+  private isSuccessfulRefund(
+    order: Order,
+  ): boolean {
+    return (
+      order.refundProcessed ===
+        true ||
+      order.status ===
+        OrderStatus.REFUNDED ||
+      String(
+        order.stripeRefundStatus ||
+          '',
+      ).toLowerCase() ===
+        'succeeded'
+    )
+  }
+
+  private orderRevenueBeforeRefund(
+    order: Order,
+  ): number {
+    return (
+      this.money(order.total) -
+      this.money(order.stripeFee) -
+      this.money(order.platformFee)
+    )
+  }
+
+  private refundAmount(
+    order: Order,
+  ): number {
+    if (
+      !this.isSuccessfulRefund(
+        order,
+      )
+    ) {
+      return 0
+    }
+
+    return this.money(
+      order.refundAmount ??
+        order.total,
+    )
+  }
+
+  private isSameDay(
+    value: Date | string | null | undefined,
+    target: Date,
+  ): boolean {
+    if (!value) {
+      return false
+    }
+
+    const date =
+      new Date(value)
+
+    if (
+      Number.isNaN(
+        date.getTime(),
+      )
+    ) {
+      return false
+    }
+
+    return (
+      date.getDate() ===
+        target.getDate() &&
+      date.getMonth() ===
+        target.getMonth() &&
+      date.getFullYear() ===
+        target.getFullYear()
+    )
+  }
+
+  private isSameMonth(
+    value: Date | string | null | undefined,
+    target: Date,
+  ): boolean {
+    if (!value) {
+      return false
+    }
+
+    const date =
+      new Date(value)
+
+    if (
+      Number.isNaN(
+        date.getTime(),
+      )
+    ) {
+      return false
+    }
+
+    return (
+      date.getMonth() ===
+        target.getMonth() &&
+      date.getFullYear() ===
+        target.getFullYear()
+    )
+  }
 
   // ====================================
   // DASHBOARD
@@ -25,59 +142,149 @@ export class AnalyticsService {
         },
       })
 
-    const now = new Date()
+    const now =
+      new Date()
 
     const todayOrders =
-      orders.filter((order) => {
-        const d = new Date(
-          order.createdAt,
-        )
-
-        return (
-          d.getDate() ===
-            now.getDate() &&
-          d.getMonth() ===
-            now.getMonth() &&
-          d.getFullYear() ===
-            now.getFullYear()
-        )
-      })
+      orders.filter(
+        (order) =>
+          this.isSameDay(
+            order.createdAt,
+            now,
+          ),
+      )
 
     const monthOrders =
-      orders.filter((order) => {
-        const d = new Date(
-          order.createdAt,
-        )
+      orders.filter(
+        (order) =>
+          this.isSameMonth(
+            order.createdAt,
+            now,
+          ),
+      )
 
-        return (
-          d.getMonth() ===
-            now.getMonth() &&
-          d.getFullYear() ===
-            now.getFullYear()
-        )
-      })
+    /*
+     * Revenue is recognized when the order
+     * is created. Refunds are recognized on
+     * the day/month the successful refund
+     * happened, including refunds for older
+     * orders.
+     */
 
-    const allTimeRevenue =
+    const todaySalesAfterFees =
+      todayOrders.reduce(
+        (sum, order) =>
+          sum +
+          this.orderRevenueBeforeRefund(
+            order,
+          ),
+        0,
+      )
+
+    const todayRefunds =
       orders.reduce(
         (sum, order) =>
           sum +
-          Number(order.total || 0),
+          (
+            this.isSuccessfulRefund(
+              order,
+            ) &&
+            this.isSameDay(
+              order.refundAt,
+              now,
+            )
+              ? this.refundAmount(
+                  order,
+                )
+              : 0
+          ),
+        0,
+      )
+
+    const monthSalesAfterFees =
+      monthOrders.reduce(
+        (sum, order) =>
+          sum +
+          this.orderRevenueBeforeRefund(
+            order,
+          ),
+        0,
+      )
+
+    const monthRefunds =
+      orders.reduce(
+        (sum, order) =>
+          sum +
+          (
+            this.isSuccessfulRefund(
+              order,
+            ) &&
+            this.isSameMonth(
+              order.refundAt,
+              now,
+            )
+              ? this.refundAmount(
+                  order,
+                )
+              : 0
+          ),
+        0,
+      )
+
+    const allTimeSalesAfterFees =
+      orders.reduce(
+        (sum, order) =>
+          sum +
+          this.orderRevenueBeforeRefund(
+            order,
+          ),
+        0,
+      )
+
+    const allTimeRefunds =
+      orders.reduce(
+        (sum, order) =>
+          sum +
+          this.refundAmount(
+            order,
+          ),
+        0,
+      )
+
+    const todayNetRevenue =
+      todaySalesAfterFees -
+      todayRefunds
+
+    const monthNetRevenue =
+      monthSalesAfterFees -
+      monthRefunds
+
+    const allTimeNetRevenue =
+      allTimeSalesAfterFees -
+      allTimeRefunds
+
+    const grossRevenue =
+      orders.reduce(
+        (sum, order) =>
+          sum +
+          this.money(
+            order.total,
+          ),
         0,
       )
 
     return {
+      /*
+       * Keep the existing response field
+       * names so the current frontend and
+       * legacy endpoints remain compatible.
+       * Their values are now NET revenue.
+       */
       todayRevenue:
         Number(
-          todayOrders
-            .reduce(
-              (sum, order) =>
-                sum +
-                Number(
-                  order.total || 0,
-                ),
-              0,
-            )
-            .toFixed(2),
+          todayNetRevenue.toFixed(
+            2,
+          ),
         ),
 
       todayOrders:
@@ -85,16 +292,9 @@ export class AnalyticsService {
 
       monthRevenue:
         Number(
-          monthOrders
-            .reduce(
-              (sum, order) =>
-                sum +
-                Number(
-                  order.total || 0,
-                ),
-              0,
-            )
-            .toFixed(2),
+          monthNetRevenue.toFixed(
+            2,
+          ),
         ),
 
       monthOrders:
@@ -102,7 +302,7 @@ export class AnalyticsService {
 
       allTimeRevenue:
         Number(
-          allTimeRevenue.toFixed(
+          allTimeNetRevenue.toFixed(
             2,
           ),
         ),
@@ -114,7 +314,7 @@ export class AnalyticsService {
         orders.length > 0
           ? Number(
               (
-                allTimeRevenue /
+                grossRevenue /
                 orders.length
               ).toFixed(2),
             )
@@ -155,20 +355,25 @@ export class AnalyticsService {
           item?.name ||
           'Unknown'
 
-        const qty = Number(
-          item?.qty || 1,
-        )
+        const qty =
+          Number(
+            item?.qty || 1,
+          )
 
         itemMap.set(
           itemName,
-          (itemMap.get(
-            itemName,
-          ) || 0) + qty,
+          (
+            itemMap.get(
+              itemName,
+            ) || 0
+          ) + qty,
         )
       }
     }
 
-    return [...itemMap.entries()]
+    return [
+      ...itemMap.entries(),
+    ]
       .map(
         ([
           itemName,
@@ -187,7 +392,7 @@ export class AnalyticsService {
   }
 
   // ====================================
-  // REVENUE CHART
+  // NET REVENUE CHART
   // LAST 30 DAYS
   // ====================================
 
@@ -227,6 +432,10 @@ export class AnalyticsService {
       revenueMap[key] = 0
     }
 
+    /*
+     * Add sales on the order date after
+     * Stripe + CaviarQR fees.
+     */
     for (const order of orders) {
       const key =
         new Date(
@@ -240,8 +449,40 @@ export class AnalyticsService {
         undefined
       ) {
         revenueMap[key] +=
-          Number(
-            order.total || 0,
+          this.orderRevenueBeforeRefund(
+            order,
+          )
+      }
+    }
+
+    /*
+     * Subtract successful refunds on the
+     * actual refund date.
+     */
+    for (const order of orders) {
+      if (
+        !this.isSuccessfulRefund(
+          order,
+        ) ||
+        !order.refundAt
+      ) {
+        continue
+      }
+
+      const key =
+        new Date(
+          order.refundAt,
+        )
+          .toISOString()
+          .split('T')[0]
+
+      if (
+        revenueMap[key] !==
+        undefined
+      ) {
+        revenueMap[key] -=
+          this.refundAmount(
+            order,
           )
       }
     }
@@ -250,6 +491,7 @@ export class AnalyticsService {
       revenueMap,
     ).map((date) => ({
       date,
+
       revenue:
         Number(
           revenueMap[
@@ -282,7 +524,8 @@ export class AnalyticsService {
 
     return orders.map(
       (order) => ({
-        id: order.id,
+        id:
+          order.id,
 
         total:
           order.total,
@@ -345,12 +588,15 @@ export class AnalyticsService {
     const orders =
       await this.orderRepo.find()
 
-    const revenue =
+    const netRevenue =
       orders.reduce(
         (sum, order) =>
           sum +
-          Number(
-            order.total || 0,
+          this.orderRevenueBeforeRefund(
+            order,
+          ) -
+          this.refundAmount(
+            order,
           ),
         0,
       )
@@ -361,7 +607,9 @@ export class AnalyticsService {
 
       revenue:
         Number(
-          revenue.toFixed(2),
+          netRevenue.toFixed(
+            2,
+          ),
         ),
     }
   }

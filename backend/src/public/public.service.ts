@@ -6,26 +6,37 @@ import {
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
-import { Business } from '../business/business.entity'
+import {
+  Business,
+  BusinessCountryCode,
+  BusinessCurrency,
+} from '../business/business.entity'
+
 import { MenuItem } from '../menu/menu.entity'
 
 @Injectable()
 export class PublicService {
   constructor(
     @InjectRepository(Business)
-    private businessRepo: Repository<Business>,
+    private businessRepo:
+      Repository<Business>,
 
     @InjectRepository(MenuItem)
-    private menuRepo: Repository<MenuItem>,
+    private menuRepo:
+      Repository<MenuItem>,
   ) {}
 
   async getStore(
     storeCode: string,
   ) {
+    const normalizedStoreCode =
+      String(storeCode || '').trim()
+
     const business =
       await this.businessRepo.findOne({
         where: {
-          storeCode,
+          storeCode:
+            normalizedStoreCode,
         },
       })
 
@@ -47,6 +58,19 @@ export class PublicService {
         },
       })
 
+    const currency =
+      business.currency ===
+      BusinessCurrency.INR
+        ? BusinessCurrency.INR
+        : BusinessCurrency.USD
+
+    const countryCode =
+      business.countryCode ===
+      BusinessCountryCode.INDIA
+        ? BusinessCountryCode.INDIA
+        : BusinessCountryCode
+            .UNITED_STATES
+
     const paymentsReady =
       business.stripeAccountReady ===
       true
@@ -59,17 +83,29 @@ export class PublicService {
 
     return {
       business: {
-        id: business.id,
+        id:
+          business.id,
+
+        storeCode:
+          business.storeCode,
 
         name:
           business.cafeName ||
           business.name ||
-          storeCode,
+          normalizedStoreCode,
 
         cafeName:
           business.cafeName ||
           business.name ||
-          storeCode,
+          normalizedStoreCode,
+
+        // =========================
+        // COUNTRY AND CURRENCY
+        // =========================
+
+        countryCode,
+
+        currency,
 
         // Keep old frontend compatibility
         logo:

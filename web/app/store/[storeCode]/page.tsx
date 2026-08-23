@@ -541,6 +541,33 @@ const css = `
   }
 `
 
+function formatMoney(
+  amount: number,
+  currency?: string | null,
+) {
+  const normalizedCurrency =
+    String(currency || "usd")
+      .trim()
+      .toUpperCase()
+
+  const supportedCurrency =
+    normalizedCurrency === "INR"
+      ? "INR"
+      : "USD"
+
+  return new Intl.NumberFormat(
+    supportedCurrency === "INR"
+      ? "en-IN"
+      : "en-US",
+    {
+      style: "currency",
+      currency: supportedCurrency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    },
+  ).format(Number(amount || 0))
+}
+
 export default function StorePage() {
   const params = useParams()
   const search = useSearchParams()
@@ -1080,12 +1107,12 @@ export default function StorePage() {
                         </div>
 
                         <b>
-                          $
-                          {(
+                          {formatMoney(
                             finalPrice *
-                            (item.qty ||
-                              1)
-                          ).toFixed(2)}
+                              (item.qty ||
+                                1),
+                            business?.currency,
+                          )}
                         </b>
                       </div>
                     )
@@ -1107,9 +1134,8 @@ export default function StorePage() {
                   </span>
 
                   <b>
-                    $
-                    {receiptItems
-                      .reduce(
+                    {formatMoney(
+                      receiptItems.reduce(
                         (
                           sum,
                           item,
@@ -1140,8 +1166,9 @@ export default function StorePage() {
                           )
                         },
                         0,
-                      )
-                      .toFixed(2)}
+                      ),
+                      business?.currency,
+                    )}
                   </b>
                 </div>
 
@@ -1152,9 +1179,9 @@ export default function StorePage() {
                   </span>
 
                   <b>
-                    $
-                    {receiptServiceFee.toFixed(
-                      2,
+                    {formatMoney(
+                      receiptServiceFee,
+                      business?.currency,
                     )}
                   </b>
                 </div>
@@ -1163,8 +1190,7 @@ export default function StorePage() {
                   <span>Total</span>
 
                   <span>
-                    $
-                    {(
+                    {formatMoney(
                       receiptItems.reduce(
                         (
                           sum,
@@ -1197,8 +1223,9 @@ export default function StorePage() {
                         },
                         0,
                       ) +
-                      receiptServiceFee
-                    ).toFixed(2)}
+                      receiptServiceFee,
+                      business?.currency,
+                    )}
                   </span>
                 </div>
               </div>
@@ -1419,11 +1446,11 @@ export default function StorePage() {
             <div
               key={cat}
               className="cat-section"
-              ref={(el) =>
-                (sectionRefs.current[
+              ref={(el) => {
+                sectionRefs.current[
                   cat
-                ] = el)
-              }
+                ] = el
+              }}
             >
               <div className="cat-label">
                 {cat}
@@ -1495,11 +1522,17 @@ export default function StorePage() {
                         )}                        {discountedPrice ? (
                           <>
                             <span className="price-original">
-                              ${i.price}
+                              {formatMoney(
+                                Number(i.price),
+                                business?.currency,
+                              )}
                             </span>
 
                             <span className="price-final">
-                              ${discountedPrice}
+                              {formatMoney(
+                                Number(discountedPrice),
+                                business?.currency,
+                              )}
                             </span>
 
                             <span className="discount-tag">
@@ -1508,7 +1541,10 @@ export default function StorePage() {
                           </>
                         ) : (
                           <span className="price-normal">
-                            ${i.price}
+                            {formatMoney(
+                              Number(i.price),
+                              business?.currency,
+                            )}
                           </span>
                         )}
                       </div>
@@ -1620,8 +1656,10 @@ export default function StorePage() {
             className="pay-btn"
             onClick={goToCart}
           >
-            View Cart • $
-            {total.toFixed(2)}
+            View Cart • {formatMoney(
+              total,
+              business?.currency,
+            )}
           </button>
         </div>
       )}

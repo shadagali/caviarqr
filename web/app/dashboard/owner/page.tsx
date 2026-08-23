@@ -12,7 +12,7 @@ import {
   CartesianGrid,
 } from "recharts"
 
-const API = "http://localhost:3001"
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap');
@@ -784,13 +784,42 @@ const css = `
   }
 `
 
+type SupportedCurrency = "usd" | "inr"
+type SupportedCountry = "US" | "IN"
+
+const normalizeCurrency = (value: unknown): SupportedCurrency =>
+  String(value || "").toLowerCase() === "inr" ? "inr" : "usd"
+
+const formatMoney = (
+  value: unknown,
+  currency: SupportedCurrency,
+) => {
+  const amount = Number(value || 0)
+
+  return new Intl.NumberFormat(
+    currency === "inr" ? "en-IN" : "en-US",
+    {
+      style: "currency",
+      currency: currency.toUpperCase(),
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    },
+  ).format(Number.isFinite(amount) ? amount : 0)
+}
+
+const currencySymbol = (currency: SupportedCurrency) =>
+  currency === "inr" ? "₹" : "$"
+
 // Custom tooltip for recharts
-const ChartTooltip = ({ active, payload, label }: any) => {
+const ChartTooltip = ({ active, payload, label, currency }: any) => {
   if (!active || !payload?.length) return null
+
   return (
     <div className="custom-tip">
       <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>{label}</div>
-      <div className="custom-tip-val">${Number(payload[0].value).toFixed(2)}</div>
+      <div className="custom-tip-val">
+        {formatMoney(payload[0].value, normalizeCurrency(currency))}
+      </div>
     </div>
   )
 }
@@ -841,8 +870,9 @@ const severityBorder = (severity: string) => {
 }
 
 export default function OwnerPage() {
-  const [businessId] = useState(3)
-  const [storeCode] = useState("cafe1")
+  const [businessId, setBusinessId] = useState<number | null>(null)
+  const [storeCode, setStoreCode] = useState("")
+  const [sessionReady, setSessionReady] = useState(false)
 
   const [menu, setMenu] = useState<any[]>([])
   const [name, setName] = useState("")
@@ -867,10 +897,106 @@ export default function OwnerPage() {
   const [issues, setIssues] = useState<any[]>([])
   const [issueSearch, setIssueSearch] = useState("")
   const [stripeStatus, setStripeStatus] = useState<any>(null)
+  const [countryCode, setCountryCode] = useState<SupportedCountry>("US")
+  const [currency, setCurrency] = useState<SupportedCurrency>("usd")
+  const [countryDirty, setCountryDirty] = useState(false)
+  const [countrySaving, setCountrySaving] = useState(false)
+
+  useEffect(() => {
+    const initializeOwnerSession = async () => {
+      const savedStoreCode = String(
+        localStorage.getItem("storeCode") || "",
+      ).trim()
+
+      const savedRole = String(
+        localStorage.getItem("role") || "",
+      ).trim()
+
+      if (
+        !savedStoreCode ||
+        (savedRole && savedRole !== "owner")
+      ) {
+        window.location.replace("/login")
+        return
+      }
+
+      try {
+        const res = await axios.get(
+          `${API}/public/store/${encodeURIComponent(savedStoreCode)}`,
+        )
+
+        const business = res.data?.business
+        const resolvedBusinessId = Number(business?.id)
+        const resolvedStoreCode = String(
+          business?.storeCode || savedStoreCode,
+        ).trim()
+
+        if (
+          !Number.isInteger(resolvedBusinessId) ||
+          resolvedBusinessId < 1 ||
+          !resolvedStoreCode
+        ) {
+          throw new Error("Invalid owner session")
+        }
+
+        setBusinessId(resolvedBusinessId)
+        setStoreCode(resolvedStoreCode)
+
+        // Keep the browser session canonical for this cafe.
+        localStorage.setItem(
+          "businessId",
+          String(resolvedBusinessId),
+        )
+        localStorage.setItem(
+          "storeCode",
+          resolvedStoreCode,
+        )
+        localStorage.setItem("role", "owner")
+
+        const nextCountry: SupportedCountry =
+          business?.countryCode === "IN" ? "IN" : "US"
+
+        const nextCurrency = normalizeCurrency(
+          business?.currency,
+        )
+
+        setCountryCode(nextCountry)
+        setCurrency(nextCurrency)
+        setCountryDirty(false)
+
+        if (business?.serviceFee !== undefined) {
+          setServiceFee(
+            String(Number(business.serviceFee || 0)),
+          )
+        }
+
+        setKitchenMode(
+          business?.kitchenPassword
+            ? "password"
+            : "passwordless",
+        )
+
+        setSessionReady(true)
+      } catch (error) {
+        console.error("OWNER SESSION ERROR", error)
+
+        localStorage.removeItem("businessId")
+        localStorage.removeItem("storeCode")
+        localStorage.removeItem("role")
+        localStorage.removeItem("token")
+
+        window.location.replace("/login")
+      }
+    }
+
+    void initializeOwnerSession()
+  }, [])
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2800) }
 
   const enablePasswordless = async () => {
+    if (!businessId) return
+
     try {
       await axios.post(`${API}/business/disable-kitchen-password`, { businessId })
       showToast("Passwordless mode enabled")
@@ -880,25 +1006,67 @@ export default function OwnerPage() {
   }
 
   const load = async () => {
+    if (!businessId) return
+
     try {
       const res = await axios.get(`${API}/menu/${businessId}`)
       setMenu(Array.isArray(res.data) ? res.data.map((i: any) => ({ ...i })) : [])
     } catch { setMenu([]) }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (!sessionReady || !businessId) return
+    void load()
+  }, [sessionReady, businessId])
+
+  const loadBusinessConfig = async () => {
+    if (!storeCode) return
+
+    try {
+      const res = await axios.get(`${API}/public/store/${encodeURIComponent(storeCode)}`)
+      const business = res.data?.business
+
+      const nextCountry: SupportedCountry =
+        business?.countryCode === "IN" ? "IN" : "US"
+
+      const nextCurrency =
+        normalizeCurrency(business?.currency)
+
+      setCountryCode(nextCountry)
+      setCurrency(nextCurrency)
+      setCountryDirty(false)
+
+      if (business?.serviceFee !== undefined) {
+        setServiceFee(String(Number(business.serviceFee || 0)))
+      }
+    } catch (err) {
+      console.error("BUSINESS CONFIG LOAD ERROR", err)
+    }
+  }
 
   useEffect(() => {
+    if (!sessionReady || !storeCode) return
+
     const checkMode = async () => {
       try {
-        const res = await axios.get(`${API}/public/store/cafe1`)
-        setKitchenMode(res.data?.business?.kitchenPassword ? "password" : "passwordless")
+        const res = await axios.get(
+          `${API}/public/store/${encodeURIComponent(storeCode)}`,
+        )
+        setKitchenMode(
+          res.data?.business?.kitchenPassword
+            ? "password"
+            : "passwordless",
+        )
       } catch {}
     }
-    checkMode()
-  }, [])
+
+    void checkMode()
+    void loadBusinessConfig()
+  }, [sessionReady, storeCode])
 
   const loadAnalytics = async () => {
+    if (!businessId) return
+
     try {
       const [dashRes, itemsRes, chartRes, ordersRes] = await Promise.all([
         axios.get(`${API}/analytics/dashboard/${businessId}`),
@@ -915,8 +1083,10 @@ export default function OwnerPage() {
 
   // CHANGE 2: point Action Center loads at the order controller, scoped to this store
   const loadActionCenter = async () => {
+    if (!storeCode) return
+
     try {
-      const res = await axios.get(`${API}/order/action-center/${storeCode}`)
+      const res = await axios.get(`${API}/order/action-center/${encodeURIComponent(storeCode)}`)
       setIssues(res.data)
     } catch {
       setIssues([])
@@ -924,6 +1094,8 @@ export default function OwnerPage() {
   }
 
   const loadStripeStatus = async () => {
+    if (!businessId) return
+
     try {
       const res = await axios.get(`${API}/stripe/status?businessId=${businessId}`)
       setStripeStatus(res.data)
@@ -934,18 +1106,32 @@ export default function OwnerPage() {
 
   // CHANGE 15: auto-refresh Action Center every 5s, Stripe status every 30s
   useEffect(() => {
-    loadAnalytics()
-    loadActionCenter()
-    loadStripeStatus()
+    if (
+      !sessionReady ||
+      !businessId ||
+      !storeCode
+    ) {
+      return
+    }
 
-    const actionInterval = setInterval(loadActionCenter, 5000)
-    const stripeInterval = setInterval(loadStripeStatus, 30000)
+    void loadAnalytics()
+    void loadActionCenter()
+    void loadStripeStatus()
+
+    const actionInterval = window.setInterval(
+      () => void loadActionCenter(),
+      5000,
+    )
+    const stripeInterval = window.setInterval(
+      () => void loadStripeStatus(),
+      30000,
+    )
 
     return () => {
-      clearInterval(actionInterval)
-      clearInterval(stripeInterval)
+      window.clearInterval(actionInterval)
+      window.clearInterval(stripeInterval)
     }
-  }, [])
+  }, [sessionReady, businessId, storeCode])
 
   const upload = async () => {
     if (!file) return ""
@@ -976,6 +1162,7 @@ export default function OwnerPage() {
   }
 
   const add = async () => {
+    if (!businessId) return
     if (!name || !price) return setMsg("Name and price are required")
     const imageUrl = await upload()
     await axios.post(`${API}/menu/create`, {
@@ -991,6 +1178,8 @@ export default function OwnerPage() {
   }
 
   const saveBranding = async () => {
+    if (!businessId) return
+
     const logo = await uploadLogo()
     // Change 7: send coverUrl to branding endpoint
     const coverUrl = await uploadCover()
@@ -1017,26 +1206,106 @@ export default function OwnerPage() {
         await loadAnalytics()
       })
 
-  const saveKitchen = () => axios.post(`${API}/business/set-kitchen-password`, { businessId, password: kitchenPass }).then(() => showToast("Password saved"))
+  const saveKitchen = () => {
+    if (!businessId) return Promise.resolve()
+
+    return axios
+      .post(`${API}/business/set-kitchen-password`, {
+        businessId,
+        password: kitchenPass,
+      })
+      .then(() => showToast("Password saved"))
+  }
 
   const saveServiceFee = async () => {
+    if (!businessId) return
+
     try {
       await axios.post(`${API}/business/set-service-fee`, { businessId, fee: Number(serviceFee) })
       showToast("Service fee saved")
     } catch { showToast("Failed to save fee") }
   }
 
-  const connectStripe = async () => {
+  const saveCountryAndCurrency = async (
+    silent = false,
+  ): Promise<boolean> => {
+    if (!businessId || countrySaving) return false
+
+    setCountrySaving(true)
+
     try {
+      const res = await axios.patch(
+        `${API}/business/country-currency/${businessId}`,
+        { countryCode },
+      )
+
+      const savedCountry: SupportedCountry =
+        res.data?.countryCode === "IN" ? "IN" : "US"
+
+      const savedCurrency =
+        normalizeCurrency(res.data?.currency)
+
+      setCountryCode(savedCountry)
+      setCurrency(savedCurrency)
+      setCountryDirty(false)
+
+      if (!silent) {
+        showToast(
+          savedCountry === "IN"
+            ? "Country saved — India (INR)"
+            : "Country saved — United States (USD)",
+        )
+      }
+
+      await loadStripeStatus()
+      return true
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.message ||
+        "Could not save restaurant country"
+
+      showToast(
+        Array.isArray(message)
+          ? message.join(" ")
+          : String(message),
+      )
+
+      return false
+    } finally {
+      setCountrySaving(false)
+    }
+  }
+
+  const connectStripe = async () => {
+    if (!businessId) return
+
+    try {
+      if (countryDirty) {
+        const saved =
+          await saveCountryAndCurrency(true)
+
+        if (!saved) return
+      }
+
       const res = await axios.post(`${API}/stripe/connect`, { businessId })
       await loadStripeStatus()
       window.location.href = res.data.url
-    } catch {
-      showToast("Stripe connect failed")
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.message ||
+        "Stripe connect failed"
+
+      showToast(
+        Array.isArray(message)
+          ? message.join(" ")
+          : String(message),
+      )
     }
   }
 
   const withdraw = async () => {
+    if (!businessId) return
+
     try {
       const res = await axios.get(`${API}/stripe/dashboard?businessId=${businessId}`)
       window.open(res.data.url, "_blank")
@@ -1122,6 +1391,28 @@ export default function OwnerPage() {
     { id: "branding",  icon: "✦", label: "Branding" },
   ]
 
+  if (!sessionReady || !businessId || !storeCode) {
+    return (
+      <>
+        <style>{css}</style>
+        <div
+          style={{
+            minHeight: "100vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "var(--bg)",
+            color: "var(--text2)",
+            fontFamily: "var(--font)",
+            fontSize: 13,
+          }}
+        >
+          Loading your cafe…
+        </div>
+      </>
+    )
+  }
+
   return (
     <>
       <style>{css}</style>
@@ -1139,7 +1430,7 @@ export default function OwnerPage() {
           <div className="topbar-sep" />
           <div className="store-badge">
             <div className="store-dot" />
-            cafe1
+            {storeCode}
           </div>
           <div className="topbar-right">
             <div className="avatar">OW</div>
@@ -1175,26 +1466,50 @@ export default function OwnerPage() {
                 <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={loadAnalytics}>↻ Refresh</button>
               </div>
 
-              <div className="stat-grid">
+              <div
+                className="stat-grid"
+                style={{
+                  gridTemplateColumns:
+                    "repeat(auto-fit, minmax(220px, 1fr))",
+                }}
+              >
                 <div className="stat-card">
-                  <div className="stat-label">Today's Revenue</div>
-                  <div className="stat-value">${dashboard?.todayRevenue?.toFixed(2) || "0.00"}</div>
-                  <div className="stat-sub">{dashboard?.todayOrders || 0} orders today</div>
+                  <div className="stat-label">Net Revenue Today</div>
+                  <div className="stat-value">
+                    {formatMoney(
+                      dashboard?.todayRevenue,
+                      currency,
+                    )}
+                  </div>
+                  <div className="stat-sub">
+                    {dashboard?.todayOrders || 0} orders today
+                  </div>
                 </div>
+
                 <div className="stat-card">
-                  <div className="stat-label">This Month</div>
-                  <div className="stat-value">${dashboard?.monthRevenue?.toFixed(2) || "0.00"}</div>
-                  <div className="stat-sub">{dashboard?.monthOrders || 0} orders</div>
+                  <div className="stat-label">Net Revenue This Month</div>
+                  <div className="stat-value">
+                    {formatMoney(
+                      dashboard?.monthRevenue,
+                      currency,
+                    )}
+                  </div>
+                  <div className="stat-sub">
+                    {dashboard?.monthOrders || 0} orders this month
+                  </div>
                 </div>
+
                 <div className="stat-card">
-                  <div className="stat-label">All Time</div>
-                  <div className="stat-value">${dashboard?.allTimeRevenue?.toFixed(2) || "0.00"}</div>
-                  <div className="stat-sub">{dashboard?.allTimeOrders || 0} total orders</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">Avg. Order Value</div>
-                  <div className="stat-value">${dashboard?.averageOrderValue?.toFixed(2) || "0.00"}</div>
-                  <div className="stat-sub">per transaction</div>
+                  <div className="stat-label">Net Revenue All Time</div>
+                  <div className="stat-value">
+                    {formatMoney(
+                      dashboard?.allTimeRevenue,
+                      currency,
+                    )}
+                  </div>
+                  <div className="stat-sub">
+                    {dashboard?.allTimeOrders || 0} total orders
+                  </div>
                 </div>
               </div>
 
@@ -1202,8 +1517,8 @@ export default function OwnerPage() {
               <div className="card">
                 <div className="card-top">
                   <div>
-                    <div className="card-title">Revenue — Last 30 Days</div>
-                    <div className="card-sub">Daily totals from completed orders</div>
+                    <div className="card-title">Net Revenue — Last 30 Days</div>
+                    <div className="card-sub">After Stripe fees, CaviarQR fees and refunds</div>
                   </div>
                   <div className="card-icon-wrap">📊</div>
                 </div>
@@ -1228,9 +1543,9 @@ export default function OwnerPage() {
                         tick={{ fontSize: 11, fill: "#a0a0ab" }}
                         tickLine={false}
                         axisLine={false}
-                        tickFormatter={(v) => `$${v}`}
+                        tickFormatter={(v) => `${currencySymbol(currency)}${Number(v).toLocaleString(currency === "inr" ? "en-IN" : "en-US")}`}
                       />
-                      <Tooltip content={<ChartTooltip />} cursor={{ stroke: "rgba(91,91,214,0.15)", strokeWidth: 1 }} />
+                      <Tooltip content={<ChartTooltip currency={currency} />} cursor={{ stroke: "rgba(91,91,214,0.15)", strokeWidth: 1 }} />
                       <Line
                         type="monotone"
                         dataKey="revenue"
@@ -1295,7 +1610,7 @@ export default function OwnerPage() {
                         <tr key={order.id} className="orders-tr">
                           <td className="orders-td"><span className="order-id">#{order.id}</span></td>
                           <td className="orders-td">{statusChip(order.status)}</td>
-                          <td className="orders-td" style={{ fontWeight: 600 }}>${order.total}</td>
+                          <td className="orders-td" style={{ fontWeight: 600 }}>{formatMoney(order.total, normalizeCurrency(order.currency || currency))}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1342,12 +1657,12 @@ export default function OwnerPage() {
                           <div>
                             {i.discount > 0 ? (
                               <>
-                                <span className="item-original">${i.price}</span>
-                                <span className="item-price">${(i.price * (1 - i.discount / 100)).toFixed(2)}</span>
+                                <span className="item-original">{formatMoney(i.price, currency)}</span>
+                                <span className="item-price">{formatMoney(i.price * (1 - i.discount / 100), currency)}</span>
                                 <span className="item-disc">{i.discount}%</span>
                               </>
                             ) : (
-                              <span className="item-price">${i.price}</span>
+                              <span className="item-price">{formatMoney(i.price, currency)}</span>
                             )}
                           </div>
                         </div>
@@ -1388,7 +1703,7 @@ export default function OwnerPage() {
                     <input type="text" className="inp" placeholder="e.g. Iced Latte" value={name} onChange={e => setName(e.target.value)} />
                   </div>
                   <div className="field">
-                    <div className="field-label">Price ($)</div>
+                    <div className="field-label">Price ({currencySymbol(currency)})</div>
                     <input type="number" className="inp" placeholder="0.00" value={price} onChange={e => setPrice(e.target.value)} />
                   </div>
                 </div>
@@ -1569,6 +1884,57 @@ export default function OwnerPage() {
               <div className="card" style={{ maxWidth: 520 }}>
                 <div className="card-top">
                   <div>
+                    <div className="card-title">Restaurant Country</div>
+                    <div className="card-sub">
+                      Choose this before creating the Stripe connected account
+                    </div>
+                  </div>
+                  <div className="card-icon-wrap">🌍</div>
+                </div>
+
+                <div className="field-grid one">
+                  <div className="field">
+                    <div className="field-label">Country and settlement currency</div>
+                    <select
+                      className="inp"
+                      value={countryCode}
+                      onChange={(e) => {
+                        const nextCountry: SupportedCountry =
+                          e.target.value === "IN" ? "IN" : "US"
+
+                        setCountryCode(nextCountry)
+                        setCurrency(nextCountry === "IN" ? "inr" : "usd")
+                        setCountryDirty(true)
+                      }}
+                    >
+                      <option value="US">United States (USD)</option>
+                      <option value="IN">India (INR)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="section-intro" style={{ marginTop: 10, marginBottom: 0 }}>
+                  {countryCode === "IN"
+                    ? "Customers will see INR (₹), and Stripe onboarding will use India."
+                    : "Customers will see USD ($), and Stripe onboarding will use the United States."}
+                  <br />
+                  Country cannot be changed after a Stripe connected account has been created.
+                </div>
+
+                <div className="btn-row">
+                  <button
+                    className={`btn ${countrySaving || !countryDirty ? "btn-disabled" : "btn-primary"}`}
+                    disabled={countrySaving || !countryDirty}
+                    onClick={() => { void saveCountryAndCurrency() }}
+                  >
+                    {countrySaving ? "Saving..." : countryDirty ? "Save Country" : "Country Saved"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="card" style={{ maxWidth: 520 }}>
+                <div className="card-top">
+                  <div>
                     <div className="card-title">Stripe Connect</div>
                     <div className="card-sub">Receive payments directly to your bank account</div>
                   </div>
@@ -1576,6 +1942,18 @@ export default function OwnerPage() {
                 </div>
                 <table className="info-tbl">
                   <tbody>
+                    <tr className="info-tr">
+                      <td className="info-td lbl">Country</td>
+                      <td className="info-td val">
+                        {countryCode === "IN" ? "India" : "United States"}
+                      </td>
+                    </tr>
+                    <tr className="info-tr">
+                      <td className="info-td lbl">Currency</td>
+                      <td className="info-td val">
+                        {currency === "inr" ? "INR (₹)" : "USD ($)"}
+                      </td>
+                    </tr>
                     <tr className="info-tr">
                       <td className="info-td lbl">Processor</td>
                       <td className="info-td val">Stripe</td>
@@ -1591,7 +1969,13 @@ export default function OwnerPage() {
                   </tbody>
                 </table>
                 <div className="btn-row">
-                  <button className="btn btn-primary" onClick={connectStripe}>Connect Stripe</button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={connectStripe}
+                    disabled={countrySaving}
+                  >
+                    Connect Stripe
+                  </button>
                   <button className="btn btn-ghost" onClick={withdraw}>Open Dashboard ↗</button>
                 </div>
               </div>
@@ -1792,7 +2176,7 @@ export default function OwnerPage() {
                   </div>
 
                   <div style={{ marginTop: 12, fontSize: 42, fontWeight: 800, letterSpacing: -1, color: "var(--green)" }}>
-                    ${Number(issue.total || 0).toFixed(2)}
+                    {formatMoney(issue.total, normalizeCurrency(issue.currency || currency))}
                   </div>
 
                   <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>

@@ -7,8 +7,11 @@ import {
 } from "react"
 import axios from "axios"
 import { io } from "socket.io-client"
+import { useRouter } from "next/navigation"
 
 export default function KitchenPage() {
+  const router = useRouter()
+
   const [orders, setOrders] =
     useState<any[]>([])
 
@@ -68,18 +71,146 @@ export default function KitchenPage() {
 
   const socketRef = useRef<any>(null)
 
-  // 🔥 PREVENT DUPLICATE ACK SPAM
   const ackedOrdersRef =
     useRef<Set<number>>(
       new Set(),
     )
 
-  const storeCode = "cafe1"
-  const businessId = 3
+  const [storeCode, setStoreCode] =
+    useState('')
 
-  // ─────────────────────────────────────
-  // KITCHEN ACKNOWLEDGEMENT
-  // ─────────────────────────────────────
+  const [businessId, setBusinessId] =
+    useState<number | null>(null)
+
+  const [sessionReady, setSessionReady] =
+    useState(false)
+
+  const [sessionToken, setSessionToken] =
+    useState('')
+
+  useEffect(() => {
+    const savedRole =
+      localStorage.getItem('role')
+
+    const savedToken =
+      String(
+        localStorage.getItem('token') ||
+          '',
+      ).trim()
+
+    const clearSession = () => {
+      localStorage.removeItem('businessId')
+      localStorage.removeItem('storeCode')
+      localStorage.removeItem('role')
+      localStorage.removeItem('token')
+    }
+
+    if (
+      savedRole !== 'kitchen' ||
+      !savedToken
+    ) {
+      clearSession()
+      router.replace('/login')
+      return
+    }
+
+    const initialize = async () => {
+      try {
+        /*
+         * The server is authoritative. Never trust a stale
+         * storeCode/businessId left in localStorage.
+         */
+        const response =
+          await axios.get(
+            `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/me`,
+            {
+              headers: {
+                Authorization:
+                  `Bearer ${savedToken}`,
+              },
+            },
+          )
+
+        const authoritativeStoreCode =
+          String(
+            response.data?.storeCode ||
+              '',
+          ).trim()
+
+        const authoritativeBusinessId =
+          Number(
+            response.data?.businessId,
+          )
+
+        if (
+          !authoritativeStoreCode ||
+          !Number.isInteger(
+            authoritativeBusinessId,
+          ) ||
+          authoritativeBusinessId < 1
+        ) {
+          throw new Error(
+            'Invalid kitchen session response.',
+          )
+        }
+
+        localStorage.setItem(
+          'storeCode',
+          authoritativeStoreCode,
+        )
+        localStorage.setItem(
+          'businessId',
+          String(
+            authoritativeBusinessId,
+          ),
+        )
+        localStorage.setItem(
+          'role',
+          'kitchen',
+        )
+
+        setStoreCode(
+          authoritativeStoreCode,
+        )
+        setBusinessId(
+          authoritativeBusinessId,
+        )
+        setSessionToken(
+          savedToken,
+        )
+        setIsOpen(
+          response.data?.isOpen ===
+            true,
+        )
+        setSessionReady(true)
+      } catch (error) {
+        console.error(
+          'KITCHEN SESSION ERROR',
+          error,
+        )
+        clearSession()
+        router.replace('/login')
+      }
+    }
+
+    void initialize()
+  }, [router])
+
+  const authConfig = () => {
+    const token =
+      typeof window !== 'undefined'
+        ? sessionToken || localStorage.getItem('token')
+        : null
+
+    return token
+      ? {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      : {}
+  }
+
   const acknowledgeOrder = (
     order: any,
   ) => {
@@ -121,7 +252,7 @@ export default function KitchenPage() {
     )
 
     console.log(
-      "✅ SENDING KITCHEN ACK:",
+      "SENDING KITCHEN ACK:",
       order.id,
     )
 
@@ -129,24 +260,22 @@ export default function KitchenPage() {
       "kitchenAck",
       {
         orderId: order.id,
-        businessId,
       },
     )
   }
 
-  // ─────────────────────────────────────
-  // LOAD ORDERS
-  // ─────────────────────────────────────
   const load = async () => {
     try {
       const activeRes =
         await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL}/order/${storeCode}`,
+          `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/orders`,
+          authConfig(),
         )
 
       const historyRes =
         await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL}/order/history/${storeCode}`,
+          `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/orders/history`,
+          authConfig(),
         )
 
       let activeData: any[] = []
@@ -184,6 +313,20 @@ export default function KitchenPage() {
           historyRes.data.orders
       }
 
+      // Defense in depth: even if a server regression ever
+      // returned the wrong tenant, never render it here.
+      activeData = activeData.filter(
+        (order) =>
+          Number(order?.businessId) === businessId &&
+          String(order?.storeCode || '') === storeCode,
+      )
+
+      historyData = historyData.filter(
+        (order) =>
+          Number(order?.businessId) === businessId &&
+          String(order?.storeCode || '') === storeCode,
+      )
+
       activeData.sort(
         (a, b) =>
           b.id - a.id,
@@ -196,12 +339,12 @@ export default function KitchenPage() {
 
       const businessRes =
         await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL}/public/store/${storeCode}`,
+          `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/me`,
+          authConfig(),
         )
 
       const latestOpen =
         businessRes.data
-          ?.business
           ?.isOpen === true
 
       setIsOpen(
@@ -216,7 +359,6 @@ export default function KitchenPage() {
         historyData,
       )
 
-      // 🔥 ACK ANY ACTIVE ORDER FOUND BY POLLING/LOAD
       activeData.forEach(
         (order) => {
           acknowledgeOrder(order)
@@ -231,15 +373,13 @@ export default function KitchenPage() {
     }
   }
 
-  // ─────────────────────────────────────
-  // LOAD MENU
-  // ─────────────────────────────────────
   const loadMenu =
     async () => {
       try {
         const res =
           await axios.get(
             `${process.env.NEXT_PUBLIC_API_URL}/menu/${businessId}`,
+            authConfig(),
           )
 
         console.log(
@@ -255,13 +395,12 @@ export default function KitchenPage() {
       }
     }
 
-  // ─────────────────────────────────────
-  // TOGGLE KITCHEN OPEN/CLOSED
-  // ─────────────────────────────────────
   const toggleKitchen = async () => {
     try {
       const res = await axios.patch(
-        `${process.env.NEXT_PUBLIC_API_URL}/business/toggle-open/${businessId}`,
+        `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/toggle-open`,
+        {},
+        authConfig(),
       )
 
       setIsOpen(
@@ -272,10 +411,15 @@ export default function KitchenPage() {
     }
   }
 
-  // ─────────────────────────────────────
-  // SOCKET + POLLING FALLBACK
-  // ─────────────────────────────────────
   useEffect(() => {
+    if (
+      !sessionReady ||
+      !storeCode ||
+      !businessId
+    ) {
+      return
+    }
+
     let poll: any
 
     const startPolling = () => {
@@ -309,39 +453,40 @@ export default function KitchenPage() {
           Infinity,
 
         reconnectionDelay: 1000,
+
+        auth: {
+          token:
+            localStorage.getItem('token') ||
+            '',
+        },
       },
     )
 
     socketRef.current = socket
 
-    // 🔥 CONNECT
     socket.on("connect", () => {
       console.log(
-        "🔥 SOCKET CONNECTED",
+        "SOCKET CONNECTED",
       )
 
       socket.emit(
         "join",
-        businessId,
       )
 
       stopPolling()
 
-      // 🔥 FORCE LOAD
       load()
     })
 
-    // 🔥 RECONNECT
     socket.on(
       "reconnect",
       () => {
         console.log(
-          "🔥 SOCKET RECONNECTED",
+          "SOCKET RECONNECTED",
         )
 
         socket.emit(
           "join",
-          businessId,
         )
 
         stopPolling()
@@ -350,36 +495,44 @@ export default function KitchenPage() {
       },
     )
 
-    // 🔥 DISCONNECT
     socket.on(
       "disconnect",
       () => {
         console.log(
-          "🔥 SOCKET DISCONNECTED",
+          "SOCKET DISCONNECTED",
         )
 
         startPolling()
       },
     )
 
-    // 🔥 SOCKET ERROR
     socket.on(
       "connect_error",
       () => {
         console.log(
-          "🔥 SOCKET ERROR",
+          "SOCKET ERROR",
         )
 
         startPolling()
       },
     )
 
-    // 🔥 KITCHEN ACK SUCCESS
+    socket.on(
+      "kitchenAuthFailed",
+      () => {
+        localStorage.removeItem('businessId')
+        localStorage.removeItem('storeCode')
+        localStorage.removeItem('role')
+        localStorage.removeItem('token')
+        router.replace('/login')
+      },
+    )
+
     socket.on(
       "kitchenAckSuccess",
       (data: any) => {
         console.log(
-          "✅ KITCHEN ACK SUCCESS",
+          "KITCHEN ACK SUCCESS",
           data,
         )
 
@@ -399,12 +552,11 @@ export default function KitchenPage() {
       },
     )
 
-    // 🔥 KITCHEN ACK FAILED
     socket.on(
       "kitchenAckFailed",
       (data: any) => {
         console.log(
-          "❌ KITCHEN ACK FAILED",
+          "KITCHEN ACK FAILED",
           data,
         )
 
@@ -416,16 +568,25 @@ export default function KitchenPage() {
       },
     )
 
-    // 🔥 NEW ORDER
     socket.on(
       "newOrder",
       (order: any) => {
         console.log(
-          "🔥 NEW ORDER",
+          "NEW ORDER",
           order,
         )
 
-        // 🔥 ACK IMMEDIATELY
+        if (
+          Number(order?.businessId) !== businessId ||
+          String(order?.storeCode || '') !== storeCode
+        ) {
+          console.error(
+            'BLOCKED CROSS-TENANT SOCKET ORDER',
+            order?.id,
+          )
+          return
+        }
+
         acknowledgeOrder(order)
 
         setOrders((prev) => {
@@ -446,7 +607,6 @@ export default function KitchenPage() {
           ]
         })
 
-        // 🔥 HARD SYNC
         setTimeout(() => {
           load()
           loadMenu()
@@ -454,14 +614,24 @@ export default function KitchenPage() {
       },
     )
 
-    // 🔥 ORDER UPDATE
     socket.on(
       "orderUpdate",
       (order: any) => {
         console.log(
-          "🔥 ORDER UPDATE",
+          "ORDER UPDATE",
           order,
         )
+
+        if (
+          Number(order?.businessId) !== businessId ||
+          String(order?.storeCode || '') !== storeCode
+        ) {
+          console.error(
+            'BLOCKED CROSS-TENANT SOCKET UPDATE',
+            order?.id,
+          )
+          return
+        }
 
         acknowledgeOrder(order)
 
@@ -480,11 +650,9 @@ export default function KitchenPage() {
       },
     )
 
-    // 🔥 INITIAL LOAD
     load()
     loadMenu()
 
-    // 🔥 SAFETY POLL
     startPolling()
 
     return () => {
@@ -494,6 +662,7 @@ export default function KitchenPage() {
       socket.off("disconnect")
       socket.off("reconnect")
       socket.off("connect_error")
+      socket.off("kitchenAuthFailed")
       socket.off("kitchenAckSuccess")
       socket.off("kitchenAckFailed")
       socket.off("newOrder")
@@ -503,11 +672,8 @@ export default function KitchenPage() {
 
       socket.disconnect()
     }
-  }, [])
+  }, [sessionReady, storeCode, businessId, sessionToken, router])
 
-  // ─────────────────────────────────────
-  // COMPLETE ORDER
-  // ─────────────────────────────────────
   const completeOrder = async (
     id: number,
   ) => {
@@ -520,10 +686,11 @@ export default function KitchenPage() {
 
     try {
       await axios.patch(
-        `${process.env.NEXT_PUBLIC_API_URL}/order/${id}`,
+        `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/orders/${id}/status`,
         {
           status: "DONE",
         },
+        authConfig(),
       )
 
       load()
@@ -532,30 +699,13 @@ export default function KitchenPage() {
     }
   }
 
-  // ─────────────────────────────────────
-  // TOGGLE STOCK
-  // ─────────────────────────────────────
-  const toggleStock =
-    async (id: number) => {
-      try {
-        await axios.patch(
-          `${process.env.NEXT_PUBLIC_API_URL}/menu/stock/${id}`,
-        )
-
-        loadMenu()
-      } catch (err) {
-        console.log(err)
-      }
-    }
-
-  // ─────────────────────────────────────
-  // TOGGLE HIDE
-  // ─────────────────────────────────────
   const toggleHide =
     async (id: number) => {
       try {
         await axios.patch(
           `${process.env.NEXT_PUBLIC_API_URL}/menu/hide/${id}`,
+          {},
+          authConfig(),
         )
 
         loadMenu()
@@ -595,6 +745,7 @@ export default function KitchenPage() {
             await axios.post(
               `${process.env.NEXT_PUBLIC_API_URL}/menu/upload`,
               fd,
+              authConfig(),
             )
 
           imageUrl =
@@ -620,6 +771,7 @@ export default function KitchenPage() {
               newDescription,
             imageUrl,
           },
+          authConfig(),
         )
 
         setShowAddModal(
@@ -645,9 +797,6 @@ export default function KitchenPage() {
       }
     }
 
-  // ─────────────────────────────────────
-  // REFUND
-  // ─────────────────────────────────────
   const openRefund = (
     id: number,
   ) => {
@@ -669,45 +818,12 @@ export default function KitchenPage() {
   }
 
   const submitRefund = async () => {
-    if (!refundOrder) return
-
-    if (
-      !confirm(
-        "Issue full refund?",
-      )
+    alert(
+      'Refunds are handled from the CaviarQR Action Center so they stay audited and cannot be triggered by a kitchen device.',
     )
-      return
-
-    try {
-      await axios.patch(
-        `${process.env.NEXT_PUBLIC_API_URL}/order/refund/${refundOrder.stripePaymentIntentId}`,
-      )
-
-      // 🔥 INSTANT UI UPDATE
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id === refundOrder.id
-            ? {
-                ...o,
-                status:
-                  "REFUNDED",
-              }
-            : o,
-        ),
-      )
-
-      setRefundOrderId(null)
-
-      load()
-    } catch (err) {
-      console.log(err)
-      alert("Refund failed")
-    }
+    setRefundOrderId(null)
   }
 
-  // ─────────────────────────────────────
-  // FILTERS
-  // ─────────────────────────────────────
   const currentOrders =
     orders.filter(
       (o) =>
@@ -726,16 +842,12 @@ export default function KitchenPage() {
     (o) => o.id === refundOrderId,
   )
 
-  // ─────────────────────────────────────
-  // HELPERS
-  // ─────────────────────────────────────
   const elapsed = (
     iso: string,
   ) => {
     const created =
       new Date(iso)
 
-    // 🔥 FIX UTC → LOCAL
     const local =
       new Date(
         created.toLocaleString(
@@ -807,9 +919,28 @@ export default function KitchenPage() {
     },
   }
 
-  // ─────────────────────────────────────
-  // UI
-  // ─────────────────────────────────────
+  if (
+    !sessionReady ||
+    !storeCode ||
+    !businessId
+  ) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#f4f2ed',
+          color: '#666',
+          fontSize: 14,
+        }}
+      >
+        Loading kitchen…
+      </div>
+    )
+  }
+
   return (
     <div
       style={{
@@ -818,7 +949,6 @@ export default function KitchenPage() {
         background: "#f4f2ed",
       }}
     >
-      {/* TOP BAR */}
       <div
         style={{
           display: "flex",
@@ -1001,7 +1131,6 @@ export default function KitchenPage() {
 
       {tab === 'orders' && (
         <>
-          {/* ORDERS */}
           <div
             style={{
               maxHeight: "80vh",
@@ -1070,7 +1199,6 @@ export default function KitchenPage() {
                             : 1,
                       }}
                     >
-                      {/* HEADER */}
                       <div
                         style={{
                           display:
@@ -1109,7 +1237,6 @@ export default function KitchenPage() {
                         </span>
                       </div>
 
-                      {/* TIME */}
                       {o.createdAt && (
                         <span
                           style={{
@@ -1123,7 +1250,6 @@ export default function KitchenPage() {
                         </span>
                       )}
 
-                      {/* ITEMS */}
                       <div
                         style={{
                           borderTop:
@@ -1139,50 +1265,87 @@ export default function KitchenPage() {
                           (
                             item: any,
                             idx: number,
-                          ) => (
-                            <div
-                              key={idx}
-                              style={{
-                                display:
-                                  "flex",
-                                justifyContent:
-                                  "space-between",
-                                alignItems:
-                                  "center",
-                              }}
-                            >
-                              <span
-                                style={{
-                                  fontSize: 13,
-                                }}
-                              >
-                                {
-                                  item.name
-                                }
-                              </span>
+                          ) => {
+                            const customerNote =
+                              String(
+                                item.note ||
+                                  item.notes ||
+                                  '',
+                              ).trim()
 
-                              <span
+                            return (
+                              <div
+                                key={idx}
                                 style={{
-                                  fontSize: 11,
-                                  padding:
-                                    "1px 7px",
-                                  borderRadius: 20,
-                                  background:
-                                    "#f4f2ed",
-                                  color:
-                                    "#888",
+                                  display: 'flex',
+                                  flexDirection:
+                                    'column',
+                                  gap: 5,
                                 }}
                               >
-                                x
-                                {item.qty ||
-                                  1}
-                              </span>
-                            </div>
-                          ),
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent:
+                                      'space-between',
+                                    alignItems:
+                                      'center',
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: 13,
+                                    }}
+                                  >
+                                    {item.name}
+                                  </span>
+
+                                  <span
+                                    style={{
+                                      fontSize: 11,
+                                      padding:
+                                        '1px 7px',
+                                      borderRadius: 20,
+                                      background:
+                                        '#f4f2ed',
+                                      color: '#888',
+                                    }}
+                                  >
+                                    x{item.qty || 1}
+                                  </span>
+                                </div>
+
+                                {customerNote && (
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      lineHeight: 1.4,
+                                      padding:
+                                        '7px 9px',
+                                      borderRadius: 8,
+                                      background:
+                                        '#FFF4D8',
+                                      color: '#6B4F00',
+                                      border:
+                                        '0.5px solid #E8D59B',
+                                      whiteSpace:
+                                        'pre-wrap',
+                                      overflowWrap:
+                                        'anywhere',
+                                    }}
+                                  >
+                                    <strong>
+                                      Note:
+                                    </strong>{' '}
+                                    {customerNote}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          },
                         )}
                       </div>
 
-                      {/* STATUS */}
                       <div
                         style={{
                           display:
@@ -1214,7 +1377,6 @@ export default function KitchenPage() {
                         </span>
                       </div>
 
-                      {/* ACK STATUS */}
                       {!showHistory && (
                         <div
                           style={{
@@ -1240,7 +1402,6 @@ export default function KitchenPage() {
                         </div>
                       )}
 
-                      {/* ACTIONS */}
                       {!showHistory && (
                         <div
                           style={{
@@ -1459,22 +1620,6 @@ export default function KitchenPage() {
 
                 <div
                   style={{
-                    marginTop: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color:
-                      item.isOutOfStock
-                        ? "#A32D2D"
-                        : "#4D7A19",
-                  }}
-                >
-                  {item.isOutOfStock
-                    ? "OUT OF STOCK"
-                    : "AVAILABLE"}
-                </div>
-
-                <div
-                  style={{
                     fontSize: 11,
                     color:
                       item.isHidden
@@ -1494,17 +1639,6 @@ export default function KitchenPage() {
                     marginTop: 10,
                   }}
                 >
-                  <button
-                    onClick={() =>
-                      toggleStock(
-                        item.id,
-                      )
-                    }
-                  >
-                    {item.isOutOfStock
-                      ? 'In Stock'
-                      : 'Out Of Stock'}
-                  </button>
 
                   <button
                     onClick={() =>
@@ -1649,7 +1783,6 @@ export default function KitchenPage() {
         </div>
       )}
 
-      {/* REFUND MODAL */}
       {refundOrderId && (
         <div
           onClick={(e) => {
