@@ -16,7 +16,7 @@ export default function KitchenLogin() {
   const login = async () => {
     setError('')
 
-    const res = await apiFetch(`${API}/business/kitchen-login`, {
+    const res = await apiFetch(`${API}/kitchen-auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ storeCode, password }),

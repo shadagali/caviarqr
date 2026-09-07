@@ -47,6 +47,8 @@ export class MenuController {
         body.category || '',
       imageUrl:
         body.imageUrl || '',
+      description:
+        body.description || '',
       discount:
         Number(
           body.discount,

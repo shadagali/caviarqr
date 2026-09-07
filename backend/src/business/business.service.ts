@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common'
 
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { DataSource, Repository } from 'typeorm'
 
 import {
   Business,
@@ -23,6 +23,16 @@ import {
 
 import { Resend } from 'resend'
 
+import {
+  createOwnerToken,
+} from '../owner-auth/owner-token'
+
+import {
+  StandCode,
+  StandCodeStatus,
+} from '../stand/stand-code.entity'
+
+
 @Injectable()
 export class BusinessService {
   private readonly resend =
@@ -35,6 +45,9 @@ export class BusinessService {
   constructor(
     @InjectRepository(Business)
     private businessRepo: Repository<Business>,
+
+    private readonly dataSource:
+      DataSource,
   ) {}
 
   // =========================
@@ -47,15 +60,25 @@ export class BusinessService {
     storeCode: string
   }) {
     const email =
-      data.email
+      String(
+        data.email || '',
+      )
         .toLowerCase()
         .trim()
 
     const storeCode =
       String(
         data.storeCode || '',
-      ).trim()
+      )
+        .trim()
+        .toLowerCase()
 
+    /*
+     * Manufactured activation codes
+     * are hexadecimal and generated
+     * uppercase. Accept lowercase input
+     * from restaurant owners too.
+     */
     if (
       !email ||
       !data.password ||
@@ -66,69 +89,145 @@ export class BusinessService {
       )
     }
 
-    const existing =
-      await this.businessRepo.findOne({
-        where: [
-          { email },
-          {
-            storeCode,
-          },
-        ],
-      })
-
-    if (existing) {
-      throw new BadRequestException(
-        'Account already exists',
-      )
-    }
-
+    /*
+     * Hash outside the transaction so
+     * bcrypt does not hold a DB lock
+     * longer than necessary.
+     */
     const hashed =
       await bcrypt.hash(
         data.password,
         10,
       )
 
-    const business =
-      this.businessRepo.create({
-        email,
+    return this.dataSource.transaction(
+      async (manager) => {
+        const businessRepo =
+          manager.getRepository(
+            Business,
+          )
 
-        password:
-          hashed,
+        const standRepo =
+          manager.getRepository(
+            StandCode,
+          )
 
-        storeCode,
+        const existing =
+          await businessRepo.findOne({
+            where: [
+              {
+                email,
+              },
+              {
+                storeCode,
+              },
+            ],
+          })
 
-        isOpen:
-          true,
+        if (existing) {
+          throw new BadRequestException(
+            'Account already exists',
+          )
+        }
 
-        countryCode:
-          BusinessCountryCode
-            .UNITED_STATES,
+        /*
+         * If this is a manufactured
+         * CaviarQR code, lock its row
+         * during the claim.
+         *
+         * If no StandCode exists, we keep
+         * the legacy signup behavior.
+         */
+        const stand =
+          await standRepo.findOne({
+            where: {
+              storeCode,
+            },
 
-        currency:
-          BusinessCurrency.USD,
-      })
+            lock: {
+              mode:
+                'pessimistic_write',
+            },
+          })
 
-    const saved =
-      await this.businessRepo.save(
-        business,
-      )
+        if (stand) {
+          if (
+            stand.status ===
+            StandCodeStatus.CLAIMED
+          ) {
+            throw new BadRequestException(
+              'Store code is already claimed',
+            )
+          }
 
-    return {
-      id:
-        saved.id,
+        }
 
-      email:
-        saved.email,
+        const business =
+          businessRepo.create({
+            email,
 
-      storeCode:
-        saved.storeCode,
+            password:
+              hashed,
 
-      countryCode:
-        saved.countryCode,
+            storeCode,
 
-      currency:
-        saved.currency,
-    }
+            isOpen:
+              true,
+
+            countryCode:
+              BusinessCountryCode
+                .UNITED_STATES,
+
+            currency:
+              BusinessCurrency.USD,
+          })
+
+        const saved =
+          await businessRepo.save(
+            business,
+          )
+
+        /*
+         * Business creation and stand
+         * claiming are part of this same
+         * transaction.
+         */
+        if (stand) {
+          stand.status =
+            StandCodeStatus.CLAIMED
+
+          stand.claimedBusinessId =
+            saved.id
+
+          stand.claimedAt =
+            new Date()
+
+          await standRepo.save(
+            stand,
+          )
+        }
+
+        return {
+          id:
+            saved.id,
+
+          email:
+            saved.email,
+
+          storeCode:
+            saved.storeCode,
+
+          countryCode:
+            saved.countryCode,
+
+          currency:
+            saved.currency,
+
+          standClaimed:
+            Boolean(stand),
+        }
+      },
+    )
   }
 
   // =========================
@@ -178,7 +277,19 @@ export class BusinessService {
       )
     }
 
+    const token =
+      createOwnerToken(
+        business.id,
+        business.storeCode,
+      )
+
     return {
+      success: true,
+
+      role: 'owner',
+
+      token,
+
       id:
         business.id,
 

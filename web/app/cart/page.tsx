@@ -747,12 +747,14 @@ function createCartFingerprint(
   tableNumber: number,
   currency: SupportedCurrency,
   items: CheckoutItem[],
+  marketingOptIn: boolean,
 ) {
   return JSON.stringify({
     storeCode,
     tableNumber,
     currency,
     items,
+    marketingOptIn,
   })
 }
 
@@ -868,6 +870,15 @@ function CartContent() {
 
   const [business, setBusiness] =
     useState<any>(null)
+
+  /*
+   * Promotional email consent is OFF by default.
+   * Stripe receipt email collection does not change it.
+   */
+  const [
+    marketingOptIn,
+    setMarketingOptIn,
+  ] = useState(false)
 
   const [menuSuggestions, setMenuSuggestions] =
     useState<MenuSuggestion[]>([])
@@ -1503,12 +1514,18 @@ function CartContent() {
             cart,
           )
 
+        const effectiveMarketingOptIn =
+          business?.emailMarketingEnabled ===
+            true &&
+          marketingOptIn === true
+
         const fingerprint =
           createCartFingerprint(
             storeCode,
             table,
             currency,
             checkoutItems,
+            effectiveMarketingOptIn,
           )
 
         let checkoutRequestId:
@@ -1576,9 +1593,13 @@ function CartContent() {
 
               checkoutRequestId,
 
+              marketingOptIn:
+                effectiveMarketingOptIn,
+
               /*
-               * Only IDs, quantities and the customer
-               * note are sent. The backend still loads
+               * Only IDs, quantities, the customer
+               * note and explicit marketing-consent
+               * boolean are sent. The backend still loads
                * trusted names, prices, discounts and
                * availability from PostgreSQL.
                */
@@ -2078,6 +2099,86 @@ function CartContent() {
                   Ordering is currently unavailable.
                 </div>
               </div>
+            )}
+
+            {business?.emailMarketingEnabled ===
+              true && (
+              <label
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  alignItems:
+                    "flex-start",
+                  margin:
+                    "18px 16px 2px",
+                  padding: 14,
+                  border:
+                    "1px solid var(--border)",
+                  borderRadius: 12,
+                  background: "#fff",
+                  cursor: loading
+                    ? "default"
+                    : "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={
+                    marketingOptIn
+                  }
+                  disabled={loading}
+                  onChange={(
+                    event,
+                  ) =>
+                    setMarketingOptIn(
+                      event.target
+                        .checked,
+                    )
+                  }
+                  style={{
+                    width: 18,
+                    height: 18,
+                    marginTop: 2,
+                    flexShrink: 0,
+                  }}
+                />
+
+                <span>
+                  <span
+                    style={{
+                      display:
+                        "block",
+                      fontSize: 14,
+                      fontWeight: 700,
+                      lineHeight: 1.35,
+                    }}
+                  >
+                    Email me occasional
+                    offers from{" "}
+                    {business?.cafeName ||
+                      business?.name ||
+                      "this café"}
+                  </span>
+
+                  <span
+                    style={{
+                      display:
+                        "block",
+                      marginTop: 4,
+                      fontSize: 12,
+                      lineHeight: 1.45,
+                      color:
+                        "var(--text-muted)",
+                    }}
+                  >
+                    Optional. You can
+                    unsubscribe at any
+                    time. Your receipt
+                    email is separate
+                    from this choice.
+                  </span>
+                </span>
+              </label>
             )}
 
             {/* BILL SUMMARY */}

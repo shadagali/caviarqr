@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
+
+import { StandModule } from '../stand/stand.module'
 import { JwtModule } from '@nestjs/jwt'
 
 import { Business } from './business.entity'
@@ -8,6 +10,7 @@ import { BusinessController } from './business.controller'
 
 @Module({
   imports: [
+    StandModule,
     TypeOrmModule.forFeature([Business]),
 
     // 🔥 JWT (GLOBAL SAFE CONFIG)

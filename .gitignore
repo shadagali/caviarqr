@@ -4,3 +4,6 @@ web/node_modules/
 node_modules/ 
 backend/node_modules/ 
 web/node_modules/ 
+.env.production*
+*.before-*
+backups/

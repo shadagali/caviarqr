@@ -145,6 +145,11 @@ async function bootstrap() {
       process.env.FRONTEND_URL,
       process.env.WEB_URL,
 
+      process.env.NODE_ENV ===
+      'production'
+        ? 'https://www.caviarqr.com'
+        : undefined,
+
       process.env.NODE_ENV !==
       'production'
         ? 'http://localhost:3000'

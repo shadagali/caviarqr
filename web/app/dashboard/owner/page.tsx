@@ -1,6 +1,7 @@
 "use client"
 import { useEffect, useState } from "react"
 import axios from "axios"
+import { apiFetch } from "../../../lib/api"
 
 import {
   ResponsiveContainer,
@@ -45,6 +46,10 @@ const css = `
     --r-lg:         14px;
     --shadow-sm:    0 1px 2px rgba(0,0,0,0.05), 0 0 0 1px rgba(0,0,0,0.04);
     --shadow:       0 4px 12px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.04);
+  }
+
+  @keyframes caviar-refresh-spin {
+    to { transform: rotate(360deg); }
   }
 
   html, body {
@@ -889,6 +894,71 @@ export default function OwnerPage() {
   const [coverFile, setCoverFile] = useState<any>(null)
   const [kitchenMode, setKitchenMode] = useState("unknown")
   const [activeSection, setActiveSection] = useState("analytics")
+  const [fullRefreshing, setFullRefreshing] = useState(false)
+
+  // =========================
+  // EMAIL PROMOTIONS
+  // =========================
+
+  const [
+    marketingStatus,
+    setMarketingStatus,
+  ] = useState<any>(null)
+
+  const [
+    marketingCampaigns,
+    setMarketingCampaigns,
+  ] = useState<any[]>([])
+
+  const [
+    marketingSubject,
+    setMarketingSubject,
+  ] = useState("")
+
+  const [
+    marketingMessage,
+    setMarketingMessage,
+  ] = useState("")
+
+  const [
+    marketingLoading,
+    setMarketingLoading,
+  ] = useState(false)
+
+  const [
+    marketingAction,
+    setMarketingAction,
+  ] = useState("")
+
+  const [
+    marketingError,
+    setMarketingError,
+  ] = useState("")
+
+  useEffect(() => {
+    const savedSection =
+      window.sessionStorage.getItem("caviarqr-owner-refresh-section")
+
+    if (savedSection) {
+      setActiveSection(savedSection)
+      window.sessionStorage.removeItem("caviarqr-owner-refresh-section")
+    }
+  }, [])
+
+  const refreshWholePage = () => {
+    if (fullRefreshing) return
+
+    window.sessionStorage.setItem(
+      "caviarqr-owner-refresh-section",
+      activeSection,
+    )
+
+    setFullRefreshing(true)
+
+    window.setTimeout(() => {
+      window.location.reload()
+    }, 300)
+  }
   const [toast, setToast] = useState("")
   const [dashboard, setDashboard] = useState<any>(null)
   const [topItems, setTopItems] = useState<any[]>([])
@@ -993,6 +1063,251 @@ export default function OwnerPage() {
   }, [])
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2800) }
+
+  // =========================
+  // EMAIL PROMOTIONS
+  // =========================
+
+  const loadMarketing =
+    async () => {
+      setMarketingLoading(true)
+      setMarketingError("")
+
+      try {
+        const [
+          statusResult,
+          campaignsResult,
+        ]: any[] =
+          await Promise.all([
+            apiFetch(
+              `${API}/marketing/status`,
+            ),
+
+            apiFetch(
+              `${API}/marketing/campaigns`,
+            ),
+          ])
+
+        if (!statusResult?.success) {
+          if (
+            statusResult?.statusCode ===
+            401
+          ) {
+            setMarketingError(
+              "Your owner session has expired. Sign out and sign in again.",
+            )
+          } else {
+            setMarketingError(
+              statusResult?.message ||
+                "Could not load email marketing.",
+            )
+          }
+
+          return
+        }
+
+        setMarketingStatus(
+          statusResult,
+        )
+
+        if (
+          campaignsResult?.success
+        ) {
+          setMarketingCampaigns(
+            Array.isArray(
+              campaignsResult.campaigns,
+            )
+              ? campaignsResult.campaigns
+              : [],
+          )
+        } else {
+          setMarketingCampaigns(
+            [],
+          )
+        }
+      } catch {
+        setMarketingError(
+          "Could not load email marketing.",
+        )
+      } finally {
+        setMarketingLoading(
+          false,
+        )
+      }
+    }
+
+  const sendMarketingTest =
+    async () => {
+      const subject =
+        marketingSubject.trim()
+
+      const message =
+        marketingMessage.trim()
+
+      if (!subject || !message) {
+        showToast(
+          "Add a subject and message first",
+        )
+        return
+      }
+
+      setMarketingAction(
+        "test",
+      )
+      setMarketingError("")
+
+      try {
+        const result: any =
+          await apiFetch(
+            `${API}/marketing/test`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                subject,
+                message,
+              }),
+            },
+          )
+
+        if (!result?.success) {
+          setMarketingError(
+            result?.message ||
+              "Test email failed.",
+          )
+          return
+        }
+
+        showToast(
+          "Test email sent",
+        )
+      } finally {
+        setMarketingAction("")
+      }
+    }
+
+  const sendMarketingCampaign =
+    async () => {
+      const subject =
+        marketingSubject.trim()
+
+      const message =
+        marketingMessage.trim()
+
+      if (!subject || !message) {
+        showToast(
+          "Add a subject and message first",
+        )
+        return
+      }
+
+      const subscriberCount =
+        Number(
+          marketingStatus
+            ?.subscriberCount ||
+            0,
+        )
+
+      if (subscriberCount < 1) {
+        showToast(
+          "There are no subscribers yet",
+        )
+        return
+      }
+
+      if (
+        marketingStatus
+          ?.emailMarketingEnabled !==
+        true
+      ) {
+        showToast(
+          "Email marketing is disabled",
+        )
+        return
+      }
+
+      if (
+        marketingStatus
+          ?.canSendThisMonth !==
+        true
+      ) {
+        showToast(
+          "This month's promotion has already been used",
+        )
+        return
+      }
+
+      const month =
+        marketingStatus
+          ?.monthKey ||
+        "this month"
+
+      const confirmed =
+        window.confirm(
+          `Send this promotion to ${subscriberCount} current subscriber${
+            subscriberCount === 1
+              ? ""
+              : "s"
+          }? This will use your one promotional broadcast for ${month}.`,
+        )
+
+      if (!confirmed) {
+        return
+      }
+
+      setMarketingAction(
+        "send",
+      )
+      setMarketingError("")
+
+      try {
+        const result: any =
+          await apiFetch(
+            `${API}/marketing/send`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                subject,
+                message,
+              }),
+            },
+          )
+
+        if (!result?.success) {
+          setMarketingError(
+            result?.message ||
+              "Promotion could not be sent.",
+          )
+
+          await loadMarketing()
+          return
+        }
+
+        showToast(
+          "Promotion sent",
+        )
+
+        await loadMarketing()
+      } finally {
+        setMarketingAction("")
+      }
+    }
+
+  useEffect(() => {
+    if (
+      !sessionReady ||
+      !businessId ||
+      activeSection !==
+        "promotions"
+    ) {
+      return
+    }
+
+    void loadMarketing()
+  }, [
+    sessionReady,
+    businessId,
+    activeSection,
+  ])
 
   const enablePasswordless = async () => {
     if (!businessId) return
@@ -1384,6 +1699,7 @@ export default function OwnerPage() {
     { id: "add",       icon: "＋", label: "Add Item" },
     { id: "kitchen",   icon: "🔑", label: "Kitchen Access" },
     { id: "payments",  icon: "💳", label: "Payments" },
+    { id: "promotions", icon: "✉️", label: "Promotions" },
 
     { id: "action",    icon: "🚨", label: "Action Center" },
 
@@ -1463,7 +1779,25 @@ export default function OwnerPage() {
                   <div className="ph-title">Analytics</div>
                   <div className="ph-sub">Revenue and performance overview</div>
                 </div>
-                <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={loadAnalytics}>↻ Refresh</button>
+                <button
+                  className="btn btn-ghost"
+                  style={{ fontSize: 12 }}
+                  onClick={refreshWholePage}
+                  disabled={fullRefreshing}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      marginRight: 6,
+                      animation: fullRefreshing
+                        ? "caviar-refresh-spin .55s linear infinite"
+                        : "none",
+                    }}
+                  >
+                    ↻
+                  </span>
+                  {fullRefreshing ? "Refreshing..." : "Refresh"}
+                </button>
               </div>
 
               <div
@@ -1851,8 +2185,23 @@ export default function OwnerPage() {
                     <button className="btn btn-primary" onClick={connectStripe}>
                       Continue Stripe Setup
                     </button>
-                    <button className="btn btn-ghost" onClick={loadStripeStatus}>
-                      Refresh Status
+                    <button
+                      className="btn btn-ghost"
+                      onClick={refreshWholePage}
+                      disabled={fullRefreshing}
+                    >
+                      <span
+                        style={{
+                          display: "inline-block",
+                          marginRight: 6,
+                          animation: fullRefreshing
+                            ? "caviar-refresh-spin .55s linear infinite"
+                            : "none",
+                        }}
+                      >
+                        ↻
+                      </span>
+                      {fullRefreshing ? "Refreshing..." : "Refresh Status"}
                     </button>
                   </div>
                 </div>
@@ -1983,6 +2332,569 @@ export default function OwnerPage() {
           )}
 
           {/* ── ACTION CENTER ── */}
+
+          {/* ── PROMOTIONS ── */}
+          {activeSection === "promotions" && (
+            <div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">
+                    Promotions
+                  </div>
+
+                  <div className="ph-sub">
+                    Send one promotional email per month to customers who explicitly subscribed
+                  </div>
+                </div>
+
+                <button
+                  className="btn btn-ghost"
+                  style={{
+                    fontSize: 12,
+                  }}
+                  onClick={() =>
+                    void loadMarketing()
+                  }
+                  disabled={
+                    marketingLoading ||
+                    Boolean(
+                      marketingAction,
+                    )
+                  }
+                >
+                  {marketingLoading
+                    ? "Refreshing..."
+                    : "Refresh"}
+                </button>
+              </div>
+
+              {marketingError && (
+                <div
+                  style={{
+                    padding:
+                      "12px 14px",
+                    marginBottom: 16,
+                    borderRadius: 10,
+                    border:
+                      "1px solid rgba(217,48,37,0.25)",
+                    background:
+                      "var(--red-bg)",
+                    color:
+                      "var(--red)",
+                    fontSize: 12.5,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {marketingError}
+                </div>
+              )}
+
+              <div
+                className="stat-grid"
+                style={{
+                  gridTemplateColumns:
+                    "repeat(auto-fit, minmax(190px, 1fr))",
+                }}
+              >
+                <div className="stat-card">
+                  <div className="stat-label">
+                    Subscribers
+                  </div>
+
+                  <div className="stat-value">
+                    {marketingLoading &&
+                    !marketingStatus
+                      ? "—"
+                      : Number(
+                          marketingStatus
+                            ?.subscriberCount ||
+                            0,
+                        )}
+                  </div>
+
+                  <div className="stat-sub">
+                    Currently opted in
+                  </div>
+                </div>
+
+                <div className="stat-card">
+                  <div className="stat-label">
+                    Email Marketing
+                  </div>
+
+                  <div
+                    className="stat-value"
+                    style={{
+                      fontSize: 18,
+                      color:
+                        marketingStatus
+                          ?.emailMarketingEnabled ===
+                        true
+                          ? "var(--green)"
+                          : "var(--red)",
+                    }}
+                  >
+                    {marketingStatus
+                      ?.emailMarketingEnabled ===
+                    true
+                      ? "Enabled"
+                      : "Disabled"}
+                  </div>
+
+                  <div className="stat-sub">
+                    Controlled by CaviarQR Maintenance
+                  </div>
+                </div>
+
+                <div className="stat-card">
+                  <div className="stat-label">
+                    This Month
+                  </div>
+
+                  <div
+                    className="stat-value"
+                    style={{
+                      fontSize: 18,
+                      color:
+                        marketingStatus
+                          ?.canSendThisMonth ===
+                        true
+                          ? "var(--green)"
+                          : "var(--amber)",
+                    }}
+                  >
+                    {marketingStatus
+                      ?.canSendThisMonth ===
+                    true
+                      ? "Available"
+                      : "Used / unavailable"}
+                  </div>
+
+                  <div className="stat-sub">
+                    {marketingStatus
+                      ?.monthKey ||
+                      "Current month"}
+                  </div>
+                </div>
+              </div>
+
+              {marketingStatus &&
+                marketingStatus
+                  .emailMarketingEnabled !==
+                  true && (
+                  <div
+                    style={{
+                      padding:
+                        "14px 16px",
+                      marginBottom: 16,
+                      borderRadius: 10,
+                      border:
+                        "1px solid rgba(196,125,14,0.25)",
+                      background:
+                        "var(--amber-bg)",
+                      color:
+                        "var(--amber)",
+                      fontSize: 12.5,
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    Promotional email is disabled for this café. Customers will not be added to the promotional subscriber list and promotional sends are blocked. Receipts and other transactional emails are unaffected.
+                  </div>
+                )}
+
+              <div
+                className="card"
+                style={{
+                  marginBottom: 16,
+                }}
+              >
+                <div className="card-top">
+                  <div>
+                    <div className="card-title">
+                      Create promotion
+                    </div>
+
+                    <div className="card-sub">
+                      Only currently subscribed customers receive this email. Every recipient gets an unsubscribe link.
+                    </div>
+                  </div>
+
+                  <div className="card-icon-wrap">
+                    ✉️
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 14,
+                    marginTop: 18,
+                  }}
+                >
+                  <div>
+                    <label
+                      style={{
+                        display:
+                          "block",
+                        marginBottom: 6,
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        color:
+                          "var(--text2)",
+                      }}
+                    >
+                      Subject
+                    </label>
+
+                    <input
+                      value={
+                        marketingSubject
+                      }
+                      onChange={(event) =>
+                        setMarketingSubject(
+                          event.target
+                            .value,
+                        )
+                      }
+                      maxLength={200}
+                      placeholder="Example: Your September offer is here"
+                      disabled={
+                        Boolean(
+                          marketingAction,
+                        )
+                      }
+                      style={{
+                        width: "100%",
+                        border:
+                          "1px solid var(--border2)",
+                        borderRadius: 8,
+                        padding:
+                          "10px 11px",
+                        fontFamily:
+                          "var(--font)",
+                        fontSize: 13,
+                        color:
+                          "var(--text)",
+                        background:
+                          "var(--surface)",
+                        outline: "none",
+                      }}
+                    />
+
+                    <div
+                      style={{
+                        marginTop: 5,
+                        textAlign:
+                          "right",
+                        fontSize: 10.5,
+                        color:
+                          "var(--text3)",
+                      }}
+                    >
+                      {
+                        marketingSubject.length
+                      }
+                      /200
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      style={{
+                        display:
+                          "block",
+                        marginBottom: 6,
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        color:
+                          "var(--text2)",
+                      }}
+                    >
+                      Message
+                    </label>
+
+                    <textarea
+                      value={
+                        marketingMessage
+                      }
+                      onChange={(event) =>
+                        setMarketingMessage(
+                          event.target
+                            .value,
+                        )
+                      }
+                      placeholder="Write the offer or update you want to send to your subscribed customers."
+                      rows={9}
+                      disabled={
+                        Boolean(
+                          marketingAction,
+                        )
+                      }
+                      style={{
+                        width: "100%",
+                        resize:
+                          "vertical",
+                        border:
+                          "1px solid var(--border2)",
+                        borderRadius: 8,
+                        padding:
+                          "10px 11px",
+                        fontFamily:
+                          "var(--font)",
+                        fontSize: 13,
+                        lineHeight: 1.55,
+                        color:
+                          "var(--text)",
+                        background:
+                          "var(--surface)",
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      flexWrap: "wrap",
+                      alignItems:
+                        "center",
+                    }}
+                  >
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() =>
+                        void sendMarketingTest()
+                      }
+                      disabled={
+                        Boolean(
+                          marketingAction,
+                        ) ||
+                        marketingStatus
+                          ?.emailMarketingEnabled !==
+                          true ||
+                        !marketingSubject.trim() ||
+                        !marketingMessage.trim()
+                      }
+                    >
+                      {marketingAction ===
+                      "test"
+                        ? "Sending test..."
+                        : "Send test"}
+                    </button>
+
+                    <button
+                      className="btn btn-primary"
+                      onClick={() =>
+                        void sendMarketingCampaign()
+                      }
+                      disabled={
+                        Boolean(
+                          marketingAction,
+                        ) ||
+                        marketingStatus
+                          ?.emailMarketingEnabled !==
+                          true ||
+                        marketingStatus
+                          ?.canSendThisMonth !==
+                          true ||
+                        Number(
+                          marketingStatus
+                            ?.subscriberCount ||
+                            0,
+                        ) < 1 ||
+                        !marketingSubject.trim() ||
+                        !marketingMessage.trim()
+                      }
+                    >
+                      {marketingAction ===
+                      "send"
+                        ? "Sending..."
+                        : `Send to ${Number(
+                            marketingStatus
+                              ?.subscriberCount ||
+                              0,
+                          )} subscriber${
+                            Number(
+                              marketingStatus
+                                ?.subscriberCount ||
+                                0,
+                            ) === 1
+                              ? ""
+                              : "s"
+                          }`}
+                    </button>
+
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color:
+                          "var(--text3)",
+                      }}
+                    >
+                      Test emails do not consume the monthly broadcast.
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-top">
+                  <div>
+                    <div className="card-title">
+                      Promotion history
+                    </div>
+
+                    <div className="card-sub">
+                      Recent promotional broadcast attempts
+                    </div>
+                  </div>
+
+                  <div className="card-icon-wrap">
+                    🕘
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 16,
+                  }}
+                >
+                  {marketingCampaigns.length ===
+                  0 ? (
+                    <div
+                      style={{
+                        padding:
+                          "24px 4px",
+                        color:
+                          "var(--text3)",
+                        fontSize: 12.5,
+                      }}
+                    >
+                      No promotions have been sent yet.
+                    </div>
+                  ) : (
+                    marketingCampaigns.map(
+                      (
+                        campaign: any,
+                      ) => (
+                        <div
+                          key={
+                            campaign.id
+                          }
+                          style={{
+                            display:
+                              "grid",
+                            gridTemplateColumns:
+                              "minmax(0, 1fr) auto",
+                            gap: 16,
+                            padding:
+                              "13px 0",
+                            borderBottom:
+                              "1px solid var(--border)",
+                          }}
+                        >
+                          <div
+                            style={{
+                              minWidth: 0,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color:
+                                  "var(--text)",
+                                overflow:
+                                  "hidden",
+                                textOverflow:
+                                  "ellipsis",
+                                whiteSpace:
+                                  "nowrap",
+                              }}
+                            >
+                              {
+                                campaign.subject
+                              }
+                            </div>
+
+                            <div
+                              style={{
+                                marginTop: 4,
+                                fontSize: 11,
+                                color:
+                                  "var(--text3)",
+                              }}
+                            >
+                              {
+                                campaign.monthKey
+                              }
+                              {" · "}
+                              {campaign.sentAt ||
+                              campaign.createdAt
+                                ? new Date(
+                                    campaign.sentAt ||
+                                      campaign.createdAt,
+                                  ).toLocaleString()
+                                : "—"}
+                            </div>
+                          </div>
+
+                          <div
+                            style={{
+                              textAlign:
+                                "right",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color:
+                                  campaign.status ===
+                                  "SENT"
+                                    ? "var(--green)"
+                                    : campaign.status ===
+                                      "FAILED"
+                                      ? "var(--red)"
+                                      : "var(--amber)",
+                              }}
+                            >
+                              {
+                                campaign.status
+                              }
+                            </div>
+
+                            <div
+                              style={{
+                                marginTop: 4,
+                                fontSize: 10.5,
+                                color:
+                                  "var(--text3)",
+                              }}
+                            >
+                              {Number(
+                                campaign.sentCount ||
+                                  0,
+                              )}{" "}
+                              sent
+                              {" · "}
+                              {Number(
+                                campaign.failedCount ||
+                                  0,
+                              )}{" "}
+                              failed
+                            </div>
+                          </div>
+                        </div>
+                      ),
+                    )
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeSection === "action" && (
             <div>
               <div className="ph">
@@ -1990,7 +2902,25 @@ export default function OwnerPage() {
                   <div className="ph-title">Action Center</div>
                   <div className="ph-sub">Failed orders and customer issues</div>
                 </div>
-                <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={loadActionCenter}>↻ Refresh</button>
+                <button
+                  className="btn btn-ghost"
+                  style={{ fontSize: 12 }}
+                  onClick={refreshWholePage}
+                  disabled={fullRefreshing}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      marginRight: 6,
+                      animation: fullRefreshing
+                        ? "caviar-refresh-spin .55s linear infinite"
+                        : "none",
+                    }}
+                  >
+                    ↻
+                  </span>
+                  {fullRefreshing ? "Refreshing..." : "Refresh"}
+                </button>
               </div>
 
               {/* CHANGE 19: stats */}
@@ -2067,8 +2997,23 @@ export default function OwnerPage() {
                     <button className="btn btn-primary" onClick={connectStripe}>
                       Continue Stripe Setup
                     </button>
-                    <button className="btn btn-ghost" onClick={loadStripeStatus}>
-                      Refresh Status
+                    <button
+                      className="btn btn-ghost"
+                      onClick={refreshWholePage}
+                      disabled={fullRefreshing}
+                    >
+                      <span
+                        style={{
+                          display: "inline-block",
+                          marginRight: 6,
+                          animation: fullRefreshing
+                            ? "caviar-refresh-spin .55s linear infinite"
+                            : "none",
+                        }}
+                      >
+                        ↻
+                      </span>
+                      {fullRefreshing ? "Refreshing..." : "Refresh Status"}
                     </button>
                   </div>
                 </div>

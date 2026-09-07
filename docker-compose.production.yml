@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: caviarqr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - caviarqr
+
+  backend:
+    build:
+      context: ./backend
+    container_name: caviarqr-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4101
+
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_SSL: "false"
+      DB_POOL_MAX: "5"
+
+      JWT_SECRET: ${JWT_SECRET}
+      KITCHEN_TOKEN_SECRET: ${KITCHEN_TOKEN_SECRET}
+      SUPPORT_TOKEN_SECRET: ${SUPPORT_TOKEN_SECRET}
+
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      MAINTENANCE_REGISTER_OTP: ${MAINTENANCE_REGISTER_OTP}
+      MAINTENANCE_ADMIN_EMAIL: ${MAINTENANCE_ADMIN_EMAIL}
+      MAINTENANCE_EMAIL_FROM: ${MAINTENANCE_EMAIL_FROM}
+      MARKETING_EMAIL_FROM: ${MARKETING_EMAIL_FROM}
+
+      FRONTEND_URL: ${FRONTEND_URL}
+      WEB_URL: ${WEB_URL}
+    volumes:
+      - /home/ubuntu/caviarqr-uploads:/app/uploads
+    ports:
+      - "127.0.0.1:4101:4101"
+    networks:
+      - caviarqr
+
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: https://api.caviarqr.com
+        NEXT_PUBLIC_QR_BASE_URL: https://caviarqr.com
+        NEXT_PUBLIC_STRIPE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+    container_name: caviarqr-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - caviarqr
+
+volumes:
+  postgres_data:
+
+networks:
+  caviarqr:

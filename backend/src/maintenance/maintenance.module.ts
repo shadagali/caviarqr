@@ -1,9 +1,14 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 
+import { StandModule } from '../stand/stand.module'
+import { ShopModule } from '../shop/shop.module'
+
 import { MaintenanceController } from './maintenance.controller'
 import { MaintenanceService } from './maintenance.service'
 import { MaintenanceAuditLog } from './maintenance-audit-log.entity'
+import { PlatformPayout } from './platform-payout.entity'
+import { PlatformPayoutService } from './platform-payout.service'
 
 import { BusinessModule } from '../business/business.module'
 import { MaintenanceAuthModule } from '../maintenance-auth/maintenance-auth.module'
@@ -15,6 +20,8 @@ import { PendingOrder } from '../pending-order/pending-order.entity'
 
 @Module({
   imports: [
+    StandModule,
+    ShopModule,
     BusinessModule,
 
     MaintenanceAuthModule,
@@ -26,6 +33,7 @@ import { PendingOrder } from '../pending-order/pending-order.entity'
       Business,
       PendingOrder,
       MaintenanceAuditLog,
+      PlatformPayout,
     ]),
   ],
 
@@ -35,6 +43,7 @@ import { PendingOrder } from '../pending-order/pending-order.entity'
 
   providers: [
     MaintenanceService,
+    PlatformPayoutService,
   ],
 
   exports: [

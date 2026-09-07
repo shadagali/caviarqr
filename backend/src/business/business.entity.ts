@@ -162,6 +162,16 @@ export class Business {
   processingFeePercent: number
 
   // =========================
+  // EMAIL MARKETING ACCESS
+  // =========================
+
+  @Column({
+    type: 'boolean',
+    default: true,
+  })
+  emailMarketingEnabled: boolean
+
+  // =========================
   // BRANDING
   // =========================
 

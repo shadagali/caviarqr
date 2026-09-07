@@ -127,18 +127,6 @@ export class KitchenAuthController {
           'Invalid kitchen credentials.',
         )
       }
-    } else if (
-      process.env.NODE_ENV ===
-      'production'
-    ) {
-      /*
-       * Passwordless kitchen mode is convenient
-       * locally, but a public production storeCode
-       * must never be sufficient to open a kitchen.
-       */
-      throw new UnauthorizedException(
-        'This cafe must set a kitchen password before production kitchen login can be used.',
-      )
     }
 
     const token =

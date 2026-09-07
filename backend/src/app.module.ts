@@ -50,6 +50,10 @@ import {
 } from './stripe/stripe.module'
 
 import {
+  ShopModule,
+} from './shop/shop.module'
+
+import {
   WebhookModule,
 } from './webhook/webhook.module'
 
@@ -104,6 +108,14 @@ import {
 import {
   RefundAttempt,
 } from './refund/entities/refund-attempt.entity'
+
+import {
+  MarketingSubscriber,
+} from './marketing/marketing-subscriber.entity'
+
+import {
+  MarketingCampaign,
+} from './marketing/marketing-campaign.entity'
 
 function parsePositiveInteger(
   value: string,
@@ -239,6 +251,8 @@ function databaseOptions(
       PendingOrder,
       MaintenanceAdmin,
       RefundAttempt,
+      MarketingSubscriber,
+      MarketingCampaign,
     ],
 
     autoLoadEntities: true,
@@ -304,25 +318,22 @@ function databaseOptions(
   }
 }
 
-const developmentStaticUploads =
-  process.env.NODE_ENV ===
-  'production'
-    ? []
-    : [
-        ServeStaticModule.forRoot({
-          rootPath: join(
-            __dirname,
-            '..',
-            'uploads',
-          ),
+const developmentStaticUploads = [
+  ServeStaticModule.forRoot({
+    rootPath: join(
+      __dirname,
+      '..',
+      'uploads',
+    ),
+    serveRoot: '/uploads',
+  }),
+]
 
-          serveRoot:
-            '/uploads',
-        }),
-      ]
+import { MarketingModule } from './marketing/marketing.module'
 
 @Module({
   imports: [
+    MarketingModule,
     ConfigModule.forRoot({
       isGlobal: true,
 
@@ -390,6 +401,7 @@ const developmentStaticUploads =
     PublicModule,
     OrderModule,
     StripeModule,
+    ShopModule,
 
     /*
      * RefundModule must be loaded before

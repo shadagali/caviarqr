@@ -39,6 +39,12 @@ import {
   createSupportAccessToken,
 } from '../support/support-token'
 
+import {
+  MarketingService,
+} from '../marketing/marketing.service'
+
+import { ShopService } from '../shop/shop.service'
+
 @Injectable()
 export class WebhookService {
   private readonly logger =
@@ -64,6 +70,12 @@ export class WebhookService {
     private supportThreadRepo: Repository<SupportThread>,
 
     private gateway: OrderGateway,
+
+    private marketingService:
+      MarketingService,
+
+    private shopService:
+      ShopService,
   ) {
     const key =
       process.env.STRIPE_SECRET_KEY
@@ -1036,6 +1048,85 @@ Powered by CaviarQR`
     return null
   }
 
+  // =========================
+  // 📧 EXPLICIT MARKETING OPT-IN
+  // =========================
+
+  private async subscribeMarketingIfOptedIn(
+    order: Order,
+    pendingOrder: PendingOrder,
+    business: Business,
+  ) {
+    /*
+     * Receipt delivery NEVER implies promotional
+     * email consent. We require both the explicit
+     * opt-in and its recorded timestamp.
+     */
+    if (
+      pendingOrder.marketingOptIn !==
+        true ||
+      !pendingOrder.marketingConsentAt
+    ) {
+      return
+    }
+
+    const email =
+      String(
+        order.customerEmail || '',
+      )
+        .trim()
+        .toLowerCase()
+
+    if (!email) {
+      this.logger.warn(
+        `MARKETING_OPT_IN_SKIPPED_NO_EMAIL: Order ${order.id}`,
+      )
+
+      return
+    }
+
+    try {
+      const result =
+        await this.marketingService
+          .subscribe(
+            business.id,
+            email,
+            order.id,
+            'CHECKOUT',
+            pendingOrder
+              .marketingConsentAt,
+          )
+
+      if (
+        'subscribed' in result &&
+        result.subscribed === false
+      ) {
+        this.logger.log(
+          `MARKETING_OPT_IN_NOT_APPLIED: Order ${order.id}`,
+        )
+
+        return
+      }
+
+      this.logger.log(
+        `MARKETING_OPT_IN_SAVED: Order ${order.id}`,
+      )
+    } catch (error: any) {
+      /*
+       * Marketing is non-transactional.
+       * Failure here must never block:
+       * - paid order creation
+       * - kitchen delivery
+       * - receipt
+       * - customer support
+       */
+      this.logger.error(
+        `MARKETING_OPT_IN_FAILED: Order ${order.id}`,
+        error?.message || error,
+      )
+    }
+  }
+
   private async markPendingCompleted(
     pendingOrderId: number,
     stripeSessionId: string,
@@ -1272,9 +1363,20 @@ Powered by CaviarQR`
         event.data
           .object as Stripe.Checkout.Session
 
-      await this.handleCheckoutCompleted(
-        session,
-      )
+      if (
+        session.metadata
+          ?.checkoutType ===
+        'hardware_store'
+      ) {
+        await this.shopService
+          .handleCheckoutCompleted(
+            session,
+          )
+      } else {
+        await this.handleCheckoutCompleted(
+          session,
+        )
+      }
     }
 
     if (
@@ -1285,25 +1387,56 @@ Powered by CaviarQR`
         event.data
           .object as Stripe.Checkout.Session
 
-      const pendingOrderId =
-        Number(
-          session.metadata
-            ?.pendingOrderId || 0,
+      if (
+        session.metadata
+          ?.checkoutType ===
+        'hardware_store'
+      ) {
+        await this.shopService
+          .handleCheckoutFailed(
+            session,
+          )
+      } else {
+        const pendingOrderId =
+          Number(
+            session.metadata
+              ?.pendingOrderId || 0,
+          )
+
+        const paymentIntentId =
+          typeof session.payment_intent ===
+          'string'
+            ? session.payment_intent
+            : session.payment_intent
+                ?.id || ''
+
+        await this.markPendingFailed(
+          pendingOrderId,
+          session.id || '',
+          paymentIntentId,
+          'STRIPE_ASYNC_PAYMENT_FAILED',
         )
+      }
+    }
 
-      const paymentIntentId =
-        typeof session.payment_intent ===
-        'string'
-          ? session.payment_intent
-          : session.payment_intent
-              ?.id || ''
+    if (
+      event.type ===
+      'checkout.session.expired'
+    ) {
+      const session =
+        event.data
+          .object as Stripe.Checkout.Session
 
-      await this.markPendingFailed(
-        pendingOrderId,
-        session.id || '',
-        paymentIntentId,
-        'STRIPE_ASYNC_PAYMENT_FAILED',
-      )
+      if (
+        session.metadata
+          ?.checkoutType ===
+        'hardware_store'
+      ) {
+        await this.shopService
+          .handleCheckoutExpired(
+            session,
+          )
+      }
     }
 
     // =========================
@@ -1871,6 +2004,13 @@ Powered by CaviarQR`
           stripeSessionId,
           paymentIntentId,
         )
+
+        void this
+          .subscribeMarketingIfOptedIn(
+            saved,
+            pendingOrder,
+            business,
+          )
 
         console.log(
           '✅ SAVE SUCCESS:',

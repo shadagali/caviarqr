@@ -7,6 +7,7 @@ export default function Home() {
 
   const buttons = [
     { label: 'Owner Login', path: '/login', primary: true },
+    { label: 'Shop', path: '/shop' },
     { label: 'Register Tags', path: '/login/register' },
     { label: 'Kitchen Login', path: '/login' },
     { label: 'Maintenance', path: '/maintenance/login' },

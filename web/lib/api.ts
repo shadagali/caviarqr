@@ -1,6 +1,32 @@
 const MAINTENANCE_TOKEN_KEY =
   'caviarqr_maintenance_token'
 
+const OWNER_TOKEN_KEY =
+  'token'
+
+function getOwnerToken() {
+  if (
+    typeof window ===
+    'undefined'
+  ) {
+    return ''
+  }
+
+  return (
+    localStorage.getItem(
+      OWNER_TOKEN_KEY,
+    ) || ''
+  )
+}
+
+function shouldAttachOwnerToken(
+  url: string,
+) {
+  return url.includes(
+    '/marketing',
+  )
+}
+
 export function getMaintenanceToken() {
   if (typeof window === 'undefined') {
     return ''
@@ -61,6 +87,22 @@ export async function apiFetch(
         'Content-Type',
         'application/json',
       )
+    }
+
+    if (
+      shouldAttachOwnerToken(
+        url,
+      )
+    ) {
+      const token =
+        getOwnerToken()
+
+      if (token) {
+        headers.set(
+          'Authorization',
+          `Bearer ${token}`,
+        )
+      }
     }
 
     if (

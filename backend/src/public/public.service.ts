@@ -14,6 +14,14 @@ import {
 
 import { MenuItem } from '../menu/menu.entity'
 
+import {
+  StandService,
+} from '../stand/stand.service'
+
+import {
+  StandCodeStatus,
+} from '../stand/stand-code.entity'
+
 @Injectable()
 export class PublicService {
   constructor(
@@ -24,6 +32,9 @@ export class PublicService {
     @InjectRepository(MenuItem)
     private menuRepo:
       Repository<MenuItem>,
+
+    private readonly standService:
+      StandService,
   ) {}
 
   async getStore(
@@ -41,9 +52,61 @@ export class PublicService {
       })
 
     if (!business) {
-      throw new NotFoundException(
-        'Store not found',
-      )
+      const stand =
+        await this.standService
+          .findByStoreCode(
+            normalizedStoreCode,
+          )
+
+      if (!stand) {
+        throw new NotFoundException(
+          'Store not found',
+        )
+      }
+
+      /*
+       * A CLAIMED stand should normally
+       * have a Business row. If it does
+       * not, fail safely instead of
+       * treating it as unclaimed.
+       */
+      if (
+        stand.status ===
+        StandCodeStatus.CLAIMED
+      ) {
+        throw new NotFoundException(
+          'Store setup incomplete',
+        )
+      }
+
+      return {
+        mode:
+          'stand',
+
+        business:
+          null,
+
+        menu:
+          [],
+
+        stand: {
+          storeCode:
+            stand.storeCode,
+
+          tables:
+            stand.tables,
+
+          status:
+            stand.status,
+
+          verified:
+            stand.status ===
+            StandCodeStatus.VERIFIED,
+
+          claimed:
+            false,
+        },
+      }
     }
 
     const menu =
@@ -142,6 +205,10 @@ export class PublicService {
         // =========================
 
         paymentsReady,
+
+        emailMarketingEnabled:
+          business.emailMarketingEnabled ===
+          true,
 
         paymentMessage,
 

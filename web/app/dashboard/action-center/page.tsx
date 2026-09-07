@@ -505,6 +505,24 @@ export default function ActionCenter() {
     useState(true)
 
   const [
+    fullRefreshing,
+    setFullRefreshing,
+  ] =
+    useState(false)
+
+  const refreshWholePage = () => {
+    if (fullRefreshing) {
+      return
+    }
+
+    setFullRefreshing(true)
+
+    window.setTimeout(() => {
+      window.location.reload()
+    }, 300)
+  }
+
+  const [
     supportOrder,
     setSupportOrder,
   ] =
@@ -1458,11 +1476,25 @@ export default function ActionCenter() {
 
         <button
           onClick={
-            loadIssues
+            refreshWholePage
           }
-          className="ml-auto bg-blue-600 text-white px-4 py-2 rounded-lg"
+          disabled={
+            fullRefreshing
+          }
+          className="ml-auto bg-blue-600 text-white px-4 py-2 rounded-lg disabled:opacity-60"
         >
-          Refresh
+          <span
+            className={
+              fullRefreshing
+                ? 'inline-block animate-spin mr-2'
+                : 'inline-block mr-2'
+            }
+          >
+            ↻
+          </span>
+          {fullRefreshing
+            ? 'Refreshing...'
+            : 'Refresh'}
         </button>
 
       </div>

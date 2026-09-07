@@ -215,6 +215,8 @@ export default function RegisterPage() {
     const cleanEmail =
       email.trim().toLowerCase()
 
+
+
     if (
       !cleanStoreCode ||
       !cleanEmail ||

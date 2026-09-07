@@ -27,6 +27,7 @@ type Tab =
   | 'action'
   | 'cafes'
   | 'qr'
+  | 'shop'
 
 type Filter =
   | 'OPEN'
@@ -166,6 +167,7 @@ type PlatformPayoutRecord = {
 
 type PlatformRevenue = {
   success?: boolean
+  message?: string
   available: number
   pending: number
   reserve: number
@@ -173,6 +175,85 @@ type PlatformRevenue = {
   recordedNetFees: number
   currency: string
   payouts: PlatformPayoutRecord[]
+}
+
+type ShopProduct = {
+  id: number
+  name: string
+  description: string
+  priceCents: number
+  priceDraft?: string
+  imageUrl: string | null
+  inventory: number
+  inventoryDraft?: string
+  active: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+type ShopOrderItem = {
+  id: number
+  orderId: number
+  productId?: number | null
+  productName: string
+  unitPriceCents: number
+  quantity: number
+}
+
+type ShopAddress = {
+  line1?: string | null
+  line2?: string | null
+  city?: string | null
+  state?: string | null
+  postal_code?: string | null
+  country?: string | null
+}
+
+type ShopOrder = {
+  id: number
+  orderNumber: string
+  email?: string | null
+  customerName?: string | null
+  phone?: string | null
+  shippingAddress?: ShopAddress | null
+  subtotalCents: number
+  shippingCents: number
+  totalCents: number
+  currency: string
+  paymentStatus: string
+  fulfillmentStatus: string
+  trackingNumber?: string | null
+  stripeCheckoutSessionId?: string | null
+  stripePaymentIntentId?: string | null
+  inventoryReserved?: boolean
+  paidAt?: string | null
+  shippedAt?: string | null
+  deliveredAt?: string | null
+  confirmationEmailSentAt?: string | null
+  confirmationEmailLastAttemptAt?: string | null
+  confirmationEmailAttempts?: number
+  confirmationEmailFailureMessage?: string | null
+  refundStatus?: string
+  stripeRefundId?: string | null
+  refundAmountCents?: number | null
+  refundReason?: string | null
+  refundRequestedAt?: string | null
+  refundedAt?: string | null
+  refundFailureMessage?: string | null
+  createdAt: string
+  items: ShopOrderItem[]
+}
+
+type ShopOrderView =
+  | 'active'
+  | 'past'
+
+type ShopOrderPage = {
+  view: ShopOrderView
+  limit: number
+  total: number
+  hasMore: boolean
+  nextCursor: number | null
 }
 
 type ToastKind = 'success' | 'error' | 'info'
@@ -203,6 +284,56 @@ const EMPTY_CONFIRM: ConfirmState = {
 
 function money(value: any) {
   return `$${Number(value || 0).toFixed(2)}`
+}
+
+function shopMoney(cents: number) {
+  return new Intl.NumberFormat(
+    'en-US',
+    {
+      style: 'currency',
+      currency: 'USD',
+    },
+  ).format(
+    Number(cents || 0) / 100,
+  )
+}
+
+function shopImageUrl(
+  value?: string | null,
+) {
+  if (!value) return ''
+
+  if (
+    value.startsWith('https://') ||
+    value.startsWith('http://')
+  ) {
+    return value
+  }
+
+  return `${API}${
+    value.startsWith('/')
+      ? value
+      : `/${value}`
+  }`
+}
+
+function shopAddressLabel(
+  value?: ShopAddress | null,
+) {
+  if (!value) {
+    return 'No shipping address'
+  }
+
+  return [
+    value.line1,
+    value.line2,
+    value.city,
+    value.state,
+    value.postal_code,
+    value.country,
+  ]
+    .filter(Boolean)
+    .join(', ')
 }
 
 function cleanBaseUrl(value: string) {
@@ -544,6 +675,16 @@ export default function MaintenancePage() {
     useState('4.75')
   const [processingFeeSaving, setProcessingFeeSaving] =
     useState(false)
+
+  const [
+    selectedCafeEmailMarketingEnabled,
+    setSelectedCafeEmailMarketingEnabled,
+  ] = useState<boolean | null>(null)
+
+  const [
+    emailMarketingSaving,
+    setEmailMarketingSaving,
+  ] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [backendOnline, setBackendOnline] = useState(true)
@@ -582,6 +723,135 @@ export default function MaintenancePage() {
   const [qrTableCount, setQrTableCount] = useState(50)
   const [tableLinks, setTableLinks] = useState<TableLink[]>([])
   const [generatingQr, setGeneratingQr] = useState(false)
+
+  const [standStatus, setStandStatus] =
+    useState('')
+
+  const [
+    standAlreadyExists,
+    setStandAlreadyExists,
+  ] = useState(false)
+
+  const [
+    standRegistered,
+    setStandRegistered,
+  ] = useState(false)
+
+  const [
+    shopProducts,
+    setShopProducts,
+  ] = useState<ShopProduct[]>([])
+
+  const [
+    shopOrders,
+    setShopOrders,
+  ] = useState<ShopOrder[]>([])
+
+  const [
+    shopOrderView,
+    setShopOrderView,
+  ] =
+    useState<ShopOrderView>(
+      'active',
+    )
+
+  const [
+    shopOrderSearchDraft,
+    setShopOrderSearchDraft,
+  ] = useState('')
+
+  const [
+    shopOrderSearch,
+    setShopOrderSearch,
+  ] = useState('')
+
+  const [
+    shopOrderPage,
+    setShopOrderPage,
+  ] =
+    useState<ShopOrderPage>({
+      view: 'active',
+      limit: 50,
+      total: 0,
+      hasMore: false,
+      nextCursor: null,
+    })
+
+  const [
+    shopOrdersLoadingMore,
+    setShopOrdersLoadingMore,
+  ] = useState(false)
+
+
+  const [
+    shopRefundOrderId,
+    setShopRefundOrderId,
+  ] = useState<number | null>(
+    null,
+  )
+
+  const [
+    shopRefundReason,
+    setShopRefundReason,
+  ] = useState('')
+
+  const [
+    shopRefundConfirmed,
+    setShopRefundConfirmed,
+  ] = useState(false)
+
+  const [
+    shopRefundBusyId,
+    setShopRefundBusyId,
+  ] = useState<number | null>(
+    null,
+  )
+
+  const [
+    shopLoading,
+    setShopLoading,
+  ] = useState(false)
+
+  const [
+    shopError,
+    setShopError,
+  ] = useState('')
+
+  const [
+    newShopName,
+    setNewShopName,
+  ] = useState('')
+
+  const [
+    newShopDescription,
+    setNewShopDescription,
+  ] = useState('')
+
+  const [
+    newShopPrice,
+    setNewShopPrice,
+  ] = useState('')
+
+  const [
+    newShopInventory,
+    setNewShopInventory,
+  ] = useState('')
+
+  const [
+    creatingShopProduct,
+    setCreatingShopProduct,
+  ] = useState(false)
+
+  const [
+    shopProductBusyId,
+    setShopProductBusyId,
+  ] = useState<number | null>(null)
+
+  const [
+    shopOrderBusyId,
+    setShopOrderBusyId,
+  ] = useState<number | null>(null)
+
   const [copied, setCopied] = useState('')
   const [toasts, setToasts] = useState<Toast[]>([])
   const [confirmState, setConfirmState] = useState<ConfirmState>(EMPTY_CONFIRM)
@@ -593,6 +863,7 @@ export default function MaintenancePage() {
   const refundRequestInFlight = useRef(false)
   const resolveRequestInFlight = useRef(false)
   const processingFeeRequestInFlight = useRef(false)
+  const emailMarketingRequestInFlight = useRef(false)
   const cafeRequestIdRef = useRef(0)
 
   function pushToast(kind: ToastKind, message: string) {
@@ -735,6 +1006,13 @@ export default function MaintenancePage() {
         {},
       )) as PlatformRevenue
 
+      if (!result?.success) {
+        throw new Error(
+          result?.message ||
+            'Stripe platform balance could not be loaded.',
+        )
+      }
+
       const available = Number(
         result?.available || 0,
       )
@@ -784,7 +1062,7 @@ export default function MaintenancePage() {
     } catch (error: any) {
       setRevenueError(
         error?.message ||
-          'Stripe processing-fee balance could not be loaded.',
+          'Stripe platform balance could not be loaded.',
       )
     } finally {
       revenueRequestInFlight.current = false
@@ -916,6 +1194,17 @@ export default function MaintenancePage() {
             )
           }
 
+          const freshEmailMarketingEnabled =
+            (cafeRes as any)?.business
+              ?.emailMarketingEnabled
+
+          setSelectedCafeEmailMarketingEnabled(
+            typeof freshEmailMarketingEnabled ===
+              'boolean'
+              ? freshEmailMarketingEnabled
+              : true,
+          )
+
           const freshCafeOrders = getArray(
             cafeRes,
           ) as IssueOrder[]
@@ -973,6 +1262,7 @@ export default function MaintenancePage() {
     selectedCafeRef.current = storeCode
     setSelectedCafe(storeCode)
     setSelectedCafeProcessingFee('')
+    setSelectedCafeEmailMarketingEnabled(null)
 
     try {
       const response = await apiFetch(
@@ -997,6 +1287,17 @@ export default function MaintenancePage() {
         Number.isFinite(processingFee)
           ? processingFee.toFixed(2)
           : '4.75',
+      )
+
+      const emailMarketingEnabled =
+        (response as any)?.business
+          ?.emailMarketingEnabled
+
+      setSelectedCafeEmailMarketingEnabled(
+        typeof emailMarketingEnabled ===
+          'boolean'
+          ? emailMarketingEnabled
+          : true,
       )
 
       const cafeOrders = getArray(
@@ -1027,6 +1328,7 @@ export default function MaintenancePage() {
       )
 
       setSelectedCafeProcessingFee('4.75')
+      setSelectedCafeEmailMarketingEnabled(null)
 
       pushToast(
         'error',
@@ -1102,6 +1404,88 @@ export default function MaintenancePage() {
     } finally {
       processingFeeRequestInFlight.current = false
       setProcessingFeeSaving(false)
+    }
+  }
+
+  async function setEmailMarketingEnabled(
+    enabled: boolean,
+  ) {
+    if (
+      !selectedCafe ||
+      emailMarketingRequestInFlight.current
+    ) {
+      return
+    }
+
+    emailMarketingRequestInFlight.current =
+      true
+
+    try {
+      setEmailMarketingSaving(true)
+
+      const result =
+        (await apiFetch(
+          `${API}/maintenance/cafe/${encodeURIComponent(
+            selectedCafe,
+          )}/email-marketing`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+            body: JSON.stringify({
+              enabled,
+            }),
+          },
+        )) as {
+          success?: boolean
+          message?: string
+          emailMarketingEnabled?: boolean
+        }
+
+      if (
+        result?.success ===
+        false
+      ) {
+        throw new Error(
+          result?.message ||
+            'Email marketing access could not be updated.',
+        )
+      }
+
+      const savedEnabled =
+        typeof result
+          ?.emailMarketingEnabled ===
+        'boolean'
+          ? result.emailMarketingEnabled
+          : enabled
+
+      setSelectedCafeEmailMarketingEnabled(
+        savedEnabled,
+      )
+
+      pushToast(
+        'success',
+        `${selectedCafe} email marketing ${
+          savedEnabled
+            ? 'enabled'
+            : 'disabled'
+        }.`,
+      )
+    } catch (error: any) {
+      pushToast(
+        'error',
+        error?.message ||
+          'Email marketing access could not be updated.',
+      )
+    } finally {
+      emailMarketingRequestInFlight.current =
+        false
+
+      setEmailMarketingSaving(
+        false,
+      )
     }
   }
 
@@ -1982,7 +2366,7 @@ export default function MaintenancePage() {
           ? `${money(
               pending,
             )} is pending in Stripe and cannot be withdrawn yet.`
-          : 'No CaviarQR processing-fee revenue is currently available.',
+          : 'No CaviarQR platform funds are currently available.',
       )
   
       return
@@ -2014,7 +2398,7 @@ export default function MaintenancePage() {
   
     askConfirm({
       title:
-        'Withdraw CaviarQR processing-fee revenue?',
+        'Withdraw CaviarQR platform funds?',
       message: `${money(
         amount,
       )} ${currency} will be sent from the Stripe platform balance to the CaviarQR business bank account. A ${money(
@@ -2065,13 +2449,21 @@ export default function MaintenancePage() {
         status?: string
         message?: string
       }
+
+      if (!result?.success) {
+        throw new Error(
+          result?.message ||
+            'Platform payout failed.',
+        )
+      }
+
   
       pushToast(
         'success',
         result?.payoutId
           ? `Stripe payout created: ${result.payoutId}`
           : result?.message ||
-              'Processing-fee withdrawal created.',
+              'Platform payout created.',
       )
   
       setWithdrawAmount('')
@@ -2081,7 +2473,7 @@ export default function MaintenancePage() {
       pushToast(
         'error',
         error?.message ||
-          'Processing-fee withdrawal failed.',
+          'Platform payout failed.',
       )
     } finally {
       payoutRequestInFlight.current = false
@@ -2090,24 +2482,27 @@ export default function MaintenancePage() {
   }
 
   async function generateQrCodes() {
-    const storeCode = qrStoreCode.trim()
+    const storeCode =
+      qrStoreCode
+        .trim()
+        .toLowerCase()
 
-    if (!storeCode) {
+    if (!API_CONFIGURED) {
       pushToast(
         'error',
-        'Enter a store code.',
+        'Backend API is not configured.',
       )
       return
     }
 
     if (
-      !/^[a-zA-Z0-9_-]+$/.test(
+      !/^[a-z0-9_-]{3,40}$/.test(
         storeCode,
       )
     ) {
       pushToast(
         'error',
-        'Store code can contain only letters, numbers, underscores and hyphens.',
+        'Store code must be 3-40 characters using letters, numbers, underscores or hyphens.',
       )
       return
     }
@@ -2115,46 +2510,167 @@ export default function MaintenancePage() {
     if (
       !Number.isInteger(qrTableCount) ||
       qrTableCount < 1 ||
-      qrTableCount > 500
+      qrTableCount > 100
     ) {
       pushToast(
         'error',
-        'Table count must be between 1 and 500.',
+        'Table count must be between 1 and 100.',
       )
       return
     }
 
     setGeneratingQr(true)
     setTableLinks([])
+    setStandStatus('')
+    setStandAlreadyExists(false)
+    setStandRegistered(false)
 
     try {
-      const baseUrl = cleanBaseUrl(QR_BASE_URL)
-      const results: TableLink[] = []
+      const result =
+        await apiFetch(
+          `${API}/maintenance/create-store`,
+          {
+            method: 'POST',
 
-      for (let i = 1; i <= qrTableCount; i++) {
-        const link =
-          `${baseUrl}/store/${encodeURIComponent(
-            storeCode,
-          )}?table=${i}`
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
 
-        const qrDataUrl = await QRCode.toDataURL(link, {
-          width: 360,
-          margin: 1,
-          errorCorrectionLevel: 'H',
-        })
+            body: JSON.stringify({
+              storeCode,
+              tables: qrTableCount,
+            }),
+          },
+        ) as {
+          success?: boolean
+          message?: string
+          storeCode?: string
+          tables?: number
+          status?: string
+          alreadyExists?: boolean
+          registered?: boolean
+          links?: {
+            table: number
+            url: string
+          }[]
+        }
 
-        results.push({ table: i, link, qrDataUrl })
+      if (!result?.success) {
+        throw new Error(
+          result?.message ||
+            'Could not create stand allocation.',
+        )
       }
 
-      setTableLinks(results)
-      pushToast(
-        'success',
-        `Generated ${results.length} production QR link${
-          results.length === 1 ? '' : 's'
-        }.`,
+      const backendLinks =
+        Array.isArray(result.links)
+          ? result.links
+          : []
+
+      if (!backendLinks.length) {
+        throw new Error(
+          'Backend returned no table URLs.',
+        )
+      }
+
+      const generated:
+        TableLink[] = []
+
+      for (
+        const item of backendLinks
+      ) {
+        const table =
+          Number(item.table)
+
+        const link =
+          String(
+            item.url || '',
+          ).trim()
+
+        if (
+          !Number.isInteger(table) ||
+          table < 1 ||
+          !link
+        ) {
+          continue
+        }
+
+        const qrDataUrl =
+          await QRCode.toDataURL(
+            link,
+            {
+              width: 360,
+              margin: 1,
+              errorCorrectionLevel:
+                'H',
+            },
+          )
+
+        generated.push({
+          table,
+          link,
+          qrDataUrl,
+        })
+      }
+
+      if (!generated.length) {
+        throw new Error(
+          'QR generation failed.',
+        )
+      }
+
+      setQrStoreCode(
+        String(
+          result.storeCode ||
+            storeCode,
+        ),
       )
-    } catch {
-      pushToast('error', 'Failed to generate QR codes.')
+
+      setQrTableCount(
+        Number(
+          result.tables ||
+            generated.length,
+        ),
+      )
+
+      setTableLinks(
+        generated,
+      )
+
+      setStandStatus(
+        String(
+          result.status ||
+            'UNCLAIMED',
+        ),
+      )
+
+      setStandAlreadyExists(
+        result.alreadyExists ===
+          true,
+      )
+
+      setStandRegistered(
+        result.registered ===
+          true,
+      )
+
+
+
+      pushToast(
+        result.alreadyExists
+          ? 'info'
+          : 'success',
+        result.alreadyExists
+          ? 'Existing permanent stand allocation loaded.'
+          : `Permanent stand set created.`,
+      )
+    } catch (error: any) {
+      pushToast(
+        'error',
+        error?.message ||
+          'Failed to create permanent stand set.',
+      )
     } finally {
       setGeneratingQr(false)
     }
@@ -2247,6 +2763,1010 @@ export default function MaintenancePage() {
     URL.revokeObjectURL(url)
   }
 
+  function shopOrdersUrl(
+    view: ShopOrderView,
+    searchValue: string,
+    cursor?: number | null,
+  ) {
+    const params =
+      new URLSearchParams()
+
+    params.set(
+      'view',
+      view,
+    )
+
+    params.set(
+      'limit',
+      '50',
+    )
+
+    const cleanSearch =
+      searchValue
+        .trim()
+        .slice(
+          0,
+          120,
+        )
+
+    if (cleanSearch) {
+      params.set(
+        'search',
+        cleanSearch,
+      )
+    }
+
+    if (
+      cursor &&
+      Number.isInteger(
+        cursor,
+      )
+    ) {
+      params.set(
+        'cursor',
+        String(
+          cursor,
+        ),
+      )
+    }
+
+    return `${API}/maintenance/shop/orders?${params.toString()}`
+  }
+
+  async function loadShopOrdersPage(
+    view: ShopOrderView,
+    searchValue = '',
+    cursor: number | null = null,
+    append = false,
+  ) {
+    if (!API_CONFIGURED) {
+      setShopError(
+        'Backend API is not configured.',
+      )
+
+      return
+    }
+
+    try {
+      if (append) {
+        setShopOrdersLoadingMore(
+          true,
+        )
+      } else {
+        setShopLoading(
+          true,
+        )
+      }
+
+      setShopError('')
+
+      const result =
+        await apiFetch(
+          shopOrdersUrl(
+            view,
+            searchValue,
+            cursor,
+          ),
+        )
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            'Orders could not be loaded.',
+        )
+      }
+
+      const orders =
+        Array.isArray(
+          result.orders,
+        )
+          ? result.orders
+          : []
+
+      const page =
+        result.page &&
+        typeof result.page ===
+          'object'
+          ? result.page
+          : {}
+
+      if (append) {
+        setShopOrders(
+          current => {
+            const seen =
+              new Set(
+                current.map(
+                  order =>
+                    order.id,
+                ),
+              )
+
+            const additions =
+              orders.filter(
+                (
+                  order:
+                    ShopOrder,
+                ) =>
+                  !seen.has(
+                    order.id,
+                  ),
+              )
+
+            return [
+              ...current,
+              ...additions,
+            ]
+          },
+        )
+      } else {
+        setShopOrders(
+          orders,
+        )
+      }
+
+      setShopOrderPage({
+        view,
+
+        limit:
+          Number(
+            page.limit ||
+              50,
+          ),
+
+        total:
+          Number(
+            page.total ||
+              0,
+          ),
+
+        hasMore:
+          page.hasMore ===
+          true,
+
+        nextCursor:
+          Number.isInteger(
+            Number(
+              page.nextCursor,
+            ),
+          ) &&
+          Number(
+            page.nextCursor,
+          ) > 0
+            ? Number(
+                page.nextCursor,
+              )
+            : null,
+      })
+    } catch (error) {
+      setShopError(
+        error instanceof Error
+          ? error.message
+          : 'Orders could not be loaded.',
+      )
+    } finally {
+      if (append) {
+        setShopOrdersLoadingMore(
+          false,
+        )
+      } else {
+        setShopLoading(
+          false,
+        )
+      }
+    }
+  }
+
+  async function switchShopOrderView(
+    view: ShopOrderView,
+  ) {
+    setShopOrderView(
+      view,
+    )
+
+    setShopOrderSearchDraft(
+      '',
+    )
+
+    setShopOrderSearch(
+      '',
+    )
+
+    setShopOrders(
+      [],
+    )
+
+    await loadShopOrdersPage(
+      view,
+      '',
+      null,
+      false,
+    )
+  }
+
+  async function applyShopOrderSearch() {
+    const cleanSearch =
+      shopOrderSearchDraft
+        .trim()
+        .slice(
+          0,
+          120,
+        )
+
+    setShopOrderSearch(
+      cleanSearch,
+    )
+
+    await loadShopOrdersPage(
+      shopOrderView,
+      cleanSearch,
+      null,
+      false,
+    )
+  }
+
+  async function clearShopOrderSearch() {
+    setShopOrderSearchDraft(
+      '',
+    )
+
+    setShopOrderSearch(
+      '',
+    )
+
+    await loadShopOrdersPage(
+      shopOrderView,
+      '',
+      null,
+      false,
+    )
+  }
+
+  async function loadMoreShopOrders() {
+    if (
+      !shopOrderPage.hasMore ||
+      !shopOrderPage.nextCursor ||
+      shopOrdersLoadingMore
+    ) {
+      return
+    }
+
+    await loadShopOrdersPage(
+      shopOrderView,
+      shopOrderSearch,
+      shopOrderPage.nextCursor,
+      true,
+    )
+  }
+
+  async function loadShopData() {
+    if (!API_CONFIGURED) {
+      setShopError(
+        'Backend API is not configured.',
+      )
+
+      return
+    }
+
+    try {
+      setShopLoading(
+        true,
+      )
+
+      setShopError('')
+
+      const [
+        productsResult,
+        ordersResult,
+      ] = await Promise.all([
+        apiFetch(
+          `${API}/maintenance/shop/products`,
+        ),
+
+        apiFetch(
+          shopOrdersUrl(
+            shopOrderView,
+            shopOrderSearch,
+            null,
+          ),
+        ),
+      ])
+
+      if (
+        !productsResult.success
+      ) {
+        throw new Error(
+          productsResult.message ||
+            'Products could not be loaded.',
+        )
+      }
+
+      if (
+        !ordersResult.success
+      ) {
+        throw new Error(
+          ordersResult.message ||
+            'Orders could not be loaded.',
+        )
+      }
+
+      const products =
+        Array.isArray(
+          productsResult.products,
+        )
+          ? productsResult.products
+          : []
+
+      const orders =
+        Array.isArray(
+          ordersResult.orders,
+        )
+          ? ordersResult.orders
+          : []
+
+      setShopProducts(
+        products.map(
+          (
+            product:
+              ShopProduct,
+          ) => ({
+            ...product,
+
+            priceDraft:
+              (
+                Number(
+                  product.priceCents ||
+                    0,
+                ) /
+                100
+              ).toFixed(
+                2,
+              ),
+
+            inventoryDraft:
+              String(
+                Number(
+                  product.inventory ||
+                    0,
+                ),
+              ),
+          }),
+        ),
+      )
+
+      setShopOrders(
+        orders,
+      )
+
+      const page =
+        ordersResult.page &&
+        typeof ordersResult.page ===
+          'object'
+          ? ordersResult.page
+          : {}
+
+      setShopOrderPage({
+        view:
+          shopOrderView,
+
+        limit:
+          Number(
+            page.limit ||
+              50,
+          ),
+
+        total:
+          Number(
+            page.total ||
+              0,
+          ),
+
+        hasMore:
+          page.hasMore ===
+          true,
+
+        nextCursor:
+          Number.isInteger(
+            Number(
+              page.nextCursor,
+            ),
+          ) &&
+          Number(
+            page.nextCursor,
+          ) > 0
+            ? Number(
+                page.nextCursor,
+              )
+            : null,
+      })
+    } catch (error) {
+      setShopError(
+        error instanceof Error
+          ? error.message
+          : 'Shop data could not be loaded.',
+      )
+    } finally {
+      setShopLoading(
+        false,
+      )
+    }
+  }
+
+  function updateShopProductLocal(
+    id: number,
+    patch: Partial<ShopProduct>,
+  ) {
+    setShopProducts(
+      (current) =>
+        current.map(
+          (product) =>
+            product.id === id
+              ? {
+                  ...product,
+                  ...patch,
+                }
+              : product,
+        ),
+    )
+  }
+
+  async function createShopProduct() {
+    const price =
+      Number(
+        newShopPrice,
+      )
+
+    const inventory =
+      Number(
+        newShopInventory,
+      )
+
+    if (
+      !newShopName.trim()
+    ) {
+      pushToast(
+        'error',
+        'Enter a product name.',
+      )
+      return
+    }
+
+    if (
+      !Number.isFinite(price) ||
+      price < 0.5
+    ) {
+      pushToast(
+        'error',
+        'Enter a valid product price.',
+      )
+      return
+    }
+
+    if (
+      !Number.isInteger(
+        inventory,
+      ) ||
+      inventory < 0
+    ) {
+      pushToast(
+        'error',
+        'Enter valid inventory.',
+      )
+      return
+    }
+
+    try {
+      setCreatingShopProduct(
+        true,
+      )
+
+      const result =
+        await apiFetch(
+          `${API}/maintenance/shop/products`,
+          {
+            method: 'POST',
+
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+
+            body:
+              JSON.stringify({
+                name:
+                  newShopName.trim(),
+
+                description:
+                  newShopDescription.trim(),
+
+                priceCents:
+                  Math.round(
+                    price * 100,
+                  ),
+
+                inventory,
+
+                active: true,
+              }),
+          },
+        )
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            'Product could not be created.',
+        )
+      }
+
+      setNewShopName('')
+      setNewShopDescription('')
+      setNewShopPrice('')
+      setNewShopInventory('')
+
+      pushToast(
+        'success',
+        'Shop product created.',
+      )
+
+      await loadShopData()
+    } catch (error) {
+      pushToast(
+        'error',
+        error instanceof Error
+          ? error.message
+          : 'Product could not be created.',
+      )
+    } finally {
+      setCreatingShopProduct(
+        false,
+      )
+    }
+  }
+
+  async function saveShopProduct(
+    product: ShopProduct,
+  ) {
+    const price =
+      Number(
+        product.priceDraft,
+      )
+
+    const inventory =
+      Number(
+        product.inventoryDraft,
+      )
+
+    if (
+      !product.name.trim()
+    ) {
+      pushToast(
+        'error',
+        'Product name is required.',
+      )
+      return
+    }
+
+    if (
+      !Number.isFinite(price) ||
+      price < 0.5
+    ) {
+      pushToast(
+        'error',
+        'Product price is invalid.',
+      )
+      return
+    }
+
+    if (
+      !Number.isInteger(
+        inventory,
+      ) ||
+      inventory < 0
+    ) {
+      pushToast(
+        'error',
+        'Inventory is invalid.',
+      )
+      return
+    }
+
+    try {
+      setShopProductBusyId(
+        product.id,
+      )
+
+      const result =
+        await apiFetch(
+          `${API}/maintenance/shop/products/${product.id}`,
+          {
+            method: 'PATCH',
+
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+
+            body:
+              JSON.stringify({
+                name:
+                  product.name.trim(),
+
+                description:
+                  product.description,
+
+                priceCents:
+                  Math.round(
+                    price * 100,
+                  ),
+
+                inventory,
+
+                active:
+                  product.active,
+              }),
+          },
+        )
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            'Product could not be saved.',
+        )
+      }
+
+      pushToast(
+        'success',
+        `${product.name} saved.`,
+      )
+
+      await loadShopData()
+    } catch (error) {
+      pushToast(
+        'error',
+        error instanceof Error
+          ? error.message
+          : 'Product could not be saved.',
+      )
+    } finally {
+      setShopProductBusyId(
+        null,
+      )
+    }
+  }
+
+  async function uploadShopProductImage(
+    productId: number,
+    file: File,
+  ) {
+    if (
+      file.size >
+      5 * 1024 * 1024
+    ) {
+      pushToast(
+        'error',
+        'Image must be 5 MB or smaller.',
+      )
+      return
+    }
+
+    const allowed =
+      new Set([
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+      ])
+
+    if (
+      !allowed.has(
+        file.type,
+      )
+    ) {
+      pushToast(
+        'error',
+        'Use JPG, PNG or WebP.',
+      )
+      return
+    }
+
+    try {
+      setShopProductBusyId(
+        productId,
+      )
+
+      const token =
+        window.localStorage.getItem(
+          'caviarqr_maintenance_token',
+        ) || ''
+
+      const formData =
+        new FormData()
+
+      formData.append(
+        'file',
+        file,
+      )
+
+      const response =
+        await fetch(
+          `${API}/maintenance/shop/products/${productId}/image`,
+          {
+            method: 'POST',
+
+            headers:
+              token
+                ? {
+                    Authorization:
+                      `Bearer ${token}`,
+                  }
+                : undefined,
+
+            body:
+              formData,
+          },
+        )
+
+      const result =
+        await response
+          .json()
+          .catch(
+            () => ({}),
+          )
+
+      if (!response.ok) {
+        throw new Error(
+          result?.message ||
+            'Image upload failed.',
+        )
+      }
+
+      pushToast(
+        'success',
+        'Product image updated.',
+      )
+
+      await loadShopData()
+    } catch (error) {
+      pushToast(
+        'error',
+        error instanceof Error
+          ? error.message
+          : 'Image upload failed.',
+      )
+    } finally {
+      setShopProductBusyId(
+        null,
+      )
+    }
+  }
+
+  function updateShopOrderLocal(
+    id: number,
+    patch: Partial<ShopOrder>,
+  ) {
+    setShopOrders(
+      (current) =>
+        current.map(
+          (order) =>
+            order.id === id
+              ? {
+                  ...order,
+                  ...patch,
+                }
+              : order,
+        ),
+    )
+  }
+
+  function openShopRefund(
+    orderId: number,
+  ) {
+    setShopRefundOrderId(
+      orderId,
+    )
+
+    setShopRefundReason(
+      '',
+    )
+
+    setShopRefundConfirmed(
+      false,
+    )
+
+    setShopError('')
+  }
+
+  function closeShopRefund() {
+    if (
+      shopRefundBusyId
+    ) {
+      return
+    }
+
+    setShopRefundOrderId(
+      null,
+    )
+
+    setShopRefundReason(
+      '',
+    )
+
+    setShopRefundConfirmed(
+      false,
+    )
+  }
+
+  async function refundShopOrder(
+    order: ShopOrder,
+  ) {
+    const reason =
+      shopRefundReason
+        .trim()
+        .slice(
+          0,
+          500,
+        )
+
+    if (
+      reason.length < 3
+    ) {
+      setShopError(
+        'Enter a refund reason.',
+      )
+
+      return
+    }
+
+    if (
+      !shopRefundConfirmed
+    ) {
+      setShopError(
+        'Confirm that you understand this sends a full refund.',
+      )
+
+      return
+    }
+
+    if (
+      !window.confirm(
+        `Refund the full ${shopMoney(
+          order.totalCents,
+        )} for ${order.orderNumber}? This sends a real Stripe refund.`,
+      )
+    ) {
+      return
+    }
+
+    try {
+      setShopRefundBusyId(
+        order.id,
+      )
+
+      setShopError('')
+
+      const result =
+        await apiFetch(
+          `${API}/maintenance/shop/orders/${order.id}/refund`,
+          {
+            method:
+              'POST',
+
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+
+            body:
+              JSON.stringify({
+                reason,
+              }),
+          },
+        )
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            'Hardware refund failed.',
+        )
+      }
+
+      setShopRefundOrderId(
+        null,
+      )
+
+      setShopRefundReason(
+        '',
+      )
+
+      setShopRefundConfirmed(
+        false,
+      )
+
+      /*
+       * Refunded orders belong in
+       * Past Orders. Refresh the
+       * current operational view.
+       */
+      await loadShopOrdersPage(
+        shopOrderView,
+        shopOrderSearch,
+        null,
+        false,
+      )
+    } catch (error) {
+      setShopError(
+        error instanceof Error
+          ? error.message
+          : 'Hardware refund failed.',
+      )
+    } finally {
+      setShopRefundBusyId(
+        null,
+      )
+    }
+  }
+
+  async function saveShopFulfillment(
+    order: ShopOrder,
+  ) {
+    try {
+      setShopOrderBusyId(
+        order.id,
+      )
+
+      const result =
+        await apiFetch(
+          `${API}/maintenance/shop/orders/${order.id}/fulfillment`,
+          {
+            method: 'PATCH',
+
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+
+            body:
+              JSON.stringify({
+                fulfillmentStatus:
+                  order.fulfillmentStatus,
+
+                trackingNumber:
+                  order.trackingNumber ||
+                  '',
+              }),
+          },
+        )
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            'Order could not be updated.',
+        )
+      }
+
+      pushToast(
+        'success',
+        `${order.orderNumber} updated.`,
+      )
+
+      await loadShopOrdersPage(
+        shopOrderView,
+        shopOrderSearch,
+        null,
+        false,
+      )
+    } catch (error) {
+      pushToast(
+        'error',
+        error instanceof Error
+          ? error.message
+          : 'Order could not be updated.',
+      )
+    } finally {
+      setShopOrderBusyId(
+        null,
+      )
+    }
+  }
+
   function NavButton({
     id,
     icon,
@@ -2270,6 +3790,10 @@ export default function MaintenancePage() {
           setTab(id)
           setSelectedCafe(null)
           setSearch('')
+
+          if (id === 'shop') {
+            void loadShopData()
+          }
         }}
       >
         <span className="nav-icon">
@@ -2910,6 +4434,7 @@ export default function MaintenancePage() {
           <NavButton id="action" icon={ICONS.inbox} title="Action Center" subtitle="Alerts across all cafés" count={openIssues.length} />
           <NavButton id="cafes" icon={ICONS.store} title="All Cafés" subtitle="Health & orders" />
           <NavButton id="qr" icon={ICONS.qr} title="QR Codes" subtitle="Table generator" />
+          <NavButton id="shop" icon={ICONS.store} title="Shop" subtitle="Products & orders" />
         </nav>
 
         <div className="sidebar-stats">
@@ -2949,12 +4474,14 @@ export default function MaintenancePage() {
               {tab === 'action' && 'Action Center'}
               {tab === 'cafes' && (selectedCafeRecord?.cafeName || selectedCafe || 'All Cafés')}
               {tab === 'qr' && 'QR Codes & Tag URLs'}
+              {tab === 'shop' && 'CaviarQR Shop'}
             </h2>
             <p>
               {tab === 'action' && 'Prioritize failed orders, kitchen exceptions, and customer recovery.'}
               {tab === 'cafes' && !selectedCafe && 'A real-time health view of every café in the CaviarQR network.'}
               {tab === 'cafes' && selectedCafe && 'Each order stays in its own card while live refresh continues.'}
               {tab === 'qr' && 'Generate production links for caviarqr.com and copy URLs for tag manufacturing.'}
+              {tab === 'shop' && 'Manage CaviarQR hardware products, inventory, customer orders, and fulfillment.'}
             </p>
           </div>
 
@@ -3032,7 +4559,7 @@ export default function MaintenancePage() {
                   </span>
 
                   <h3>
-                    CaviarQR processing-fee wallet
+                    CaviarQR Stripe platform balance
                   </h3>
 
                   <p>
@@ -3165,6 +4692,69 @@ export default function MaintenancePage() {
                     </div>
                   </div>
 
+                  <div
+                    style={{
+                      marginBottom: 18,
+                      padding: 16,
+                      border:
+                        '1px solid rgba(255,255,255,.12)',
+                      borderRadius: 14,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'grid',
+                        gap: 6,
+                        marginBottom: 12,
+                      }}
+                    >
+                      <strong>
+                        Payout setup
+                      </strong>
+
+                      <span
+                        style={{
+                          fontSize: 13,
+                          opacity: 0.72,
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Add or update the bank
+                        account that receives
+                        CaviarQR Stripe payouts.
+                        Bank details are entered
+                        securely in Stripe and are
+                        not stored by CaviarQR.
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="withdraw-button"
+                      onClick={() => {
+                        window.open(
+                          'https://dashboard.stripe.com/acct_1Sxh4AKZAB5HMPha/settings/payouts',
+                          '_blank',
+                          'noopener,noreferrer',
+                        )
+                      }}
+                    >
+                      <span>
+                        <strong>
+                          Complete payout setup
+                        </strong>
+
+                        <small>
+                          CaviarQR platform bank account only
+                        </small>
+                      </span>
+
+                      <span aria-hidden="true">
+                        ↗
+                      </span>
+                    </button>
+                  </div>
+
                   <label>
                     <span>
                       Withdrawal amount
@@ -3215,7 +4805,7 @@ export default function MaintenancePage() {
                       <strong>
                         {withdrawing
                           ? 'Creating Stripe payout…'
-                          : 'Withdraw processing-fee revenue'}
+                          : 'Withdraw platform funds'}
                       </strong>
 
                       <small>
@@ -3299,7 +4889,7 @@ export default function MaintenancePage() {
                       )
                     ) : (
                       <div className="payout-empty">
-                        No processing-fee withdrawals
+                        No platform payouts
                         have been created yet.
                       </div>
                     )}
@@ -3386,6 +4976,59 @@ export default function MaintenancePage() {
                   </div>
                 </div>
               </section>
+
+              <section className="processing-fee-card">
+                <div className="processing-fee-copy">
+                  <span className="section-kicker">
+                    Marketing access
+                  </span>
+
+                  <h3>
+                    Email marketing
+                  </h3>
+
+                  <p>
+                    Control whether this café can collect marketing subscribers and send promotional emails through CaviarQR. Turning this off does not delete existing subscriber or campaign history.
+                  </p>
+                </div>
+
+                <div className="processing-fee-control">
+                  <label>
+                    Email marketing access
+                  </label>
+
+                  <div className="processing-fee-actions">
+                    <strong>
+                      {selectedCafeEmailMarketingEnabled === null
+                        ? 'Unknown'
+                        : selectedCafeEmailMarketingEnabled
+                          ? 'ON'
+                          : 'OFF'}
+                    </strong>
+
+                    <button
+                      type="button"
+                      className="processing-fee-save"
+                      disabled={
+                        emailMarketingSaving ||
+                        selectedCafeEmailMarketingEnabled === null
+                      }
+                      onClick={() =>
+                        void setEmailMarketingEnabled(
+                          !selectedCafeEmailMarketingEnabled,
+                        )
+                      }
+                    >
+                      {emailMarketingSaving
+                        ? 'Saving…'
+                        : selectedCafeEmailMarketingEnabled
+                          ? 'Turn off'
+                          : 'Turn on'}
+                    </button>
+                  </div>
+                </div>
+              </section>
+
               <div className="cafe-orders-heading"><div><span className="section-kicker">Order timeline</span><h3>All orders for this café</h3></div><span className="order-count-chip">{sortedCafeOrders.length} orders</span></div>
               <section className="cafe-order-list">{sortedCafeOrders.length === 0 ? <div className="empty"><div className="empty-icon"><Icon path={ICONS.inbox} size={22} /></div><h3>No orders yet</h3><p>This café has no orders on record.</p></div> : sortedCafeOrders.map((order) => <CafeOrderBox key={String(order.id)} order={order} />)}</section>
             </>}
@@ -3409,6 +5052,7 @@ export default function MaintenancePage() {
                 <input
                   type="number"
                   min={1}
+                  max={100}
                   value={qrTableCount}
                   onChange={(e) => setQrTableCount(Number(e.target.value))}
                 />
@@ -3429,7 +5073,7 @@ export default function MaintenancePage() {
                 ) : (
                   <>
                     <Icon path={ICONS.qr} size={15} />
-                    Generate
+                    Create stand set
                   </>
                 )}
               </button>
@@ -3448,6 +5092,84 @@ export default function MaintenancePage() {
                 </>
               )}
             </div>
+
+            {standStatus && (
+              <div
+                className="domain-box"
+                style={{
+                  marginBottom: 18,
+                }}
+              >
+                <small>
+                  {standRegistered
+                    ? 'Registered restaurant'
+                    : 'Permanent stand allocation'}
+                </small>
+
+                <strong
+                  style={{
+                    display: 'block',
+                    marginTop: 6,
+                  }}
+                >
+                  {qrStoreCode} ·{' '}
+                  {standRegistered
+                    ? 'REGISTERED'
+                    : standStatus}
+                </strong>
+
+                {standAlreadyExists &&
+                  !standRegistered && (
+                  <p
+                    style={{
+                      marginTop: 14,
+                    }}
+                  >
+                    Existing permanent stand
+                    allocation loaded.
+                  </p>
+                )}
+
+                {!standRegistered &&
+                  standStatus ===
+                    'UNCLAIMED' && (
+                  <p
+                    style={{
+                      marginTop: 14,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Ready for buyer registration.
+                  </p>
+                )}
+
+                {standRegistered && (
+                  <p
+                    style={{
+                      marginTop: 14,
+                      fontWeight: 700,
+                    }}
+                  >
+                    ✓ Restaurant account already
+                    registered.
+                  </p>
+                )}
+
+                {!standRegistered &&
+                  standStatus ===
+                    'CLAIMED' && (
+                  <p
+                    style={{
+                      marginTop: 14,
+                      fontWeight: 700,
+                    }}
+                  >
+                    ✓ Already claimed by a
+                    restaurant.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="domain-box">
               <small>Production URL format</small>
@@ -3535,6 +5257,1409 @@ export default function MaintenancePage() {
                 ))}
               </div>
             )}
+          </section>
+        )}
+        {tab === 'shop' && (
+          <section className="shop-admin">
+            <style>{`
+              .shop-admin {
+                display: flex;
+                flex-direction: column;
+                gap: 24px;
+              }
+
+              .shop-admin-toolbar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 18px;
+                padding: 20px 22px;
+                background: #fff;
+                border: 1px solid #e6e6e6;
+                border-radius: 16px;
+              }
+
+              .shop-admin-toolbar h3 {
+                margin: 0 0 5px;
+                font-size: 1.05rem;
+              }
+
+              .shop-admin-toolbar p {
+                margin: 0;
+                color: #747474;
+                font-size: .82rem;
+              }
+
+              .shop-refresh {
+                border: 1px solid #d8d8d8;
+                background: #fff;
+                border-radius: 9px;
+                padding: 9px 14px;
+                cursor: pointer;
+                font-weight: 700;
+              }
+
+              .shop-error {
+                padding: 14px 16px;
+                color: #a02f2f;
+                background: #fff3f3;
+                border: 1px solid #f0d5d5;
+                border-radius: 10px;
+              }
+
+              .shop-panel {
+                background: #fff;
+                border: 1px solid #e6e6e6;
+                border-radius: 16px;
+                overflow: hidden;
+              }
+
+              .shop-panel-head {
+                padding: 20px 22px;
+                border-bottom: 1px solid #ededed;
+              }
+
+              .shop-panel-head h3 {
+                margin: 0 0 5px;
+              }
+
+              .shop-panel-head p {
+                margin: 0;
+                color: #777;
+                font-size: .82rem;
+              }
+
+              .shop-create {
+                display: grid;
+                grid-template-columns:
+                  minmax(180px, 1.3fr)
+                  minmax(240px, 2fr)
+                  130px
+                  130px
+                  120px;
+                gap: 12px;
+                padding: 20px 22px;
+                align-items: end;
+              }
+
+              .shop-field {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+              }
+
+              .shop-field span {
+                color: #6e6e6e;
+                font-size: .72rem;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: .05em;
+              }
+
+              .shop-field input,
+              .shop-field textarea,
+              .shop-field select {
+                width: 100%;
+                min-height: 40px;
+                padding: 9px 10px;
+                border: 1px solid #d9d9d9;
+                border-radius: 8px;
+                background: #fff;
+                color: #222;
+              }
+
+              .shop-field textarea {
+                resize: vertical;
+                min-height: 72px;
+              }
+
+              .shop-primary {
+                min-height: 40px;
+                border: 0;
+                border-radius: 8px;
+                background: #171717;
+                color: #fff;
+                font-weight: 750;
+                cursor: pointer;
+              }
+
+              .shop-primary:disabled {
+                opacity: .45;
+                cursor: not-allowed;
+              }
+
+              .shop-products-list {
+                display: grid;
+                grid-template-columns:
+                  repeat(
+                    2,
+                    minmax(0, 1fr)
+                  );
+                gap: 16px;
+                padding: 0 22px 22px;
+              }
+
+              .shop-product-card {
+                display: grid;
+                grid-template-columns:
+                  145px
+                  minmax(0, 1fr);
+                gap: 18px;
+                padding: 16px;
+                border: 1px solid #e8e8e8;
+                border-radius: 14px;
+              }
+
+              .shop-product-image {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+              }
+
+              .shop-product-image-preview {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                aspect-ratio: 1;
+                overflow: hidden;
+                border-radius: 10px;
+                background: #f4f3ef;
+                color: #8b7355;
+                font-family: Georgia, serif;
+              }
+
+              .shop-product-image-preview img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+              }
+
+              .shop-product-image input {
+                width: 100%;
+                font-size: .72rem;
+              }
+
+              .shop-product-fields {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+              }
+
+              .shop-inline {
+                display: grid;
+                grid-template-columns:
+                  1fr
+                  1fr;
+                gap: 10px;
+              }
+
+              .shop-active-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                font-size: .8rem;
+              }
+
+              .shop-active-row label {
+                display: flex;
+                align-items: center;
+                gap: 7px;
+              }
+
+              .shop-order-list {
+                display: flex;
+                flex-direction: column;
+              }
+
+              .shop-order-card {
+                padding: 20px 22px;
+                border-bottom: 1px solid #ededed;
+              }
+
+              .shop-order-card:last-child {
+                border-bottom: 0;
+              }
+
+              .shop-order-top {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 20px;
+                margin-bottom: 16px;
+              }
+
+              .shop-order-top h4 {
+                margin: 0 0 5px;
+                font-size: 1rem;
+              }
+
+              .shop-order-top p {
+                margin: 0;
+                color: #757575;
+                font-size: .8rem;
+              }
+
+              .shop-order-total {
+                font-size: 1rem;
+                font-weight: 800;
+              }
+
+              .shop-badges {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 7px;
+                margin-bottom: 14px;
+              }
+
+              .shop-badge {
+                padding: 5px 8px;
+                border-radius: 999px;
+                background: #f1f1ef;
+                font-size: .7rem;
+                font-weight: 750;
+              }
+
+              .shop-badge.paid {
+                background: #eaf6ec;
+                color: #286336;
+              }
+
+              .shop-order-info {
+                display: grid;
+                grid-template-columns:
+                  repeat(
+                    3,
+                    minmax(0, 1fr)
+                  );
+                gap: 14px;
+                margin-bottom: 16px;
+              }
+
+              .shop-order-info div {
+                min-width: 0;
+              }
+
+              .shop-order-info small {
+                display: block;
+                margin-bottom: 4px;
+                color: #888;
+              }
+
+              .shop-order-info strong,
+              .shop-order-info span {
+                display: block;
+                overflow-wrap: anywhere;
+                font-size: .8rem;
+              }
+
+              .shop-order-items {
+                padding: 12px;
+                margin-bottom: 16px;
+                background: #f8f8f6;
+                border-radius: 9px;
+              }
+
+              .shop-order-item {
+                display: flex;
+                justify-content: space-between;
+                gap: 14px;
+                padding: 4px 0;
+                font-size: .8rem;
+              }
+
+              .shop-fulfillment {
+                display: grid;
+                grid-template-columns:
+                  180px
+                  minmax(180px, 1fr)
+                  130px;
+                gap: 10px;
+                align-items: end;
+              }
+
+              .shop-empty {
+                padding: 32px 22px;
+                color: #777;
+                text-align: center;
+              }
+
+              @media (max-width: 1150px) {
+                .shop-create {
+                  grid-template-columns:
+                    1fr
+                    1fr;
+                }
+
+                .shop-products-list {
+                  grid-template-columns:
+                    1fr;
+                }
+              }
+
+              @media (max-width: 760px) {
+                .shop-create,
+                .shop-inline,
+                .shop-order-info,
+                .shop-fulfillment {
+                  grid-template-columns:
+                    1fr;
+                }
+
+                .shop-product-card {
+                  grid-template-columns:
+                    1fr;
+                }
+
+                .shop-product-image {
+                  max-width: 220px;
+                }
+
+                .shop-order-top {
+                  flex-direction: column;
+                }
+              }
+            `}</style>
+
+            <div className="shop-admin-toolbar">
+              <div>
+                <h3>
+                  Hardware Store
+                </h3>
+
+                <p>
+                  Products sold at
+                  caviarqr.com/shop.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="shop-refresh"
+                onClick={() =>
+                  void loadShopData()
+                }
+                disabled={shopLoading}
+              >
+                {shopLoading
+                  ? 'Loading…'
+                  : 'Refresh shop'}
+              </button>
+            </div>
+
+            {shopError && (
+              <div className="shop-error">
+                {shopError}
+              </div>
+            )}
+
+            <div className="shop-panel">
+              <div className="shop-panel-head">
+                <h3>
+                  Products
+                </h3>
+
+                <p>
+                  Add stands, upload
+                  photos, set price,
+                  inventory, and
+                  storefront visibility.
+                </p>
+              </div>
+
+              <div className="shop-create">
+                <label className="shop-field">
+                  <span>
+                    Product name
+                  </span>
+
+                  <input
+                    value={newShopName}
+                    maxLength={140}
+                    placeholder="CaviarQR Table Stand"
+                    onChange={(e) =>
+                      setNewShopName(
+                        e.target.value,
+                      )
+                    }
+                  />
+                </label>
+
+                <label className="shop-field">
+                  <span>
+                    Description
+                  </span>
+
+                  <input
+                    value={
+                      newShopDescription
+                    }
+                    placeholder="Wooden QR/NFC table stand"
+                    onChange={(e) =>
+                      setNewShopDescription(
+                        e.target.value,
+                      )
+                    }
+                  />
+                </label>
+
+                <label className="shop-field">
+                  <span>
+                    Price USD
+                  </span>
+
+                  <input
+                    type="number"
+                    min="0.50"
+                    step="0.01"
+                    value={newShopPrice}
+                    placeholder="24.99"
+                    onChange={(e) =>
+                      setNewShopPrice(
+                        e.target.value,
+                      )
+                    }
+                  />
+                </label>
+
+                <label className="shop-field">
+                  <span>
+                    Inventory
+                  </span>
+
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={
+                      newShopInventory
+                    }
+                    placeholder="100"
+                    onChange={(e) =>
+                      setNewShopInventory(
+                        e.target.value,
+                      )
+                    }
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  className="shop-primary"
+                  disabled={
+                    creatingShopProduct
+                  }
+                  onClick={() =>
+                    void createShopProduct()
+                  }
+                >
+                  {creatingShopProduct
+                    ? 'Creating…'
+                    : 'Add product'}
+                </button>
+              </div>
+
+              {shopProducts.length ===
+              0 ? (
+                <div className="shop-empty">
+                  {shopLoading
+                    ? 'Loading products…'
+                    : 'No shop products yet.'}
+                </div>
+              ) : (
+                <div className="shop-products-list">
+                  {shopProducts.map(
+                    (product) => (
+                      <div
+                        className="shop-product-card"
+                        key={product.id}
+                      >
+                        <div className="shop-product-image">
+                          <div className="shop-product-image-preview">
+                            {product.imageUrl ? (
+                              <img
+                                src={shopImageUrl(
+                                  product.imageUrl,
+                                )}
+                                alt={
+                                  product.name
+                                }
+                              />
+                            ) : (
+                              <span>
+                                CaviarQR
+                              </span>
+                            )}
+                          </div>
+
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            disabled={
+                              shopProductBusyId ===
+                              product.id
+                            }
+                            onChange={(e) => {
+                              const file =
+                                e.target
+                                  .files?.[0]
+
+                              if (file) {
+                                void uploadShopProductImage(
+                                  product.id,
+                                  file,
+                                )
+                              }
+
+                              e.target.value =
+                                ''
+                            }}
+                          />
+                        </div>
+
+                        <div className="shop-product-fields">
+                          <label className="shop-field">
+                            <span>
+                              Name
+                            </span>
+
+                            <input
+                              value={
+                                product.name
+                              }
+                              maxLength={
+                                140
+                              }
+                              onChange={(e) =>
+                                updateShopProductLocal(
+                                  product.id,
+                                  {
+                                    name:
+                                      e
+                                        .target
+                                        .value,
+                                  },
+                                )
+                              }
+                            />
+                          </label>
+
+                          <label className="shop-field">
+                            <span>
+                              Description
+                            </span>
+
+                            <textarea
+                              value={
+                                product.description
+                              }
+                              onChange={(e) =>
+                                updateShopProductLocal(
+                                  product.id,
+                                  {
+                                    description:
+                                      e
+                                        .target
+                                        .value,
+                                  },
+                                )
+                              }
+                            />
+                          </label>
+
+                          <div className="shop-inline">
+                            <label className="shop-field">
+                              <span>
+                                Price USD
+                              </span>
+
+                              <input
+                                type="number"
+                                min="0.50"
+                                step="0.01"
+                                value={
+                                  product.priceDraft ??
+                                  ''
+                                }
+                                onChange={(e) =>
+                                  updateShopProductLocal(
+                                    product.id,
+                                    {
+                                      priceDraft:
+                                        e
+                                          .target
+                                          .value,
+                                    },
+                                  )
+                                }
+                              />
+                            </label>
+
+                            <label className="shop-field">
+                              <span>
+                                Inventory
+                              </span>
+
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={
+                                  product.inventoryDraft ??
+                                  ''
+                                }
+                                onChange={(e) =>
+                                  updateShopProductLocal(
+                                    product.id,
+                                    {
+                                      inventoryDraft:
+                                        e
+                                          .target
+                                          .value,
+                                    },
+                                  )
+                                }
+                              />
+                            </label>
+                          </div>
+
+                          <div className="shop-active-row">
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={
+                                  product.active
+                                }
+                                onChange={(e) =>
+                                  updateShopProductLocal(
+                                    product.id,
+                                    {
+                                      active:
+                                        e
+                                          .target
+                                          .checked,
+                                    },
+                                  )
+                                }
+                              />
+
+                              Visible in shop
+                            </label>
+
+                            <span>
+                              ID #{product.id}
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="shop-primary"
+                            disabled={
+                              shopProductBusyId ===
+                              product.id
+                            }
+                            onClick={() =>
+                              void saveShopProduct(
+                                product,
+                              )
+                            }
+                          >
+                            {shopProductBusyId ===
+                            product.id
+                              ? 'Saving…'
+                              : 'Save product'}
+                          </button>
+                        </div>
+                      </div>
+                    ),
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="shop-panel">
+              <div className="shop-panel-head">
+                <h3>
+                  Hardware Orders
+                </h3>
+
+                <p>
+                  {shopOrderView ===
+                  'active'
+                    ? 'Paid orders that still need to be processed, shipped, or delivered.'
+                    : 'Delivered hardware orders are kept here as your permanent order history.'}
+                </p>
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  alignItems:
+                    'center',
+                  marginBottom: 14,
+                }}
+              >
+                <button
+                  type="button"
+                  className={
+                    shopOrderView ===
+                    'active'
+                      ? 'shop-primary'
+                      : 'shop-refresh'
+                  }
+                  onClick={() =>
+                    void switchShopOrderView(
+                      'active',
+                    )
+                  }
+                  disabled={
+                    shopLoading
+                  }
+                >
+                  Active Orders
+                </button>
+
+                <button
+                  type="button"
+                  className={
+                    shopOrderView ===
+                    'past'
+                      ? 'shop-primary'
+                      : 'shop-refresh'
+                  }
+                  onClick={() =>
+                    void switchShopOrderView(
+                      'past',
+                    )
+                  }
+                  disabled={
+                    shopLoading
+                  }
+                >
+                  Past Orders
+                </button>
+
+                <span
+                  style={{
+                    marginLeft:
+                      'auto',
+                    fontSize: 13,
+                    opacity: 0.7,
+                  }}
+                >
+                  {shopOrderPage.total}{' '}
+                  {shopOrderPage.total ===
+                  1
+                    ? 'order'
+                    : 'orders'}
+                </span>
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+
+                  void applyShopOrderSearch()
+                }}
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  alignItems:
+                    'center',
+                  marginBottom: 16,
+                }}
+              >
+                <input
+                  value={
+                    shopOrderSearchDraft
+                  }
+                  maxLength={120}
+                  placeholder="Search order #, customer, email, tracking…"
+                  onChange={(e) =>
+                    setShopOrderSearchDraft(
+                      e.target.value,
+                    )
+                  }
+                  style={{
+                    flex: '1 1 260px',
+                    minWidth: 0,
+                  }}
+                />
+
+                <button
+                  type="submit"
+                  className="shop-refresh"
+                  disabled={
+                    shopLoading
+                  }
+                >
+                  Search
+                </button>
+
+                {shopOrderSearch && (
+                  <button
+                    type="button"
+                    className="shop-refresh"
+                    disabled={
+                      shopLoading
+                    }
+                    onClick={() =>
+                      void clearShopOrderSearch()
+                    }
+                  >
+                    Clear
+                  </button>
+                )}
+
+                {shopOrderPage.hasMore && (
+                  <button
+                    type="button"
+                    className="shop-refresh"
+                    disabled={
+                      shopOrdersLoadingMore
+                    }
+                    onClick={() =>
+                      void loadMoreShopOrders()
+                    }
+                  >
+                    {shopOrdersLoadingMore
+                      ? 'Loading…'
+                      : 'Load 50 more'}
+                  </button>
+                )}
+              </form>
+
+              {shopOrders.length ===
+              0 ? (
+                <div className="shop-empty">
+                  {shopLoading
+                    ? 'Loading orders…'
+                    : shopOrderSearch
+                      ? 'No orders match this search.'
+                      : shopOrderView ===
+                          'past'
+                        ? 'No delivered orders yet.'
+                        : 'No active hardware orders.'}
+                </div>
+              ) : (
+                <div className="shop-order-list">
+                  {shopOrders.map(
+                    (order) => (
+                      <div
+                        className="shop-order-card"
+                        key={order.id}
+                      >
+                        <div className="shop-order-top">
+                          <div>
+                            <h4>
+                              {
+                                order.orderNumber
+                              }
+                            </h4>
+
+                            <p>
+                              {timeLabel(
+                                order.createdAt,
+                              )}
+                            </p>
+                          </div>
+
+                          <div className="shop-order-total">
+                            {shopMoney(
+                              order.totalCents,
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="shop-badges">
+                          <span
+                            className={`shop-badge ${
+                              order.paymentStatus ===
+                              'PAID'
+                                ? 'paid'
+                                : ''
+                            }`}
+                          >
+                            Payment ·{' '}
+                            {
+                              order.paymentStatus
+                            }
+                          </span>
+
+                          <span className="shop-badge">
+                            Fulfillment ·{' '}
+                            {
+                              order.fulfillmentStatus
+                            }
+                          </span>
+
+                          {order.confirmationEmailSentAt ? (
+                            <span className="shop-badge paid">
+                              Confirmation email · Sent
+                            </span>
+                          ) : order.confirmationEmailFailureMessage ? (
+                            <span className="shop-badge">
+                              Confirmation email · Issue
+                            </span>
+                          ) : (
+                            <span className="shop-badge">
+                              Confirmation email · Pending
+                            </span>
+                          )}
+
+                          {order.refundStatus &&
+                          order.refundStatus !==
+                            'NONE' && (
+                            <span
+                              className={
+                                order.refundStatus ===
+                                'SUCCEEDED'
+                                  ? 'shop-badge paid'
+                                  : 'shop-badge'
+                              }
+                            >
+                              Refund ·{' '}
+                              {
+                                order.refundStatus
+                              }
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="shop-order-info">
+                          <div>
+                            <small>
+                              Customer
+                            </small>
+
+                            <strong>
+                              {order.customerName ||
+                                '—'}
+                            </strong>
+                          </div>
+
+                          <div>
+                            <small>
+                              Email / phone
+                            </small>
+
+                            <span>
+                              {order.email ||
+                                '—'}
+                            </span>
+
+                            <span>
+                              {order.phone ||
+                                '—'}
+                            </span>
+                          </div>
+
+                          <div>
+                            <small>
+                              Shipping address
+                            </small>
+
+                            <span>
+                              {shopAddressLabel(
+                                order.shippingAddress,
+                              )}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="shop-order-items">
+                          {order.items?.map(
+                            (item) => (
+                              <div
+                                className="shop-order-item"
+                                key={item.id}
+                              >
+                                <span>
+                                  {
+                                    item.productName
+                                  }{' '}
+                                  ×{' '}
+                                  {
+                                    item.quantity
+                                  }
+                                </span>
+
+                                <strong>
+                                  {shopMoney(
+                                    item.unitPriceCents *
+                                      item.quantity,
+                                  )}
+                                </strong>
+                              </div>
+                            ),
+                          )}
+                        </div>
+
+                        <div className="shop-fulfillment">
+                          <label className="shop-field">
+                            <span>
+                              Status
+                            </span>
+
+                            <select
+                              disabled={
+                                [
+                                  'SUCCEEDED',
+                                  'PENDING',
+                                  'CREATING',
+                                ].includes(
+                                  order.refundStatus ||
+                                    '',
+                                )
+                              }
+                              value={
+                                order.fulfillmentStatus
+                              }
+                              onChange={(e) =>
+                                updateShopOrderLocal(
+                                  order.id,
+                                  {
+                                    fulfillmentStatus:
+                                      e
+                                        .target
+                                        .value,
+                                  },
+                                )
+                              }
+                            >
+                              <option value="UNFULFILLED">
+                                Unfulfilled
+                              </option>
+
+                              <option value="PROCESSING">
+                                Processing
+                              </option>
+
+                              <option value="SHIPPED">
+                                Shipped
+                              </option>
+
+                              <option value="DELIVERED">
+                                Delivered
+                              </option>
+                            </select>
+                          </label>
+
+                          <label className="shop-field">
+                            <span>
+                              Tracking number
+                            </span>
+
+                            <input
+                              value={
+                                order.trackingNumber ||
+                                ''
+                              }
+                              maxLength={
+                                120
+                              }
+                              placeholder="Optional"
+                              onChange={(e) =>
+                                updateShopOrderLocal(
+                                  order.id,
+                                  {
+                                    trackingNumber:
+                                      e
+                                        .target
+                                        .value,
+                                  },
+                                )
+                              }
+                            />
+                          </label>
+
+                          <button
+                            type="button"
+                            className="shop-primary"
+                            disabled={
+                              shopOrderBusyId ===
+                              order.id
+                            }
+                            onClick={() =>
+                              void saveShopFulfillment(
+                                order,
+                              )
+                            }
+                          >
+                            {shopOrderBusyId ===
+                            order.id
+                              ? 'Saving…'
+                              : 'Save'}
+                          </button>
+                        </div>
+
+
+                        {order.refundStatus &&
+                        order.refundStatus !==
+                          'NONE' && (
+                          <div
+                            style={{
+                              marginTop: 14,
+                              padding: 14,
+                              border:
+                                '1px solid rgba(0,0,0,.12)',
+                              borderRadius: 12,
+                            }}
+                          >
+                            <strong>
+                              Refund
+                            </strong>
+
+                            <div
+                              style={{
+                                display:
+                                  'grid',
+                                gap: 5,
+                                marginTop: 8,
+                                fontSize: 13,
+                              }}
+                            >
+                              <span>
+                                Status:{' '}
+                                {
+                                  order.refundStatus
+                                }
+                              </span>
+
+                              {order.refundAmountCents !=
+                                null && (
+                                <span>
+                                  Amount:{' '}
+                                  {shopMoney(
+                                    order.refundAmountCents,
+                                  )}
+                                </span>
+                              )}
+
+                              {order.refundReason && (
+                                <span>
+                                  Reason:{' '}
+                                  {
+                                    order.refundReason
+                                  }
+                                </span>
+                              )}
+
+                              {order.refundedAt && (
+                                <span>
+                                  Refunded:{' '}
+                                  {new Date(
+                                    order.refundedAt,
+                                  ).toLocaleString()}
+                                </span>
+                              )}
+
+                              {order.stripeRefundId && (
+                                <span>
+                                  Stripe refund:{' '}
+                                  {
+                                    order.stripeRefundId
+                                  }
+                                </span>
+                              )}
+
+                              {order.refundFailureMessage && (
+                                <span>
+                                  Issue:{' '}
+                                  {
+                                    order.refundFailureMessage
+                                  }
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {order.paymentStatus ===
+                          'PAID' &&
+                        ![
+                          'SUCCEEDED',
+                          'PENDING',
+                          'CREATING',
+                        ].includes(
+                          order.refundStatus ||
+                            'NONE',
+                        ) && (
+                          <div
+                            style={{
+                              marginTop: 14,
+                            }}
+                          >
+                            {shopRefundOrderId !==
+                            order.id ? (
+                              <button
+                                type="button"
+                                className="shop-refresh"
+                                onClick={() =>
+                                  openShopRefund(
+                                    order.id,
+                                  )
+                                }
+                              >
+                                {[
+                                  'FAILED',
+                                  'UNKNOWN',
+                                ].includes(
+                                  order.refundStatus ||
+                                    '',
+                                )
+                                  ? 'Retry refund'
+                                  : 'Refund customer'}
+                              </button>
+                            ) : (
+                              <div
+                                style={{
+                                  padding: 14,
+                                  border:
+                                    '1px solid rgba(180,0,0,.28)',
+                                  borderRadius: 12,
+                                  display:
+                                    'grid',
+                                  gap: 12,
+                                }}
+                              >
+                                <strong>
+                                  Full refund ·{' '}
+                                  {shopMoney(
+                                    order.totalCents,
+                                  )}
+                                </strong>
+
+                                <p
+                                  style={{
+                                    margin: 0,
+                                    fontSize: 13,
+                                  }}
+                                >
+                                  This refunds the
+                                  customer through Stripe.
+                                  Inventory will not be
+                                  restored automatically.
+                                </p>
+
+                                <label className="shop-field">
+                                  <span>
+                                    Refund reason
+                                  </span>
+
+                                  <textarea
+                                    value={
+                                      shopRefundReason
+                                    }
+                                    maxLength={
+                                      500
+                                    }
+                                    rows={3}
+                                    placeholder="Example: Customer requested a refund by email"
+                                    onChange={(e) =>
+                                      setShopRefundReason(
+                                        e
+                                          .target
+                                          .value,
+                                      )
+                                    }
+                                  />
+                                </label>
+
+                                <label
+                                  style={{
+                                    display:
+                                      'flex',
+                                    gap: 8,
+                                    alignItems:
+                                      'flex-start',
+                                    fontSize: 13,
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={
+                                      shopRefundConfirmed
+                                    }
+                                    onChange={(e) =>
+                                      setShopRefundConfirmed(
+                                        e
+                                          .target
+                                          .checked,
+                                      )
+                                    }
+                                  />
+
+                                  <span>
+                                    I understand this
+                                    sends a full Stripe
+                                    refund to the
+                                    customer.
+                                  </span>
+                                </label>
+
+                                <div
+                                  style={{
+                                    display:
+                                      'flex',
+                                    gap: 8,
+                                    flexWrap:
+                                      'wrap',
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    className="shop-primary"
+                                    disabled={
+                                      shopRefundBusyId ===
+                                        order.id ||
+                                      shopRefundReason
+                                        .trim()
+                                        .length <
+                                        3 ||
+                                      !shopRefundConfirmed
+                                    }
+                                    onClick={() =>
+                                      void refundShopOrder(
+                                        order,
+                                      )
+                                    }
+                                  >
+                                    {shopRefundBusyId ===
+                                    order.id
+                                      ? 'Refunding…'
+                                      : `Confirm refund ${shopMoney(
+                                          order.totalCents,
+                                        )}`}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    className="shop-refresh"
+                                    disabled={
+                                      shopRefundBusyId ===
+                                      order.id
+                                    }
+                                    onClick={
+                                      closeShopRefund
+                                    }
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ),
+                  )}
+                </div>
+              )}
+            </div>
           </section>
         )}
       </main>
@@ -6129,7 +9254,7 @@ export default function MaintenancePage() {
           color: #ffffff !important;
         }
 
-        /* Stripe processing-fee revenue */
+        /* Stripe platform funds */
         .revenue-panel {
           margin: 0 0 24px;
           overflow: hidden;

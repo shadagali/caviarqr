@@ -490,6 +490,19 @@ export class StripeService {
       const finalTotal =
         finalTotalCents / 100
 
+      /*
+       * Customer marketing consent is explicit and
+       * separate from the Stripe receipt email.
+       *
+       * Maintenance remains authoritative: even if a
+       * client sends true, a disabled cafe cannot collect
+       * a marketing opt-in.
+       */
+      const marketingOptIn =
+        data.marketingOptIn === true &&
+        business.emailMarketingEnabled ===
+          true
+
       const itemSignature =
         this.createItemSignature(
           safeItems,
@@ -515,6 +528,7 @@ export class StripeService {
               finalTotal,
             currency,
             itemSignature,
+            marketingOptIn,
           },
         )
 
@@ -581,6 +595,18 @@ export class StripeService {
         savedPendingOrder.currency =
           currency
 
+        savedPendingOrder.marketingOptIn =
+          marketingOptIn
+
+        savedPendingOrder.marketingConsentAt =
+          marketingOptIn
+            ? (
+                savedPendingOrder
+                  .marketingConsentAt ||
+                new Date()
+              )
+            : null
+
         savedPendingOrder.status =
           PendingOrderStatus.CREATED
 
@@ -626,6 +652,13 @@ export class StripeService {
                 finalTotal,
 
               currency,
+
+              marketingOptIn,
+
+              marketingConsentAt:
+                marketingOptIn
+                  ? new Date()
+                  : null,
 
               stripeSessionId:
                 null,
@@ -695,6 +728,7 @@ export class StripeService {
                 finalTotal,
               currency,
               itemSignature,
+            marketingOptIn,
             },
           )
         }
@@ -1945,6 +1979,7 @@ export class StripeService {
       total: number
       currency: string
       itemSignature: string
+      marketingOptIn: boolean
     },
   ) {
     const existingSignature =
@@ -1969,7 +2004,9 @@ export class StripeService {
       ).toLowerCase() !==
         expected.currency ||
       existingSignature !==
-        expected.itemSignature
+        expected.itemSignature ||
+      pendingOrder.marketingOptIn !==
+        expected.marketingOptIn
     ) {
       throw new BadRequestException(
         'checkoutRequestId was already used for a different checkout.',

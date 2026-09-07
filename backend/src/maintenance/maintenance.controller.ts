@@ -5,13 +5,26 @@ import {
   Post,
   Patch,
   Param,
+  Query,
   BadRequestException,
   UseGuards,
-} from '@nestjs/common'
+
+  UploadedFile,
+  UseInterceptors,} from '@nestjs/common'
+
+
+import { FileInterceptor } from '@nestjs/platform-express'
+import { diskStorage } from 'multer'
+import { randomBytes } from 'crypto'
+import { extname } from 'path'
+import { ShopService } from '../shop/shop.service'
+
 
 import { BusinessService } from '../business/business.service'
 import { MaintenanceService } from './maintenance.service'
+import { PlatformPayoutService } from './platform-payout.service'
 import { MaintenanceJwtGuard } from '../maintenance-auth/maintenance-jwt.guard'
+import { StandService } from '../stand/stand.service'
 
 @Controller('maintenance')
 @UseGuards(MaintenanceJwtGuard)
@@ -19,6 +32,10 @@ export class MaintenanceController {
   constructor(
     private readonly businessService: BusinessService,
     private readonly maintenanceService: MaintenanceService,
+    private readonly platformPayoutService: PlatformPayoutService,
+    private readonly standService: StandService,
+
+    private readonly shopService: ShopService,
   ) {}
 
   // =========================
@@ -39,7 +56,9 @@ export class MaintenanceController {
         .toLowerCase()
 
     const tables =
-      Number(body?.tables || 10)
+      Number(
+        body?.tables ?? 10,
+      )
 
     if (
       !storeCode ||
@@ -51,8 +70,8 @@ export class MaintenanceController {
     }
 
     if (
-      Number.isNaN(tables) ||
-      tables <= 0 ||
+      !Number.isInteger(tables) ||
+      tables < 1 ||
       tables > 100
     ) {
       throw new BadRequestException(
@@ -60,21 +79,74 @@ export class MaintenanceController {
       )
     }
 
-    let business =
-      await this.businessService.findByStoreCode(
-        storeCode,
-      )
-
-    if (!business) {
-      business =
-        await this.businessService.create({
+    /*
+     * Never reserve a code that is
+     * already owned by a real Business.
+     */
+    const existingBusiness =
+      await this.businessService
+        .findByStoreCode(
           storeCode,
-          email:
-            `${storeCode}@caviarqr.com`,
-          password:
-            'temp123',
+        )
+
+    if (existingBusiness) {
+      const frontendUrl =
+        process.env.FRONTEND_URL ||
+        process.env.WEB_URL ||
+        'http://localhost:3000'
+
+      const cleanFrontendUrl =
+        frontendUrl.replace(
+          /\/+$/,
+          '',
+        )
+
+      const links: {
+        table: number
+        url: string
+      }[] = []
+
+      for (
+        let i = 1;
+        i <= tables;
+        i++
+      ) {
+        links.push({
+          table: i,
+          url:
+            `${cleanFrontendUrl}/store/${storeCode}?table=${i}`,
         })
+      }
+
+      return {
+        success: true,
+
+        storeCode,
+
+        tables,
+
+        status:
+          'CLAIMED',
+
+        registered:
+          true,
+
+        alreadyExists:
+          true,
+
+        links,
+      }
     }
+
+    const allocation =
+      await this.standService
+        .createAllocation(
+          storeCode,
+          tables,
+        )
+
+    const stand =
+      allocation.stand
 
     const frontendUrl =
       process.env.FRONTEND_URL ||
@@ -94,27 +166,234 @@ export class MaintenanceController {
 
     for (
       let i = 1;
-      i <= tables;
+      i <= stand.tables;
       i++
     ) {
       links.push({
         table: i,
         url:
-          `${cleanFrontendUrl}/store/${storeCode}?table=${i}`,
+          `${cleanFrontendUrl}/store/${stand.storeCode}?table=${i}`,
       })
     }
 
     return {
       success: true,
-      storeCode,
-      tables,
+
+      storeCode:
+        stand.storeCode,
+
+      tables:
+        stand.tables,
+
+      status:
+        stand.status,
+
+      alreadyExists:
+        allocation.alreadyExists,
+
       links,
     }
   }
 
   // =========================
-  // 🔥 GET STORES
+  // SHOP PRODUCTS
   // =========================
+
+  @Get('shop/products')
+  async getShopProducts() {
+    return {
+      products:
+        await this.shopService
+          .getAdminProducts(),
+    }
+  }
+
+  @Post('shop/products')
+  async createShopProduct(
+    @Body()
+    body: Record<string, unknown>,
+  ) {
+    return this.shopService
+      .createProduct(body)
+  }
+
+  @Patch('shop/products/:id')
+  async updateShopProduct(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: Record<string, unknown>,
+  ) {
+    return this.shopService
+      .updateProduct(
+        Number(id),
+        body,
+      )
+  }
+
+  @Post('shop/products/:id/image')
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      {
+        storage: diskStorage({
+          destination:
+            './uploads',
+
+          filename: (
+            _req,
+            file,
+            cb,
+          ) => {
+            const originalExt =
+              extname(
+                file.originalname ||
+                  '',
+              )
+                .toLowerCase()
+
+            const allowedExt =
+              new Set([
+                '.jpg',
+                '.jpeg',
+                '.png',
+                '.webp',
+              ])
+
+            const safeExt =
+              allowedExt.has(
+                originalExt,
+              )
+                ? originalExt
+                : '.jpg'
+
+            cb(
+              null,
+              `shop-${randomBytes(16)
+                .toString('hex')}${safeExt}`,
+            )
+          },
+        }),
+
+        limits: {
+          fileSize:
+            5 * 1024 * 1024,
+        },
+
+        fileFilter: (
+          _req,
+          file,
+          cb,
+        ) => {
+          const allowed =
+            new Set([
+              'image/jpeg',
+              'image/png',
+              'image/webp',
+            ])
+
+          if (
+            !allowed.has(
+              file.mimetype,
+            )
+          ) {
+            return cb(
+              new BadRequestException(
+                'Only JPG, PNG and WebP images are allowed.',
+              ),
+              false,
+            )
+          }
+
+          cb(
+            null,
+            true,
+          )
+        },
+      },
+    ),
+  )
+  async uploadShopProductImage(
+    @Param('id')
+    id: string,
+
+    @UploadedFile()
+    file: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException(
+        'Product image is required.',
+      )
+    }
+
+    return this.shopService
+      .setProductImage(
+        Number(id),
+        `/uploads/${file.filename}`,
+      )
+  }
+
+  // =========================
+  // SHOP ORDERS
+  // =========================
+
+  @Get('shop/orders')
+  async getShopOrders(
+    @Query('view')
+    view?: string,
+
+    @Query('limit')
+    limit?: string,
+
+    @Query('cursor')
+    cursor?: string,
+
+    @Query('search')
+    search?: string,
+  ) {
+    return this.shopService
+      .getOrders({
+        view,
+        limit,
+        cursor,
+        search,
+      })
+  }
+
+  @Patch(
+    'shop/orders/:id/fulfillment',
+  )
+  async updateShopOrderFulfillment(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: Record<string, unknown>,
+  ) {
+    return this.shopService
+      .updateFulfillment(
+        Number(id),
+        body,
+      )
+  }
+
+  @Post(
+    'shop/orders/:id/refund',
+  )
+  async refundShopOrder(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: Record<string, unknown>,
+  ) {
+    return this.shopService
+      .refundHardwareOrder(
+        Number(id),
+        body,
+      )
+  }
 
   @Get('stores')
   async getStores() {
@@ -268,6 +547,51 @@ export class MaintenanceController {
   }
 
   // =========================
+  // 📧 EMAIL MARKETING ACCESS
+  // =========================
+
+  @Patch(
+    'cafe/:storeCode/email-marketing',
+  )
+  async updateEmailMarketing(
+    @Param('storeCode')
+    storeCode: string,
+
+    @Body()
+    body: {
+      enabled?: unknown
+    },
+  ) {
+    const cleanStoreCode =
+      String(
+        storeCode || '',
+      )
+        .trim()
+        .toLowerCase()
+
+    if (!cleanStoreCode) {
+      throw new BadRequestException(
+        'Valid store code is required.',
+      )
+    }
+
+    if (
+      typeof body?.enabled !==
+      'boolean'
+    ) {
+      throw new BadRequestException(
+        'Email marketing enabled must be true or false.',
+      )
+    }
+
+    return this.maintenanceService
+      .updateEmailMarketingEnabled(
+        cleanStoreCode,
+        body.enabled,
+      )
+  }
+
+  // =========================
   // 🔥 RESOLVE ISSUE
   // =========================
 
@@ -363,19 +687,34 @@ export class MaintenanceController {
     return this.maintenanceService.getPlatformBalance()
   }
 
+  @Get('platform-revenue')
+  async getPlatformRevenue() {
+    return this.platformPayoutService
+      .getPlatformRevenue()
+  }
+
   // =========================
-  // 🔥 WITHDRAW CAVIARQR COMMISSION
+  // CAVIARQR PLATFORM PAYOUT
   // =========================
 
   @Post('platform-withdraw')
   async withdrawPlatformBalance(
     @Body()
     body: {
-      amount?: number
+      amountCents?: unknown
+      idempotencyKey?: unknown
     },
   ) {
-    return this.maintenanceService.withdrawPlatformBalance(
-      body?.amount,
-    )
+    return this.platformPayoutService
+      .withdrawPlatformBalance({
+        amountCents:
+          body?.amountCents,
+
+        idempotencyKey:
+          body?.idempotencyKey,
+
+        requestedBy:
+          'MAINTENANCE_ADMIN',
+      })
   }
 }

@@ -1828,6 +1828,42 @@ CaviarQR Support`
   }
 
   // =========================
+  // 📧 EMAIL MARKETING ACCESS
+  // =========================
+
+  async updateEmailMarketingEnabled(
+    storeCode: string,
+    enabled: boolean,
+  ) {
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          storeCode,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Cafe not found',
+      )
+    }
+
+    business.emailMarketingEnabled =
+      enabled === true
+
+    await this.businessRepo.save(
+      business,
+    )
+
+    return {
+      success: true,
+
+      emailMarketingEnabled:
+        business.emailMarketingEnabled,
+    }
+  }
+
+  // =========================
   // 🔥 CAVIARQR COMMISSION BALANCE
   // =========================
 

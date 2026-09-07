@@ -69,6 +69,13 @@ export default function KitchenPage() {
     setNewDescription] =
     useState('')
 
+  const [isCreatingItem,
+    setIsCreatingItem] =
+    useState(false)
+
+  const createItemLockRef =
+    useRef(false)
+
   const socketRef = useRef<any>(null)
 
   const ackedOrdersRef =
@@ -714,8 +721,180 @@ export default function KitchenPage() {
       }
     }
 
+  const prepareMenuImage =
+    async (
+      file: File,
+    ): Promise<File> => {
+      if (
+        !file.type.startsWith(
+          'image/',
+        )
+      ) {
+        throw new Error(
+          'Please choose an image file.',
+        )
+      }
+
+      const objectUrl =
+        URL.createObjectURL(file)
+
+      try {
+        const image =
+          await new Promise<HTMLImageElement>(
+            (
+              resolve,
+              reject,
+            ) => {
+              const img =
+                new Image()
+
+              img.onload = () =>
+                resolve(img)
+
+              img.onerror = () =>
+                reject(
+                  new Error(
+                    'This photo format could not be opened.',
+                  ),
+                )
+
+              img.src =
+                objectUrl
+            },
+          )
+
+        const maxDimension =
+          1600
+
+        const scale =
+          Math.min(
+            1,
+            maxDimension /
+              Math.max(
+                image.width,
+                image.height,
+              ),
+          )
+
+        const width =
+          Math.max(
+            1,
+            Math.round(
+              image.width *
+                scale,
+            ),
+          )
+
+        const height =
+          Math.max(
+            1,
+            Math.round(
+              image.height *
+                scale,
+            ),
+          )
+
+        const canvas =
+          document.createElement(
+            'canvas',
+          )
+
+        canvas.width =
+          width
+
+        canvas.height =
+          height
+
+        const context =
+          canvas.getContext(
+            '2d',
+          )
+
+        if (!context) {
+          throw new Error(
+            'Could not prepare photo.',
+          )
+        }
+
+        context.drawImage(
+          image,
+          0,
+          0,
+          width,
+          height,
+        )
+
+        const blob =
+          await new Promise<Blob | null>(
+            (resolve) => {
+              canvas.toBlob(
+                resolve,
+                'image/jpeg',
+                0.82,
+              )
+            },
+          )
+
+        if (!blob) {
+          throw new Error(
+            'Could not prepare photo.',
+          )
+        }
+
+        const baseName =
+          file.name
+            .replace(
+              /\.[^.]+$/,
+              '',
+            )
+            .replace(
+              /[^a-zA-Z0-9_-]/g,
+              '-',
+            ) ||
+          'menu-image'
+
+        return new File(
+          [blob],
+          `${baseName}.jpg`,
+          {
+            type:
+              'image/jpeg',
+            lastModified:
+              Date.now(),
+          },
+        )
+      } catch (error) {
+        /*
+         * Some mobile browsers may not decode
+         * every camera format in Canvas.
+         * Smaller originals can still be sent
+         * directly because the backend accepts them.
+         */
+        if (
+          file.size <=
+          8 * 1024 * 1024
+        ) {
+          return file
+        }
+
+        throw new Error(
+          'This photo is too large and could not be optimized. Try a smaller photo or a screenshot.',
+        )
+      } finally {
+        URL.revokeObjectURL(
+          objectUrl,
+        )
+      }
+    }
+
   const createItem =
     async () => {
+      if (
+        createItemLockRef.current
+      ) {
+        return
+      }
+
       if (!newName.trim()) {
         alert("Name required")
         return
@@ -729,6 +908,10 @@ export default function KitchenPage() {
         return
       }
 
+      createItemLockRef.current =
+        true
+      setIsCreatingItem(true)
+
       try {
         let imageUrl = ''
 
@@ -736,9 +919,14 @@ export default function KitchenPage() {
           const fd =
             new FormData()
 
+          const imageForUpload =
+            await prepareMenuImage(
+              newImage,
+            )
+
           fd.append(
             'file',
-            newImage,
+            imageForUpload,
           )
 
           const upload =
@@ -789,11 +977,25 @@ export default function KitchenPage() {
           loadMenu(),
           load(),
         ])
-      } catch (err) {
-        console.log(err)
-        alert(
-          'Failed to create item',
+      } catch (err: any) {
+        console.error(
+          'CREATE MENU ITEM ERROR',
+          err,
         )
+
+        const message =
+          err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          err?.message ||
+          'Failed to create item'
+
+        alert(
+          `Failed to create item: ${message}`,
+        )
+      } finally {
+        createItemLockRef.current =
+          false
+        setIsCreatingItem(false)
       }
     }
 
@@ -1747,13 +1949,28 @@ export default function KitchenPage() {
 
             <input
               type="file"
-              onChange={(e) =>
-                setNewImage(
-                  e.target
-                    .files?.[0] ||
-                    null,
-                )
-              }
+              accept="image/*"
+              onChange={(e) => {
+                const file =
+                  e.target.files?.[0] ||
+                  null
+
+                if (
+                  file &&
+                  !file.type.startsWith(
+                    'image/',
+                  )
+                ) {
+                  alert(
+                    'Please choose an image file.',
+                  )
+                  e.target.value = ''
+                  setNewImage(null)
+                  return
+                }
+
+                setNewImage(file)
+              }}
             />
 
             {newImage && (
@@ -1763,14 +1980,34 @@ export default function KitchenPage() {
             )}
 
             <button
+              type="button"
+              disabled={
+                isCreatingItem
+              }
               onClick={
                 createItem
               }
+              style={{
+                opacity:
+                  isCreatingItem
+                    ? 0.6
+                    : 1,
+                cursor:
+                  isCreatingItem
+                    ? 'not-allowed'
+                    : 'pointer',
+              }}
             >
-              Create Item
+              {isCreatingItem
+                ? 'Creating…'
+                : 'Create Item'}
             </button>
 
             <button
+              type="button"
+              disabled={
+                isCreatingItem
+              }
               onClick={() =>
                 setShowAddModal(
                   false,

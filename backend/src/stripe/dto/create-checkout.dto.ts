@@ -2,6 +2,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -58,6 +59,14 @@ export class CreateCheckoutDto {
 
   @IsUUID()
   checkoutRequestId: string
+
+  /*
+   * Explicit restaurant marketing consent.
+   * Receipt email consent is completely separate.
+   */
+  @IsOptional()
+  @IsBoolean()
+  marketingOptIn?: boolean
 
   @IsArray()
   @ArrayMinSize(1)

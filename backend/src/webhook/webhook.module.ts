@@ -10,10 +10,14 @@ import { PendingOrder } from '../pending-order/pending-order.entity'
 import { SupportThread } from '../support/support-thread.entity'
 
 import { OrderModule } from '../order/order.module'
+import { MarketingModule } from '../marketing/marketing.module'
+import { ShopModule } from '../shop/shop.module'
 
 @Module({
   imports: [
     OrderModule,
+    MarketingModule,
+    ShopModule,
 
     TypeOrmModule.forFeature([
       Order,

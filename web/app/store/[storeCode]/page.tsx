@@ -573,10 +573,19 @@ export default function StorePage() {
   const search = useSearchParams()
 
   const storeCode = params.storeCode as string
-  const table = Number(search.get("table") || 1)
+
+  const rawTable =
+    Number(search.get("table") || 1)
+
+  const table =
+    Number.isInteger(rawTable) &&
+    rawTable >= 1
+      ? rawTable
+      : 1
 
   const [menu, setMenu] = useState<any[]>([])
   const [business, setBusiness] = useState<any>(null)
+  const [stand, setStand] = useState<any>(null)
   const [cart, setCart] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [scrolled, setScrolled] = useState(false)
@@ -605,10 +614,16 @@ export default function StorePage() {
         `${process.env.NEXT_PUBLIC_API_URL}/public/store/${storeCode}`,
       )
 
-      setBusiness(res.data.business || null)
+      setStand(
+        res.data?.stand || null,
+      )
+
+      setBusiness(
+        res.data?.business || null,
+      )
 
       setMenu(
-        Array.isArray(res.data.menu)
+        Array.isArray(res.data?.menu)
           ? res.data.menu
           : [],
       )
@@ -633,6 +648,21 @@ export default function StorePage() {
             await axios.get(
               `${process.env.NEXT_PUBLIC_API_URL}/public/store/${storeCode}`,
             )
+
+          if (
+            res.data?.mode === "stand"
+          ) {
+            setStand(
+              res.data?.stand || null,
+            )
+
+            setBusiness(null)
+            setMenu([])
+
+            return
+          }
+
+          setStand(null)
 
           setBusiness(
             (prev: any) => ({
@@ -924,6 +954,173 @@ export default function StorePage() {
     cart.length > 0 &&
     business?.isOpen === true &&
     business?.paymentsReady !== false
+
+  if (
+    !loading &&
+    stand &&
+    !business
+  ) {
+    const totalTables =
+      Number(stand?.tables || 0)
+
+    const tableValid =
+      Number.isInteger(table) &&
+      table >= 1 &&
+      table <= totalTables
+
+
+
+    return (
+      <>
+        <style>{css}</style>
+
+        <div
+          style={{
+            minHeight: "100vh",
+            background: "#f7f7f5",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+            fontFamily:
+              '"Plus Jakarta Sans", sans-serif',
+          }}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 440,
+              background: "#fff",
+              borderRadius: 28,
+              padding: "42px 28px",
+              textAlign: "center",
+              boxShadow:
+                "0 18px 60px rgba(0,0,0,.08)",
+              border:
+                "1px solid rgba(0,0,0,.06)",
+            }}
+          >
+            <div
+              style={{
+                width: 68,
+                height: 68,
+                borderRadius: 22,
+                background: "#111",
+                color: "#fff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto 24px",
+                fontSize: 30,
+                fontWeight: 800,
+              }}
+            >
+              C
+            </div>
+
+            {!tableValid ? (
+              <>
+                <div
+                  style={{
+                    fontSize: 24,
+                    fontWeight: 800,
+                    color: "#111",
+                    marginBottom: 12,
+                  }}
+                >
+                  Invalid Table
+                </div>
+
+                <div
+                  style={{
+                    color: "#666",
+                    lineHeight: 1.6,
+                    fontSize: 15,
+                  }}
+                >
+                  This table number is not assigned
+                  to this CaviarQR stand set.
+                </div>
+              </>
+            ) : (
+              <>
+                <div
+                  style={{
+                    fontSize: 25,
+                    fontWeight: 800,
+                    color: "#111",
+                    marginBottom: 10,
+                    letterSpacing: "-0.5px",
+                  }}
+                >
+                  CaviarQR
+                </div>
+
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "9px 15px",
+                    borderRadius: 999,
+                    background: "#f1f1ef",
+                    color: "#111",
+                    fontWeight: 700,
+                    fontSize: 15,
+                    marginTop: 10,
+                    marginBottom: 22,
+                  }}
+                >
+                  🪑 Table {table}
+                </div>
+
+                <div
+                  style={{
+                    color: "#666",
+                    lineHeight: 1.65,
+                    fontSize: 15,
+                  }}
+                >
+                  {null}
+                </div>
+              </>
+            )}
+
+            <div
+              style={{
+                height: 1,
+                background: "#ececea",
+                margin: "28px 0 20px",
+              }}
+            />
+
+            <div
+              style={{
+                fontSize: 12,
+                color: "#888",
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                marginBottom: 6,
+                fontWeight: 700,
+              }}
+            >
+              Store Code
+            </div>
+
+            <div
+              style={{
+                fontSize: 17,
+                color: "#111",
+                fontWeight: 700,
+              }}
+            >
+              {stand.storeCode}
+            </div>
+          </div>
+        </div>
+      </>
+    )
+  }
 
   return (
     <>

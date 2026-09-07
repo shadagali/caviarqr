@@ -193,6 +193,22 @@ export class PendingOrder {
   })
   failureReason: string | null
 
+  /*
+   * Marketing consent is separate from
+   * the customer's receipt email.
+   */
+  @Column({
+    type: 'boolean',
+    default: false,
+  })
+  marketingOptIn: boolean
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  marketingConsentAt: Date | null
+
   @Column({
     type: 'timestamptz',
     nullable: true,
