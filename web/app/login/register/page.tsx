@@ -204,6 +204,9 @@ export default function RegisterPage() {
   const [loading, setLoading] =
     useState(false)
 
+  const [termsAccepted, setTermsAccepted] =
+    useState(false)
+
   const handle = async () => {
     if (loading) {
       return
@@ -224,6 +227,13 @@ export default function RegisterPage() {
     ) {
       setError(
         'Store code, email and password are required',
+      )
+      return
+    }
+
+    if (!termsAccepted) {
+      setError(
+        'You must agree to the Terms of Service and acknowledge the Privacy Policy',
       )
       return
     }
@@ -433,12 +443,66 @@ export default function RegisterPage() {
             </div>
           </div>
 
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              margin: '18px 0',
+              fontSize: 14,
+              lineHeight: 1.5,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={termsAccepted}
+              disabled={loading}
+              onChange={(e) =>
+                setTermsAccepted(
+                  e.target.checked,
+                )
+              }
+              style={{
+                marginTop: 3,
+                width: 16,
+                height: 16,
+                flexShrink: 0,
+              }}
+            />
+
+            <span>
+              I agree to the{' '}
+              <a
+                href="/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) =>
+                  e.stopPropagation()
+                }
+              >
+                CaviarQR Terms of Service
+              </a>{' '}
+              and acknowledge the{' '}
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) =>
+                  e.stopPropagation()
+                }
+              >
+                Privacy Policy
+              </a>.
+            </span>
+          </label>
+
           <button
             className="reg-btn"
             onClick={() => {
               void handle()
             }}
-            disabled={loading}
+            disabled={loading || !termsAccepted}
           >
             {loading
               ? 'Creating account…'
