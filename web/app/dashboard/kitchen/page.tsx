@@ -8,6 +8,7 @@ import {
 import axios from "axios"
 import { io } from "socket.io-client"
 import { useRouter } from "next/navigation"
+import CustomizationBuilder from "../../../components/CustomizationBuilder"
 
 export default function KitchenPage() {
   const router = useRouter()
@@ -83,6 +84,23 @@ export default function KitchenPage() {
   const [newDescription,
     setNewDescription] =
     useState('')
+
+  const [newCustomizations, setNewCustomizations] =
+    useState<any[]>([])
+
+  const [editingMenuItem, setEditingMenuItem] =
+    useState<any | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editPrice, setEditPrice] = useState('')
+  const [editItemDiscount, setEditItemDiscount] = useState('0')
+  const [editCategory, setEditCategory] = useState('')
+  const [editDescription, setEditDescription] = useState('')
+  const [editCustomizations, setEditCustomizations] =
+    useState<any[]>([])
+  const [editImage, setEditImage] = useState<File | null>(null)
+  const [removeEditImage, setRemoveEditImage] = useState(false)
+  const [isSavingMenuItem, setIsSavingMenuItem] = useState(false)
+  const editMenuItemLockRef = useRef(false)
 
   const [isCreatingItem,
     setIsCreatingItem] =
@@ -1013,6 +1031,149 @@ export default function KitchenPage() {
       }
     }
 
+  const prepareMenuCustomizations = (value: any[]): any[] => {
+    if (!Array.isArray(value)) return []
+
+    return value.map((group: any) => {
+      const name = String(group?.name || '').trim()
+      const options = Array.isArray(group?.options)
+        ? group.options
+        : []
+
+      if (!name || options.length === 0) {
+        throw new Error('Each customization needs a group name and at least one option.')
+      }
+
+      const cleanedOptions = options.map((option: any) => {
+        const optionName = String(option?.name || '').trim()
+        const priceDelta = Number(option?.priceDelta ?? 0)
+
+        if (!optionName || !Number.isFinite(priceDelta) || priceDelta < 0) {
+          throw new Error('Every customization option needs a name and a valid non-negative price.')
+        }
+
+        return { ...option, name: optionName, priceDelta }
+      })
+
+      const multiple = group?.multiple === true
+      const maxSelect = multiple ? Number(group?.maxSelect) : 1
+      if (!Number.isInteger(maxSelect) || maxSelect < 1 || maxSelect > cleanedOptions.length) {
+        throw new Error(`Invalid maximum selections for "${name}".`)
+      }
+
+      return {
+        ...group,
+        name,
+        required: group?.required === true,
+        multiple,
+        maxSelect,
+        options: cleanedOptions,
+      }
+    })
+  }
+
+  const uploadKitchenMenuImage = async (file: File): Promise<string> => {
+    const fd = new FormData()
+    const imageForUpload = await prepareMenuImage(file)
+    fd.append('file', imageForUpload)
+
+    const uploaded = await axios.post(
+      `${process.env.NEXT_PUBLIC_API_URL}/menu/upload`,
+      fd,
+      authConfig(),
+    )
+    if (!uploaded.data?.url) throw new Error('Menu image upload failed.')
+    return uploaded.data.url
+  }
+
+  const openEditMenuItem = (item: any) => {
+    setEditingMenuItem(item)
+    setEditName(String(item.name || ''))
+    setEditPrice(String(item.price ?? ''))
+    setEditItemDiscount(String(item.discount ?? 0))
+    setEditCategory(String(item.category || ''))
+    setEditDescription(String(item.description || ''))
+    setEditCustomizations(
+      Array.isArray(item.customizations)
+        ? item.customizations.map((group: any) => ({
+            ...group,
+            options: Array.isArray(group.options)
+              ? group.options.map((option: any) => ({ ...option }))
+              : [],
+          }))
+        : [],
+    )
+    setEditImage(null)
+    setRemoveEditImage(false)
+  }
+
+  const saveEditedMenuItem = async () => {
+    if (!editingMenuItem || editMenuItemLockRef.current) return
+
+    const name = editName.trim()
+    const price = Number(editPrice)
+    const discount = Number(editItemDiscount)
+
+    if (!name || !Number.isFinite(price) || price <= 0) {
+      alert('Enter an item name and a valid price greater than zero.')
+      return
+    }
+    if (!Number.isFinite(discount) || discount < 0 || discount >= 100) {
+      alert('Discount must be between 0 and less than 100.')
+      return
+    }
+
+    let customizations: any[]
+    try {
+      customizations = prepareMenuCustomizations(editCustomizations)
+    } catch (error: any) {
+      alert(error?.message || 'Invalid customizations.')
+      return
+    }
+
+    editMenuItemLockRef.current = true
+    setIsSavingMenuItem(true)
+
+    try {
+      const changes: Record<string, any> = {
+        name,
+        price,
+        discount,
+        category: editCategory.trim(),
+        description: editDescription.trim(),
+        customizations,
+      }
+
+      // Omit imageUrl to preserve the current image when no photo is selected.
+      if (editImage) {
+        changes.imageUrl = await uploadKitchenMenuImage(editImage)
+      } else if (removeEditImage) {
+        changes.imageUrl = ''
+      }
+
+      await axios.patch(
+        `${process.env.NEXT_PUBLIC_API_URL}/menu/edit/${editingMenuItem.id}`,
+        changes,
+        authConfig(),
+      )
+
+      setEditingMenuItem(null)
+      setEditImage(null)
+      await loadMenu()
+    } catch (error: any) {
+      console.error('UPDATE MENU ITEM ERROR', error)
+      const message =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        'Failed to update item'
+      alert(`Failed to update item: ${Array.isArray(message) ? message.join(', ') : message}`)
+    } finally {
+      editMenuItemLockRef.current = false
+      setIsSavingMenuItem(false)
+    }
+  }
+
   const createItem =
     async () => {
       if (
@@ -1028,9 +1189,24 @@ export default function KitchenPage() {
 
       if (
         !newPrice ||
+        !Number.isFinite(Number(newPrice)) ||
         Number(newPrice) <= 0
       ) {
         alert("Valid price required")
+        return
+      }
+
+      const discount = Number(newDiscount)
+      if (!Number.isFinite(discount) || discount < 0 || discount >= 100) {
+        alert('Discount must be between 0 and less than 100.')
+        return
+      }
+
+      let customizations: any[]
+      try {
+        customizations = prepareMenuCustomizations(newCustomizations)
+      } catch (error: any) {
+        alert(error?.message || 'Invalid customizations.')
         return
       }
 
@@ -1042,28 +1218,7 @@ export default function KitchenPage() {
         let imageUrl = ''
 
         if (newImage) {
-          const fd =
-            new FormData()
-
-          const imageForUpload =
-            await prepareMenuImage(
-              newImage,
-            )
-
-          fd.append(
-            'file',
-            imageForUpload,
-          )
-
-          const upload =
-            await axios.post(
-              `${process.env.NEXT_PUBLIC_API_URL}/menu/upload`,
-              fd,
-              authConfig(),
-            )
-
-          imageUrl =
-            upload.data.url
+          imageUrl = await uploadKitchenMenuImage(newImage)
         }
 
         await axios.post(
@@ -1084,6 +1239,7 @@ export default function KitchenPage() {
             description:
               newDescription,
             imageUrl,
+            customizations,
           },
           authConfig(),
         )
@@ -1098,6 +1254,7 @@ export default function KitchenPage() {
         setNewDescription('')
         setNewCategory('food')
         setNewImage(null)
+        setNewCustomizations([])
 
         await Promise.all([
           loadMenu(),
@@ -2160,6 +2317,13 @@ export default function KitchenPage() {
                     </button>
 
                     <button
+                      type="button"
+                      onClick={() => openEditMenuItem(item)}
+                    >
+                      Edit item
+                    </button>
+
+                    <button
                     onClick={() =>
                       toggleHide(
                         item.id,
@@ -2341,6 +2505,131 @@ export default function KitchenPage() {
           </div>
         )}
 
+      {editingMenuItem && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Edit ${editingMenuItem.name}`}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1100,
+            background: 'rgba(0,0,0,.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              width: '100%', maxWidth: 540, maxHeight: '90vh',
+              overflowY: 'auto', boxSizing: 'border-box',
+              background: '#fff', borderRadius: 12, padding: 20,
+              display: 'flex', flexDirection: 'column', gap: 12,
+            }}
+          >
+            <h3 style={{ margin: 0 }}>Edit Menu Item</h3>
+            <label>
+              Item name
+              <input
+                style={{ display: 'block', width: '100%', boxSizing: 'border-box' }}
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+              />
+            </label>
+            <label>
+              Price ($)
+              <input
+                style={{ display: 'block', width: '100%', boxSizing: 'border-box' }}
+                type="number" min="0.01" step="0.01"
+                value={editPrice}
+                onChange={(e) => setEditPrice(e.target.value)}
+              />
+            </label>
+            <label>
+              Discount (%)
+              <input
+                style={{ display: 'block', width: '100%', boxSizing: 'border-box' }}
+                type="number" min="0" max="99.99" step="0.01"
+                value={editItemDiscount}
+                onChange={(e) => setEditItemDiscount(e.target.value)}
+              />
+            </label>
+            <label>
+              Category
+              <input
+                style={{ display: 'block', width: '100%', boxSizing: 'border-box' }}
+                value={editCategory}
+                onChange={(e) => setEditCategory(e.target.value)}
+              />
+            </label>
+            <label>
+              Description
+              <textarea
+                style={{ display: 'block', width: '100%', boxSizing: 'border-box', minHeight: 95 }}
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+              />
+            </label>
+            {editingMenuItem.imageUrl && !removeEditImage && !editImage && (
+              <div>
+                <div style={{ fontSize: 12, marginBottom: 6 }}>Current menu image</div>
+                <img
+                  src={`${process.env.NEXT_PUBLIC_API_URL}${editingMenuItem.imageUrl}`}
+                  alt={editingMenuItem.name}
+                  style={{ maxWidth: 180, maxHeight: 130, objectFit: 'cover', borderRadius: 8 }}
+                />
+              </div>
+            )}
+            <label>
+              Replace menu image
+              <input
+                type="file" accept="image/jpeg,image/png,image/webp"
+                style={{ display: 'block', marginTop: 6 }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0] || null
+                  if (file && !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                    alert('Choose a JPG, PNG or WebP image.')
+                    e.target.value = ''
+                    return
+                  }
+                  setEditImage(file)
+                  if (file) setRemoveEditImage(false)
+                }}
+              />
+            </label>
+            {editImage && <div style={{ fontSize: 12 }}>New image: {editImage.name}</div>}
+            {editingMenuItem.imageUrl && (
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={removeEditImage}
+                  onChange={(e) => {
+                    setRemoveEditImage(e.target.checked)
+                    if (e.target.checked) setEditImage(null)
+                  }}
+                />
+                Remove current menu image
+              </label>
+            )}
+            <CustomizationBuilder
+              value={editCustomizations}
+              onChange={setEditCustomizations}
+              currencySymbol="$"
+            />
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button type="button" disabled={isSavingMenuItem} onClick={() => void saveEditedMenuItem()}>
+                {isSavingMenuItem ? 'Saving…' : 'Save Changes'}
+              </button>
+              <button
+                type="button"
+                disabled={isSavingMenuItem}
+                onClick={() => setEditingMenuItem(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showAddModal && (
         <div
           style={{
@@ -2353,6 +2642,7 @@ export default function KitchenPage() {
               'center',
             alignItems:
               'center',
+            padding: 16,
             zIndex: 999,
           }}
         >
@@ -2362,7 +2652,11 @@ export default function KitchenPage() {
                 'white',
               padding: 20,
               borderRadius: 12,
-              width: 400,
+              width: '100%',
+              maxWidth: 540,
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              boxSizing: 'border-box',
               display: 'flex',
               flexDirection:
                 'column',
@@ -2458,6 +2752,12 @@ export default function KitchenPage() {
                 {newImage.name}
               </p>
             )}
+
+            <CustomizationBuilder
+              value={newCustomizations}
+              onChange={setNewCustomizations}
+              currencySymbol="$"
+            />
 
             <button
               type="button"

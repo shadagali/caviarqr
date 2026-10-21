@@ -87,6 +87,28 @@ export class MenuController {
   }
 
   // =========================
+  // EDIT A MENU ITEM (SAME RESTAURANT ONLY)
+  // =========================
+  @Patch('edit/:id')
+  @UseGuards(MenuAccessGuard)
+  async edit(
+    @Req() request: MenuAccessRequest,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    const menuItemId = Number(id)
+    if (!Number.isInteger(menuItemId) || menuItemId <= 0) {
+      throw new BadRequestException('Invalid menu item ID.')
+    }
+
+    return this.menuService.updateItem(
+      menuItemId,
+      request.menuAccess!.businessId,
+      body,
+    )
+  }
+
+  // =========================
   // 🔥 GET MENU
   // =========================
   @Get(':businessId')

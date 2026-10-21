@@ -54,6 +54,76 @@ export class MenuService {
   }
 
   // =========================
+  // UPDATE MENU ITEM (tenant-scoped)
+  // =========================
+  async updateItem(id: number, businessId: number, data: any) {
+    const item = await this.menuRepo.findOne({ where: { id, businessId } })
+    if (!item) {
+      throw new BadRequestException('Menu item not found')
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new BadRequestException('Invalid menu item changes.')
+    }
+
+    if (data.name !== undefined) {
+      if (typeof data.name !== 'string' || !data.name.trim()) {
+        throw new BadRequestException('Name is required.')
+      }
+      item.name = data.name.trim()
+    }
+    if (data.price !== undefined) {
+      const price = Number(data.price)
+      if (!Number.isFinite(price) || price <= 0) {
+        throw new BadRequestException('Price must be greater than zero.')
+      }
+      item.price = price
+    }
+    if (data.discount !== undefined) {
+      const discount = Number(data.discount)
+      if (!Number.isFinite(discount) || discount < 0 || discount >= 100) {
+        throw new BadRequestException('Discount must be between 0 and less than 100.')
+      }
+      item.discount = discount
+    }
+    if (data.category !== undefined) {
+      if (typeof data.category !== 'string') {
+        throw new BadRequestException('Invalid category.')
+      }
+      item.category = data.category.trim() || 'Menu'
+    }
+    if (data.description !== undefined) {
+      if (typeof data.description !== 'string') {
+        throw new BadRequestException('Invalid description.')
+      }
+      item.description = data.description.trim()
+    }
+    if (data.customizations !== undefined) {
+      if (!Array.isArray(data.customizations)) {
+        throw new BadRequestException('Customizations must be an array.')
+      }
+      item.customizations = normalizeCustomizationsForSave(data.customizations)
+    }
+    // Only a new uploaded image path or an explicit removal is allowed.
+    // Omitted imageUrl means leave the current image unchanged.
+    if (data.imageUrl !== undefined) {
+      if (data.imageUrl === null || data.imageUrl === '') {
+        item.imageUrl = ''
+      } else if (
+        typeof data.imageUrl === 'string' &&
+        /^\/uploads\/[A-Za-z0-9._-]+\.(?:jpe?g|png|webp)$/i.test(data.imageUrl) &&
+        !data.imageUrl.includes('..')
+      ) {
+        item.imageUrl = data.imageUrl
+      } else {
+        throw new BadRequestException('Invalid menu image URL.')
+      }
+    }
+
+    // Never modify businessId, stock/visibility flags or historical orders here.
+    return this.menuRepo.save(item)
+  }
+
+  // =========================
   // 🔥 GET BUSINESS MENU
   // =========================
   async getByBusiness(
