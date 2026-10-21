@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import axios from "axios"
 import CustomizationBuilder from "../../../components/CustomizationBuilder"
 import { apiFetch } from "../../../lib/api"
@@ -700,8 +700,9 @@ const css = `
   }
 
   .item-btn:hover { background: var(--surface2); }
-  .item-btn + .item-btn { border-left: 1px solid var(--border); color: var(--red); }
-  .item-btn + .item-btn:hover { background: var(--red-bg); }
+  .item-btn + .item-btn { border-left: 1px solid var(--border); }
+  .item-btn.item-danger { color: var(--red); }
+  .item-btn.item-danger:hover { background: var(--red-bg); }
 
   .cat-label {
     font-size: 10.5px;
@@ -888,6 +889,20 @@ export default function OwnerPage() {
   const [file, setFile] = useState<any>(null)
   const [discount, setDiscount] = useState("")
   const [customizations, setCustomizations] = useState<any[]>([])
+
+  // Owner menu editor, separate from the Add Item form.
+  const [editingMenuItem, setEditingMenuItem] = useState<any | null>(null)
+  const [editName, setEditName] = useState("")
+  const [editPrice, setEditPrice] = useState("")
+  const [editDiscount, setEditDiscount] = useState("0")
+  const [editCategory, setEditCategory] = useState("")
+  const [editDescription, setEditDescription] = useState("")
+  const [editCustomizations, setEditCustomizations] = useState<any[]>([])
+  const [editImage, setEditImage] = useState<File | null>(null)
+  const [removeEditImage, setRemoveEditImage] = useState(false)
+  const [savingMenuEdit, setSavingMenuEdit] = useState(false)
+  const [menuEditError, setMenuEditError] = useState("")
+  const menuEditLockRef = useRef(false)
   const [kitchenPass, setKitchenPass] = useState("")
   const [showKitchenPass, setShowKitchenPass] = useState(false)
   const [msg, setMsg] = useState("")
@@ -1559,6 +1574,125 @@ export default function OwnerPage() {
     } catch { return "" }
   }
 
+  const openOwnerMenuEdit = (item: any) => {
+    setEditingMenuItem(item)
+    setEditName(String(item.name || ""))
+    setEditPrice(String(item.price ?? ""))
+    setEditDiscount(String(item.discount ?? 0))
+    setEditCategory(String(item.category || ""))
+    setEditDescription(String(item.description || ""))
+    setEditCustomizations(
+      Array.isArray(item.customizations)
+        ? item.customizations.map((group: any) => ({
+            ...group,
+            options: Array.isArray(group.options)
+              ? group.options.map((option: any) => ({ ...option }))
+              : [],
+          }))
+        : [],
+    )
+    setEditImage(null)
+    setRemoveEditImage(false)
+    setMenuEditError("")
+  }
+
+  const saveOwnerMenuEdit = async () => {
+    if (!editingMenuItem || menuEditLockRef.current || !businessId) return
+
+    const trimmedName = editName.trim()
+    const parsedPrice = Number(editPrice)
+    const parsedDiscount = editDiscount.trim() === "" ? NaN : Number(editDiscount)
+
+    if (!trimmedName || !editPrice.trim() || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+      setMenuEditError("Enter a name and a price greater than zero.")
+      return
+    }
+    if (!Number.isFinite(parsedDiscount) || parsedDiscount < 0 || parsedDiscount >= 100) {
+      setMenuEditError("Discount must be at least 0 and less than 100%.")
+      return
+    }
+    if (editDescription.length > 1000) {
+      setMenuEditError("Description must be 1,000 characters or less.")
+      return
+    }
+
+    let cleanedCustomizations: any[]
+    try {
+      cleanedCustomizations = (Array.isArray(editCustomizations) ? editCustomizations : [])
+        .map((group: any) => {
+          const groupName = String(group?.name || "").trim()
+          const rawOptions = Array.isArray(group?.options) ? group.options : []
+          if (!groupName || rawOptions.length === 0) {
+            throw new Error("Each customization needs a group name and at least one option.")
+          }
+          const options = rawOptions.map((option: any) => {
+            const optionName = String(option?.name || "").trim()
+            const priceDelta = Number(option?.priceDelta ?? 0)
+            if (!optionName || !Number.isFinite(priceDelta) || priceDelta < 0) {
+              throw new Error("Each customization option needs a name and a non-negative price.")
+            }
+            return { ...option, name: optionName, priceDelta }
+          })
+          const multiple = group?.multiple === true
+          const maxSelect = multiple ? Number(group?.maxSelect) : 1
+          if (!Number.isInteger(maxSelect) || maxSelect < 1 || maxSelect > options.length) {
+            throw new Error(`Invalid maximum selections for "${groupName}".`)
+          }
+          return {
+            ...group, name: groupName, required: group?.required === true,
+            multiple, maxSelect, options,
+          }
+        })
+    } catch (error: any) {
+      setMenuEditError(error?.message || "Invalid customizations.")
+      return
+    }
+
+    menuEditLockRef.current = true
+    setSavingMenuEdit(true)
+    setMenuEditError("")
+    try {
+      const changes: Record<string, any> = {
+        name: trimmedName,
+        price: parsedPrice,
+        discount: parsedDiscount,
+        category: editCategory.trim(),
+        description: editDescription.trim(),
+        customizations: cleanedCustomizations,
+      }
+
+      // Omit imageUrl unless a replacement or explicit removal was selected.
+      if (editImage) {
+        const form = new FormData()
+        form.append("file", editImage)
+        const uploaded = await axios.post(
+          `${API}/menu/upload`, form, ownerAuthConfig(),
+        )
+        if (!uploaded.data?.url) throw new Error("Menu image upload failed.")
+        changes.imageUrl = uploaded.data.url
+      } else if (removeEditImage) {
+        changes.imageUrl = ""
+      }
+
+      await axios.patch(
+        `${API}/menu/edit/${editingMenuItem.id}`,
+        changes,
+        ownerAuthConfig(),
+      )
+      setEditingMenuItem(null)
+      setEditImage(null)
+      showToast("Menu item updated")
+      await load()
+      await loadAnalytics()
+    } catch (error: any) {
+      const message = error?.response?.data?.message || error?.message || "Failed to save menu item."
+      setMenuEditError(Array.isArray(message) ? message.join(", ") : String(message))
+    } finally {
+      menuEditLockRef.current = false
+      setSavingMenuEdit(false)
+    }
+  }
+
   const add = async () => {
     if (!businessId) return
     if (!name || !price) return setMsg("Name and price are required")
@@ -2172,8 +2306,9 @@ export default function OwnerPage() {
                           </div>
                         </div>
                         <div className="item-actions">
-                          <button className="item-btn" onClick={() => hide(i.id)}>{i.isHidden ? "Show" : "Hide"}</button>
-                          <button className="item-btn" onClick={() => del(i.id)}>Remove</button>
+                          <button type="button" className="item-btn" onClick={() => openOwnerMenuEdit(i)}>Edit</button>
+                          <button type="button" className="item-btn" onClick={() => hide(i.id)}>{i.isHidden ? "Show" : "Hide"}</button>
+                          <button type="button" className="item-btn item-danger" onClick={() => del(i.id)}>Remove</button>
                         </div>
                       </div>
                     ))}
@@ -3471,6 +3606,147 @@ export default function OwnerPage() {
 
         </div>
       </div>
+
+      {editingMenuItem && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Edit ${editingMenuItem.name}`}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1200,
+            background: "rgba(0, 0, 0, 0.55)",
+            display: "flex", justifyContent: "center", alignItems: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              background: "#fff", width: "100%", maxWidth: 560,
+              maxHeight: "90dvh", overflowY: "auto", borderRadius: 14,
+              padding: 20, boxSizing: "border-box", minWidth: 0,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 18 }}>
+              <div>
+                <h2 style={{ fontSize: 19, margin: 0 }}>Edit Menu Item</h2>
+                <p style={{ marginTop: 6, color: "var(--text2)", fontSize: 12 }}>
+                  Changes will appear on your customer menu after saving.
+                </p>
+              </div>
+              <button
+                type="button" className="btn btn-ghost"
+                disabled={savingMenuEdit}
+                onClick={() => setEditingMenuItem(null)}
+                aria-label="Close editor"
+              >×</button>
+            </div>
+
+            <div className="field-grid">
+              <label className="field">
+                <span className="field-label">Name</span>
+                <input className="inp" value={editName} maxLength={200}
+                  onChange={(e) => setEditName(e.target.value)} />
+              </label>
+              <label className="field">
+                <span className="field-label">Price ({currencySymbol(currency)})</span>
+                <input className="inp" type="number" min="0.01" step="0.01"
+                  value={editPrice} onChange={(e) => setEditPrice(e.target.value)} />
+              </label>
+            </div>
+            <div className="field-grid">
+              <label className="field">
+                <span className="field-label">Category</span>
+                <input className="inp" value={editCategory}
+                  onChange={(e) => setEditCategory(e.target.value)} />
+              </label>
+              <label className="field">
+                <span className="field-label">Discount (%)</span>
+                <input className="inp" type="number" min="0" max="99.99" step="0.01"
+                  value={editDiscount} onChange={(e) => setEditDiscount(e.target.value)} />
+              </label>
+            </div>
+            <label className="field" style={{ marginBottom: 14 }}>
+              <span className="field-label">Description</span>
+              <textarea
+                className="inp" rows={4} maxLength={1000}
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                style={{ minHeight: 112, height: 112, flexShrink: 0, resize: "vertical" }}
+              />
+            </label>
+            {editingMenuItem.imageUrl && !removeEditImage && !editImage && (
+              <div style={{ marginBottom: 12 }}>
+                <div className="field-label" style={{ marginBottom: 7 }}>Current photo</div>
+                <img
+                  src={String(editingMenuItem.imageUrl).startsWith("http")
+                    ? editingMenuItem.imageUrl : `${API}${editingMenuItem.imageUrl}`}
+                  alt={editingMenuItem.name}
+                  style={{ width: 160, height: 110, objectFit: "cover", borderRadius: 9 }}
+                />
+              </div>
+            )}
+            <label className="field" style={{ marginBottom: 10 }}>
+              <span className="field-label">Replace photo (JPG, PNG, WebP; max 5 MB)</span>
+              <input
+                type="file" className="inp" accept="image/jpeg,image/png,image/webp"
+                onChange={(e) => {
+                  const nextFile = e.target.files?.[0] || null
+                  if (nextFile && (
+                    !["image/jpeg", "image/png", "image/webp"].includes(nextFile.type) ||
+                    nextFile.size > 5 * 1024 * 1024
+                  )) {
+                    setMenuEditError("Choose a JPG, PNG or WebP photo no larger than 5 MB.")
+                    setEditImage(null)
+                    e.target.value = ""
+                    return
+                  }
+                  setEditImage(nextFile)
+                  if (nextFile) {
+                    setRemoveEditImage(false)
+                    setMenuEditError("")
+                  }
+                }}
+              />
+              {editImage && <span style={{ fontSize: 12, color: "var(--text2)" }}>Selected: {editImage.name}</span>}
+            </label>
+            {editingMenuItem.imageUrl && (
+              <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+                <input
+                  type="checkbox" checked={removeEditImage}
+                  onChange={(e) => {
+                    setRemoveEditImage(e.target.checked)
+                    if (e.target.checked) setEditImage(null)
+                  }}
+                />
+                Remove current photo
+              </label>
+            )}
+            <CustomizationBuilder
+              value={editCustomizations}
+              onChange={setEditCustomizations}
+              currencySymbol={currencySymbol(currency)}
+            />
+
+            {menuEditError && (
+              <div role="alert" style={{ color: "var(--red)", marginTop: 14, fontSize: 12 }}>
+                {menuEditError}
+              </div>
+            )}
+            <div className="btn-row" style={{ paddingBottom: 4 }}>
+              <button
+                type="button" className="btn btn-primary"
+                disabled={savingMenuEdit}
+                onClick={() => void saveOwnerMenuEdit()}
+              >{savingMenuEdit ? "Saving…" : "Save Changes"}</button>
+              <button
+                type="button" className="btn btn-ghost"
+                disabled={savingMenuEdit}
+                onClick={() => setEditingMenuItem(null)}
+              >Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

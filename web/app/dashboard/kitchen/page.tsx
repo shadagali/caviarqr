@@ -2713,6 +2713,15 @@ export default function KitchenPage() {
 
             <textarea
               placeholder="Description"
+              rows={4}
+              style={{
+                minHeight: 112,
+                height: 112,
+                flexShrink: 0,
+                width: '100%',
+                boxSizing: 'border-box',
+                resize: 'vertical',
+              }}
               value={newDescription}
               onChange={(e) =>
                 setNewDescription(
