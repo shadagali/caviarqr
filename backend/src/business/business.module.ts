@@ -2,16 +2,29 @@ import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 
 import { StandModule } from '../stand/stand.module'
+import { OrderModule } from '../order/order.module'
 import { JwtModule } from '@nestjs/jwt'
 
 import { Business } from './business.entity'
+
+import {
+  BusinessLegalAcceptance,
+} from './business-legal-acceptance.entity'
 import { BusinessService } from './business.service'
 import { BusinessController } from './business.controller'
+
+import {
+  OwnerSessionGuard,
+} from '../owner-auth/owner-session.guard'
 
 @Module({
   imports: [
     StandModule,
-    TypeOrmModule.forFeature([Business]),
+    OrderModule,
+    TypeOrmModule.forFeature([
+      Business,
+      BusinessLegalAcceptance,
+    ]),
 
     // 🔥 JWT (GLOBAL SAFE CONFIG)
     JwtModule.register({
@@ -20,7 +33,10 @@ import { BusinessController } from './business.controller'
       signOptions: { expiresIn: '7d' },
     }),
   ],
-  providers: [BusinessService],
+  providers: [
+    BusinessService,
+    OwnerSessionGuard,
+  ],
   controllers: [BusinessController],
 
   // 🔥 EXPORT JWT + SERVICE (IMPORTANT)

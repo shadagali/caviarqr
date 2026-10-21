@@ -1,4 +1,4 @@
-﻿import { Module } from '@nestjs/common'
+import { Module } from '@nestjs/common'
 
 import {
   ConfigModule,
@@ -330,10 +330,20 @@ const developmentStaticUploads = [
 ]
 
 import { MarketingModule } from './marketing/marketing.module'
+import { SalesModule } from './sales/sales.module'
+
+import { DemoRequestModule } from './demo-request/demo-request.module'
+
+import {
+  OrderArchiveModule,
+} from './archive/order-archive.module'
 
 @Module({
   imports: [
     MarketingModule,
+    SalesModule,
+    DemoRequestModule,
+
     ConfigModule.forRoot({
       isGlobal: true,
 
@@ -423,6 +433,7 @@ import { MarketingModule } from './marketing/marketing.module'
     MaintenanceAuthModule,
     MaintenanceModule,
     HealthModule,
+    OrderArchiveModule,
   ],
 
   providers: [

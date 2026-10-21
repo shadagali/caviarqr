@@ -20,6 +20,7 @@ import {
 } from './order.entity'
 
 import { OrderGateway } from './order.gateway'
+import { Business } from '../business/business.entity'
 
 @Injectable()
 export class OrderService {
@@ -32,14 +33,29 @@ export class OrderService {
     @InjectRepository(Order)
     private orderRepo: Repository<Order>,
 
+    @InjectRepository(Business)
+    private businessRepo: Repository<Business>,
+
     private gateway: OrderGateway,
   ) {
     this.logger.log(
       'Order Service Started',
     )
 
+    const secretKey =
+      process.env.STRIPE_SECRET_KEY
+
+    if (
+      !secretKey ||
+      !secretKey.startsWith('sk_')
+    ) {
+      throw new Error(
+        'Missing or invalid STRIPE_SECRET_KEY.',
+      )
+    }
+
     this.stripe = new Stripe(
-      'sk_test_51Sxh4AKZAB5HMPha5usVVKGeyWcWBEqiFjVMGwPCVOFbbx56mJaJOcZrObsxj35zM92583ovMqnfGUI31JcL1rbP00TUzKY5xh',
+      secretKey,
       {
         apiVersion:
           '2026-02-25.clover',
@@ -151,7 +167,7 @@ export class OrderService {
       }
 
       const platformFee = +(
-        data.total * 0.0075
+        data.total * 0.0475
       ).toFixed(2)
 
       const order =
@@ -232,7 +248,9 @@ export class OrderService {
     try {
       const order =
         await this.orderRepo.findOne({
-          where: { id },
+          where: {
+            id,
+          },
         })
 
       if (!order) {
@@ -436,12 +454,14 @@ export class OrderService {
   // =========================
   async refundOrder(
     paymentIntentId: string,
+    businessId: number,
   ) {
     const order =
       await this.orderRepo.findOne({
         where: {
           stripePaymentIntentId:
             paymentIntentId,
+          businessId,
         },
       })
 
@@ -472,19 +492,93 @@ export class OrderService {
         order.stripePaymentIntentId,
       )
 
-      const balance =
-        await this.stripe.balance.retrieve()
+      let connectedAccountId:
+        string | null = null
 
-      console.log(
-        '🔥 STRIPE BALANCE OK:',
-        balance.available,
-      )
+      let paymentIntent:
+        Stripe.PaymentIntent
+
+      try {
+        paymentIntent =
+          await this.stripe.paymentIntents.retrieve(
+            order.stripePaymentIntentId,
+          )
+      } catch (platformError: any) {
+        if (
+          platformError?.code !==
+          'resource_missing'
+        ) {
+          throw platformError
+        }
+
+        const business =
+          await this.businessRepo.findOne({
+            where: {
+              id: order.businessId,
+            },
+          })
+
+        connectedAccountId =
+          String(
+            business?.stripeAccountId ||
+              '',
+          ).trim() || null
+
+        if (!connectedAccountId) {
+          throw new BadRequestException(
+            'Connected Stripe account is missing for this order.',
+          )
+        }
+
+        paymentIntent =
+          await this.stripe.paymentIntents.retrieve(
+            order.stripePaymentIntentId,
+            {},
+            {
+              stripeAccount:
+                connectedAccountId,
+            },
+          )
+      }
+
+      const params:
+        Stripe.RefundCreateParams = {
+          payment_intent:
+            order.stripePaymentIntentId,
+        }
+
+      if (
+        !connectedAccountId &&
+        paymentIntent.transfer_data
+          ?.destination
+      ) {
+        params.reverse_transfer =
+          true
+
+        if (
+          Number(
+            paymentIntent
+              .application_fee_amount ||
+              0,
+          ) > 0
+        ) {
+          params.refund_application_fee =
+            true
+        }
+      }
 
       const refund =
         await this.stripe.refunds.create(
+          params,
           {
-            payment_intent:
-              order.stripePaymentIntentId,
+            idempotencyKey:
+              `order-refund-${order.id}`,
+            ...(connectedAccountId
+              ? {
+                  stripeAccount:
+                    connectedAccountId,
+                }
+              : {}),
           },
         )
 
@@ -583,6 +677,7 @@ export class OrderService {
   // =========================
   async getActionCenter(
     storeCode: string,
+    businessId: number,
   ) {
     try {
       return await this.orderRepo
@@ -590,6 +685,10 @@ export class OrderService {
         .where(
           'order.storeCode = :storeCode',
           { storeCode },
+        )
+        .andWhere(
+          'order.businessId = :businessId',
+          { businessId },
         )
         .andWhere(
           'order.requiresOwnerAction = :flag',
@@ -661,11 +760,15 @@ export class OrderService {
   async resolveOwnerAction(
     id: number,
     resolvedBy: string,
+    businessId: number,
   ) {
     try {
       const order =
         await this.orderRepo.findOne({
-          where: { id },
+          where: {
+            id,
+            businessId,
+          },
         })
 
       if (!order) {

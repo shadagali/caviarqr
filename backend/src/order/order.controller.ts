@@ -3,128 +3,175 @@ import {
   Get,
   Param,
   Patch,
-  Body,
-  BadRequestException,
-  Query,
+  Req,
+  UseGuards,
+  ForbiddenException,
 } from '@nestjs/common'
 
-import { OrderService } from './order.service'
+import {
+  OrderService,
+} from './order.service'
 
 import {
-  OrderStatus,
-} from './order.entity'
+  OwnerSessionGuard,
+} from '../owner-auth/owner-session.guard'
+
+import {
+  RefundService,
+} from '../refund/refund.service'
+
+import type {
+  OwnerRequest,
+} from '../owner-auth/owner-session.guard'
 
 @Controller('order')
 export class OrderController {
   constructor(
-    private readonly orderService: OrderService,
+    private readonly orderService:
+      OrderService,
+
+    private readonly refundService:
+      RefundService,
   ) {}
 
   // =========================
-  // 🔥 ORDER HISTORY (60 DAYS)
+  // OWNER ACTION CENTER
   // =========================
-  @Get('history/:storeCode')
-  async getPastOrders(
-    @Param('storeCode')
-    storeCode: string,
-  ) {
-    return this.orderService.getPastOrders(
-      storeCode,
-    )
-  }
 
-  // =========================
-  // 🚨 ACTION CENTER
-  // =========================
-  @Get('action-center/:storeCode')
+  @Get(
+    'action-center/:storeCode',
+  )
+  @UseGuards(OwnerSessionGuard)
   async getActionCenter(
+    @Req()
+    request: OwnerRequest,
+
     @Param('storeCode')
     storeCode: string,
   ) {
-    return this.orderService.getActionCenter(
-      storeCode,
-    )
-  }
+    const businessId =
+      Number(
+        request.owner?.businessId,
+      )
 
-  // =========================
-  // 🔍 SEARCH ORDERS
-  // =========================
-  @Get('search/:storeCode')
-  async searchOrders(
-    @Param('storeCode')
-    storeCode: string,
+    const ownerStoreCode =
+      String(
+        request.owner?.storeCode ||
+          '',
+      )
+        .trim()
+        .toLowerCase()
 
-    @Query('q')
-    query: string,
-  ) {
-    return this.orderService.searchOrders(
-      storeCode,
-      query,
-    )
-  }
+    const requestedStoreCode =
+      String(storeCode || '')
+        .trim()
+        .toLowerCase()
 
-  // =========================
-  // 🔥 UPDATE STATUS
-  // =========================
-  @Patch(':id')
-  async updateStatus(
-    @Param('id') id: string,
-
-    @Body('status')
-    status: OrderStatus,
-  ) {
-    if (!status) {
-      throw new BadRequestException(
-        'Status required',
+    if (
+      !Number.isInteger(
+        businessId,
+      ) ||
+      businessId < 1 ||
+      !ownerStoreCode ||
+      ownerStoreCode !==
+        requestedStoreCode
+    ) {
+      throw new ForbiddenException(
+        'You can only access your own cafe.',
       )
     }
 
-    return this.orderService.updateStatus(
-      Number(id),
-      status,
-    )
+    return this.orderService
+      .getActionCenter(
+        ownerStoreCode,
+        businessId,
+      )
   }
 
   // =========================
-  // 🔥 REFUND ORDER
+  // REFUND ORDER
   // =========================
-  @Patch('refund/:paymentIntentId')
+
+  @Patch(
+    'refund/:paymentIntentId',
+  )
+  @UseGuards(OwnerSessionGuard)
   async refundOrder(
+    @Req()
+    request: OwnerRequest,
+
     @Param('paymentIntentId')
     paymentIntentId: string,
   ) {
-    return this.orderService.refundOrder(
-      paymentIntentId,
-    )
+    const businessId =
+      Number(
+        request.owner?.businessId,
+      )
+
+    if (
+      !Number.isInteger(
+        businessId,
+      ) ||
+      businessId < 1
+    ) {
+      throw new ForbiddenException(
+        'You can only refund your own cafe orders.',
+      )
+    }
+
+    return this.refundService
+      .createOwnerRefundByPaymentIntent(
+        paymentIntentId,
+        businessId,
+        {
+          requestedBy:
+            `OWNER:${businessId}`,
+
+          requestIp:
+            null,
+
+          userAgent:
+            null,
+        },
+      )
   }
 
   // =========================
-  // ✅ RESOLVE OWNER ACTION
+  // RESOLVE OWNER ACTION
   // =========================
-  @Patch('resolve/:id')
+
+  @Patch(
+    'resolve/:id',
+  )
+  @UseGuards(OwnerSessionGuard)
   async resolveOwnerAction(
+    @Req()
+    request: OwnerRequest,
+
     @Param('id')
     id: string,
-
-    @Body('resolvedBy')
-    resolvedBy = 'OWNER',
   ) {
-    return this.orderService.resolveOwnerAction(
-      Number(id),
-      resolvedBy,
-    )
-  }
+    const businessId =
+      Number(
+        request.owner?.businessId,
+      )
 
-  // =========================
-  // 🔥 ACTIVE KITCHEN ORDERS
-  // =========================
-  @Get(':storeCode')
-  async getOrders(
-    @Param('storeCode')
-    storeCode: string,
-  ) {
-    return this.orderService.getOrdersByStore(
-      storeCode,
-    )
+    if (
+      !Number.isInteger(
+        businessId,
+      ) ||
+      businessId < 1
+    ) {
+      throw new ForbiddenException(
+        'You can only resolve your own cafe issues.',
+      )
+    }
+
+    return this.orderService
+      .resolveOwnerAction(
+        Number(id),
+        'OWNER',
+        businessId,
+      )
   }
 }

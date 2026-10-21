@@ -12,6 +12,11 @@ import {
   Repository,
 } from 'typeorm'
 import Stripe from 'stripe'
+import { Resend } from 'resend'
+import {
+  Cron,
+  CronExpression,
+} from '@nestjs/schedule'
 
 import {
   Order,
@@ -19,6 +24,7 @@ import {
   OwnerIssueSeverity,
   OwnerIssueType,
 } from '../order/order.entity'
+import { Business } from '../business/business.entity'
 import {
   CreateRefundDto,
   RefundReason,
@@ -36,10 +42,12 @@ type RefundRequestContext = {
 
 type ReservedRefund = {
   orderId: number
+  businessId: number
   paymentIntentId: string
   attemptId: string
   idempotencyKey: string
   amountCents: number
+  platformFeeCents: number
   currency: string
 }
 
@@ -54,6 +62,9 @@ const ACTIVE_ATTEMPT_STATUSES = [
 export class RefundService {
   private readonly logger = new Logger(RefundService.name)
   private readonly stripe: Stripe
+  private readonly resend: Resend | null
+  private readonly emailFrom: string
+  private refundEmailSweepRunning = false
 
   constructor(
     @InjectRepository(Order)
@@ -61,6 +72,9 @@ export class RefundService {
 
     @InjectRepository(RefundAttempt)
     private readonly attemptRepo: Repository<RefundAttempt>,
+
+    @InjectRepository(Business)
+    private readonly businessRepo: Repository<Business>,
 
     private readonly dataSource: DataSource,
   ) {
@@ -76,6 +90,20 @@ export class RefundService {
       maxNetworkRetries: 2,
       timeout: 20_000,
     })
+
+    const resendKey = String(
+      process.env.RESEND_API_KEY || '',
+    ).trim()
+
+    this.resend = resendKey
+      ? new Resend(resendKey)
+      : null
+
+    this.emailFrom = String(
+      process.env.RECEIPT_EMAIL_FROM ||
+        process.env.MAINTENANCE_EMAIL_FROM ||
+        'CaviarQR <onboarding@resend.dev>',
+    ).trim()
   }
 
   async createRefund(
@@ -99,6 +127,10 @@ export class RefundService {
     )
 
     if ('completed' in reservation) {
+      await this.sendRestaurantRefundConfirmation(
+        orderId,
+      )
+
       return reservation.completed
     }
 
@@ -110,37 +142,298 @@ export class RefundService {
 
     let reverseTransfer = false
     let refundApplicationFee = false
+    let connectedAccountId: string | null = null
 
     try {
-      const paymentIntent =
-        await this.stripe.paymentIntents.retrieve(
-          reserved.paymentIntentId,
+      let paymentIntent: Stripe.PaymentIntent
+
+      try {
+        paymentIntent =
+          await this.stripe.paymentIntents.retrieve(
+            reserved.paymentIntentId,
+          )
+      } catch (platformError: any) {
+        const paymentIntentMissing =
+          platformError?.code ===
+            'resource_missing'
+
+        if (!paymentIntentMissing) {
+          throw platformError
+        }
+
+        const business =
+          await this.businessRepo.findOne({
+            where: {
+              id: reserved.businessId,
+            },
+          })
+
+        connectedAccountId =
+          String(
+            business?.stripeAccountId ||
+              '',
+          ).trim() || null
+
+        if (!connectedAccountId) {
+          throw new BadRequestException(
+            'Connected Stripe account is missing for this order.',
+          )
+        }
+
+        paymentIntent =
+          await this.stripe.paymentIntents.retrieve(
+            reserved.paymentIntentId,
+            {},
+            {
+              stripeAccount:
+                connectedAccountId,
+            },
+          )
+      }
+
+      reverseTransfer =
+        !connectedAccountId &&
+        Boolean(
+          paymentIntent.transfer_data
+            ?.destination,
         )
 
-      reverseTransfer = Boolean(
-        paymentIntent.transfer_data?.destination,
-      )
+      /*
+       * CaviarQR refund policy:
+       *
+       * customer refund =
+       * original Stripe charge
+       * - actual Stripe processing cost
+       * - CaviarQR application fee
+       *
+       * The application fee itself is intentionally
+       * retained and is never refunded here.
+       */
+      refundApplicationFee = false
 
-      refundApplicationFee =
-        reverseTransfer &&
-        Number(paymentIntent.application_fee_amount || 0) > 0
+      let charge =
+        paymentIntent.latest_charge
+
+      if (!charge) {
+        throw new BadRequestException(
+          'Stripe charge is not available for this order.',
+        )
+      }
+
+      if (typeof charge === 'string') {
+        charge =
+          await this.stripe.charges.retrieve(
+            charge,
+            {
+              expand: [
+                'balance_transaction',
+              ],
+            },
+            {
+              ...(connectedAccountId
+                ? {
+                    stripeAccount:
+                      connectedAccountId,
+                  }
+                : {}),
+            },
+          )
+      }
+
+      let balanceTransaction =
+        charge.balance_transaction
+
+      if (!balanceTransaction) {
+        throw new BadRequestException(
+          'Stripe processing fee is not available yet. Retry shortly.',
+        )
+      }
+
+      if (
+        typeof balanceTransaction ===
+        'string'
+      ) {
+        balanceTransaction =
+          await this.stripe.balanceTransactions.retrieve(
+            balanceTransaction,
+            {},
+            {
+              ...(connectedAccountId
+                ? {
+                    stripeAccount:
+                      connectedAccountId,
+                  }
+                : {}),
+            },
+          )
+      }
+
+      if (
+        Number(
+          charge.amount_refunded ||
+            0,
+        ) > 0
+      ) {
+        throw new ConflictException(
+          'Stripe already shows a refund on this charge. Reconcile the order before creating another refund.',
+        )
+      }
+
+      const feeDetails =
+        Array.isArray(
+          balanceTransaction.fee_details,
+        )
+          ? balanceTransaction.fee_details
+          : []
+
+      const applicationFeeCents =
+        Number(
+          paymentIntent
+            .application_fee_amount ??
+            reserved.platformFeeCents,
+        )
+
+      let stripeProcessingFeeCents:
+        number
+
+      if (feeDetails.length > 0) {
+        stripeProcessingFeeCents =
+          feeDetails
+            .filter(
+              (detail) =>
+                detail.type !==
+                'application_fee',
+            )
+            .reduce(
+              (sum, detail) =>
+                sum +
+                Number(
+                  detail.amount ||
+                    0,
+                ),
+              0,
+            )
+      } else {
+        const totalBalanceFee =
+          Number(
+            balanceTransaction.fee ||
+              0,
+          )
+
+        /*
+         * For direct charges the connected
+         * account balance transaction can
+         * include the application fee.
+         *
+         * Legacy platform/destination charges
+         * generally keep the application fee
+         * outside the processor-fee amount.
+         */
+        stripeProcessingFeeCents =
+          connectedAccountId
+            ? Math.max(
+                0,
+                totalBalanceFee -
+                  applicationFeeCents,
+              )
+            : Math.max(
+                0,
+                totalBalanceFee,
+              )
+      }
+
+      const chargeAmountCents =
+        Number(
+          charge.amount ||
+            0,
+        )
+
+      const refundAmountCents =
+        chargeAmountCents -
+        stripeProcessingFeeCents -
+        applicationFeeCents
+
+      if (
+        !Number.isInteger(
+          chargeAmountCents,
+        ) ||
+        chargeAmountCents <= 0 ||
+        !Number.isInteger(
+          stripeProcessingFeeCents,
+        ) ||
+        stripeProcessingFeeCents < 0 ||
+        !Number.isInteger(
+          applicationFeeCents,
+        ) ||
+        applicationFeeCents < 0 ||
+        !Number.isInteger(
+          refundAmountCents,
+        ) ||
+        refundAmountCents <= 0 ||
+        refundAmountCents >
+          chargeAmountCents
+      ) {
+        throw new BadRequestException(
+          'The refundable amount could not be calculated safely.',
+        )
+      }
+
+      reserved.amountCents =
+        refundAmountCents
+
+      this.logger.log(
+        `REFUND_QUOTE order=${reserved.orderId} chargeCents=${chargeAmountCents} stripeFeeCents=${stripeProcessingFeeCents} applicationFeeCents=${applicationFeeCents} refundCents=${refundAmountCents}`,
+      )
 
       await this.attemptRepo.update(
         reserved.attemptId,
         {
-          status: RefundAttemptStatus.PROCESSING,
+          amountCents:
+            refundAmountCents,
+          status:
+            RefundAttemptStatus.PROCESSING,
           reverseTransfer,
-          refundApplicationFee,
+          refundApplicationFee:
+            false,
         },
       )
 
       const params: Stripe.RefundCreateParams = {
-        payment_intent: reserved.paymentIntentId,
-        reason: 'requested_by_customer',
+        payment_intent:
+          reserved.paymentIntentId,
+
+        amount:
+          refundAmountCents,
+
+        reason:
+          'requested_by_customer',
+
         metadata: {
-          orderId: String(reserved.orderId),
-          refundAttemptId: reserved.attemptId,
-          internalReason: dto.reason,
+          orderId:
+            String(
+              reserved.orderId,
+            ),
+
+          refundAttemptId:
+            reserved.attemptId,
+
+          internalReason:
+            dto.reason,
+
+          originalChargeCents:
+            String(
+              chargeAmountCents,
+            ),
+
+          stripeProcessingFeeCents:
+            String(
+              stripeProcessingFeeCents,
+            ),
+
+          caviarqrApplicationFeeCents:
+            String(
+              applicationFeeCents,
+            ),
         },
       }
 
@@ -155,7 +448,14 @@ export class RefundService {
       const refund = await this.stripe.refunds.create(
         params,
         {
-          idempotencyKey: reserved.idempotencyKey,
+          idempotencyKey:
+            reserved.idempotencyKey,
+          ...(connectedAccountId
+            ? {
+                stripeAccount:
+                  connectedAccountId,
+              }
+            : {}),
         },
       )
 
@@ -169,6 +469,12 @@ export class RefundService {
 
       if (!result.success && !result.pending) {
         throw new BadRequestException(result.message)
+      }
+
+      if (result.success) {
+        await this.sendRestaurantRefundConfirmation(
+          result.orderId,
+        )
       }
 
       return result
@@ -195,6 +501,64 @@ export class RefundService {
         error?.message || 'Stripe rejected the refund request.',
       )
     }
+  }
+
+  async createOwnerRefundByPaymentIntent(
+    paymentIntentId: string,
+    businessId: number,
+    context: RefundRequestContext,
+  ) {
+    const normalizedPaymentIntentId =
+      String(
+        paymentIntentId ||
+          '',
+      ).trim()
+
+    const normalizedBusinessId =
+      Number(
+        businessId,
+      )
+
+    if (
+      !normalizedPaymentIntentId ||
+      !Number.isInteger(
+        normalizedBusinessId,
+      ) ||
+      normalizedBusinessId < 1
+    ) {
+      throw new BadRequestException(
+        'Valid refund order information is required.',
+      )
+    }
+
+    const order =
+      await this.orderRepo.findOne({
+        where: {
+          stripePaymentIntentId:
+            normalizedPaymentIntentId,
+
+          businessId:
+            normalizedBusinessId,
+        },
+      })
+
+    if (!order) {
+      throw new NotFoundException(
+        'Order not found.',
+      )
+    }
+
+    return this.createRefund(
+      order.id,
+      {
+        reason:
+          RefundReason.ORDER_NOT_DELIVERED,
+
+        note:
+          'Refund initiated by restaurant owner.',
+      },
+      context,
+    )
   }
 
   async getAttemptsForOrder(orderId: number) {
@@ -237,13 +601,22 @@ export class RefundService {
       return
     }
 
-    return this.persistStripeRefund(
-      refund,
-      attempt.id,
-      attempt.reverseTransfer,
-      attempt.refundApplicationFee,
-      attempt.requestedBy || 'stripe-webhook',
-    )
+    const result =
+      await this.persistStripeRefund(
+        refund,
+        attempt.id,
+        attempt.reverseTransfer,
+        attempt.refundApplicationFee,
+        attempt.requestedBy || 'stripe-webhook',
+      )
+
+    if (result?.success) {
+      await this.sendRestaurantRefundConfirmation(
+        result.orderId,
+      )
+    }
+
+    return result
   }
 
   private async reserveRefund(
@@ -348,7 +721,7 @@ export class RefundService {
 
       const version = previousAttempts + 1
       const idempotencyKey =
-        `caviarqr-order-${order.id}-full-refund-v${version}`
+        `caviarqr-order-${order.id}-net-refund-v${version}`
 
       const attempt = attemptRepo.create({
         orderId: order.id,
@@ -388,11 +761,22 @@ export class RefundService {
       return {
         reserved: {
           orderId: order.id,
+          businessId: order.businessId,
           paymentIntentId: order.stripePaymentIntentId,
           attemptId: attempt.id,
           idempotencyKey,
           amountCents,
-          currency: attempt.currency,
+
+          platformFeeCents:
+            Math.round(
+              Number(
+                order.platformFee ||
+                  0,
+              ) * 100,
+            ),
+
+          currency:
+            attempt.currency,
         } satisfies ReservedRefund,
       }
     })
@@ -656,6 +1040,377 @@ export class RefundService {
       `REFUND_CREATE_FAILED order=${reserved.orderId} attempt=${reserved.attemptId}`,
       error?.stack || errorMessage,
     )
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async retryUnsentRefundConfirmations() {
+    if (this.refundEmailSweepRunning) {
+      return
+    }
+
+    this.refundEmailSweepRunning = true
+
+    try {
+      const orders =
+        await this.orderRepo
+          .createQueryBuilder('o')
+          .where(
+            'o.status = :status',
+            {
+              status:
+                OrderStatus.REFUNDED,
+            },
+          )
+          .andWhere(
+            'o.stripeRefundStatus = :refundStatus',
+            {
+              refundStatus:
+                'succeeded',
+            },
+          )
+          .andWhere(
+            'o.customerEmail IS NOT NULL',
+          )
+          .andWhere(
+            'o.refundConfirmationEmailSentAt IS NULL',
+          )
+          .andWhere(
+            'o.refundConfirmationEmailAttempts < :maxAttempts',
+            {
+              maxAttempts: 10,
+            },
+          )
+          .orderBy(
+            'o.id',
+            'ASC',
+          )
+          .take(25)
+          .getMany()
+
+      for (const order of orders) {
+        await this.sendRestaurantRefundConfirmation(
+          order.id,
+        )
+      }
+    } catch (error) {
+      this.logger.error(
+        `REFUND_EMAIL_SWEEP_FAILED: ${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`,
+      )
+    } finally {
+      this.refundEmailSweepRunning = false
+    }
+  }
+
+  private async sendRestaurantRefundConfirmation(
+    orderId: number,
+  ): Promise<void> {
+    try {
+      const existing =
+        await this.orderRepo.findOne({
+          where: {
+            id: orderId,
+          },
+        })
+
+      if (
+        !existing ||
+        existing.status !==
+          OrderStatus.REFUNDED ||
+        existing.stripeRefundStatus !==
+          'succeeded' ||
+        !existing.customerEmail ||
+        existing.refundConfirmationEmailSentAt ||
+        existing.refundConfirmationEmailAttempts >= 10
+      ) {
+        return
+      }
+
+      const claimBefore =
+        new Date(
+          Date.now() -
+            2 * 60 * 1000,
+        )
+
+      const claim =
+        await this.orderRepo
+          .createQueryBuilder()
+          .update(Order)
+          .set({
+            refundConfirmationEmailLastAttemptAt:
+              new Date(),
+
+            refundConfirmationEmailAttempts:
+              () =>
+                '"refundConfirmationEmailAttempts" + 1',
+
+            refundConfirmationEmailFailureMessage:
+              null,
+          })
+          .where(
+            '"id" = :orderId',
+            {
+              orderId,
+            },
+          )
+          .andWhere(
+            '"status" = :status',
+            {
+              status:
+                OrderStatus.REFUNDED,
+            },
+          )
+          .andWhere(
+            '"stripeRefundStatus" = :refundStatus',
+            {
+              refundStatus:
+                'succeeded',
+            },
+          )
+          .andWhere(
+            '"customerEmail" IS NOT NULL',
+          )
+          .andWhere(
+            '"refundConfirmationEmailSentAt" IS NULL',
+          )
+          .andWhere(
+            '"refundConfirmationEmailAttempts" < :maxAttempts',
+            {
+              maxAttempts: 10,
+            },
+          )
+          .andWhere(
+            `(
+              "refundConfirmationEmailLastAttemptAt" IS NULL
+              OR "refundConfirmationEmailLastAttemptAt" < :claimBefore
+            )`,
+            {
+              claimBefore,
+            },
+          )
+          .execute()
+
+      if (!claim.affected) {
+        return
+      }
+
+      const order =
+        await this.orderRepo.findOne({
+          where: {
+            id: orderId,
+          },
+        })
+
+      if (
+        !order ||
+        !order.customerEmail
+      ) {
+        return
+      }
+
+      if (!this.resend) {
+        await this.orderRepo.update(
+          orderId,
+          {
+            refundConfirmationEmailFailureMessage:
+              'RESEND_API_KEY is not configured.',
+          },
+        )
+
+        this.logger.error(
+          `REFUND_EMAIL_FAILED order=${orderId}: RESEND_API_KEY missing`,
+        )
+
+        return
+      }
+
+      const customerName =
+        this.escapeRefundHtml(
+          order.customerName ||
+            'there',
+        )
+
+      const refundAmount =
+        Number(
+          order.refundAmount ??
+            order.total ??
+            0,
+        ).toFixed(2)
+
+      const html = `
+        <div style="font-family:Arial,Helvetica,sans-serif;max-width:620px;margin:0 auto;color:#111111;line-height:1.5;">
+          <h1 style="font-size:26px;margin:0 0 18px;">
+            Your refund has been issued
+          </h1>
+
+          <p>
+            Hi ${customerName},
+          </p>
+
+          <p>
+            Your refund for CaviarQR Order
+            <strong>#${order.id}</strong>
+            has been processed.
+          </p>
+
+          <div style="background:#f7f7f7;border-radius:12px;padding:18px;margin:22px 0;">
+            <div style="font-size:13px;color:#666666;">
+              Refund amount
+            </div>
+
+            <div style="font-size:24px;font-weight:700;margin-top:4px;">
+              $${refundAmount}
+            </div>
+          </div>
+
+          <p>
+            The refund was sent back to your original payment method.
+            Your bank or card issuer may take several business days
+            to display the credit.
+          </p>
+
+          <p style="font-size:13px;color:#666666;margin-top:18px;">
+            <strong>Refund note:</strong>
+            We use a third-party payment processor that does not refund
+            processing fees. Therefore, we do not refund processing fees either.
+          </p>
+
+          <p style="margin-top:28px;">
+            Thank you,<br />
+            CaviarQR
+          </p>
+        </div>
+      `
+
+      const text =
+        `Your CaviarQR refund has been issued.\n\n` +
+        `Order #${order.id}\n` +
+        `Refund amount: $${refundAmount}\n\n` +
+        `The refund was sent back to your original payment method. ` +
+        `Your bank or card issuer may take several business days to display the credit.\n\n` +
+        `Refund note: We use a third-party payment processor that does not refund processing fees. ` +
+        `Therefore, we do not refund processing fees either.`
+
+      const idempotencyKey =
+        `restaurant-refund-confirmation-${
+          order.refundId || order.id
+        }`.slice(0, 255)
+
+      let lastError:
+        unknown = null
+
+      for (
+        let attempt = 1;
+        attempt <= 3;
+        attempt++
+      ) {
+        try {
+          const response =
+            await this.resend.emails.send(
+              {
+                from:
+                  this.emailFrom,
+
+                to:
+                  order.customerEmail,
+
+                subject:
+                  `CaviarQR refund confirmed · Order #${order.id}`,
+
+                text,
+                html,
+              },
+              {
+                idempotencyKey,
+              },
+            )
+
+          if (response.error) {
+            throw new Error(
+              response.error.message ||
+                'Resend rejected the refund confirmation email.',
+            )
+          }
+
+          await this.orderRepo.update(
+            orderId,
+            {
+              refundConfirmationEmailSentAt:
+                new Date(),
+
+              refundConfirmationEmailFailureMessage:
+                null,
+            },
+          )
+
+          this.logger.log(
+            `REFUND_EMAIL_SENT order=${orderId}`,
+          )
+
+          return
+        } catch (error) {
+          lastError = error
+
+          if (attempt < 3) {
+            await new Promise(
+              resolve =>
+                setTimeout(
+                  resolve,
+                  attempt === 1
+                    ? 500
+                    : 1000,
+                ),
+            )
+          }
+        }
+      }
+
+      const message =
+        String(
+          (
+            lastError as {
+              message?: unknown
+            }
+          )?.message ||
+            'Refund confirmation email failed.',
+        ).slice(0, 1000)
+
+      await this.orderRepo.update(
+        orderId,
+        {
+          refundConfirmationEmailFailureMessage:
+            message,
+        },
+      )
+
+      this.logger.error(
+        `REFUND_EMAIL_FAILED order=${orderId}: ${message}`,
+      )
+    } catch (error) {
+      this.logger.error(
+        `REFUND_EMAIL_INTERNAL_ERROR order=${orderId}: ${
+          error instanceof Error
+            ? error.message
+            : String(error)
+        }`,
+      )
+    }
+  }
+
+  private escapeRefundHtml(
+    value: unknown,
+  ): string {
+    return String(
+      value ?? '',
+    )
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
   }
 
   private isUncertainStripeError(error: any) {

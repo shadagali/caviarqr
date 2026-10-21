@@ -157,7 +157,7 @@ export class Business {
 
   @Column({
     type: 'float',
-    default: 1.75,
+    default: 4.75,
   })
   processingFeePercent: number
 
@@ -205,6 +205,74 @@ export class Business {
   })
   coverImage:
     | string
+    | null
+
+  // =========================
+  // SALES PARTNER ATTRIBUTION
+  // =========================
+
+  @Column({
+    type: 'integer',
+    nullable: true,
+  })
+  salesPartnerId: number | null
+
+  /*
+   * Snapshot of the commission rate for
+   * this café. 1000 = 10% of CaviarQR's
+   * platform fee.
+   */
+  @Column({
+    type: 'integer',
+    nullable: true,
+  })
+  salesCommissionBps:
+    | number
+    | null
+
+  @Column({
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+  })
+  salesAttributionSource:
+    | string
+    | null
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  salesAttributedAt:
+    | Date
+    | null
+
+  /*
+   * Once locked, automatic attribution
+   * must not silently move this café to
+   * another sales partner.
+   */
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  salesAttributionLockedAt:
+    | Date
+    | null
+
+  /*
+   * Ongoing Sales Partner commission is the default.
+   * When Maintenance terminates commission for this
+   * café, only transactions at/after this timestamp
+   * stop generating new commission. Historical earned
+   * commission is preserved.
+   */
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  salesCommissionTerminatedAt:
+    | Date
     | null
 
   // =========================

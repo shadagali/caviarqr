@@ -57,6 +57,16 @@ export class MenuItem {
   discount: number
 
   // =========================
+  // CUSTOMIZATIONS
+  // =========================
+
+  @Column({
+    type: 'jsonb',
+    default: () => "'[]'::jsonb",
+  })
+  customizations: any[]
+
+  // =========================
   // IMAGE
   // =========================
 

@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
-
+import { IsNull, Repository } from 'typeorm'
 import {
   Order,
   OrderStatus,
@@ -17,6 +16,114 @@ export class AnalyticsService {
   // ====================================
   // NET REVENUE HELPERS
   // ====================================
+
+  private async getHistoricalTotals(
+    businessId: number,
+  ) {
+    const rows:
+      Array<{
+        orderCount: string
+        grossRevenueCents: string
+        ownerAnalyticsNetRevenueCents: string
+      }> =
+      await this.orderRepo.manager.query(
+        `
+          SELECT
+            COALESCE(
+              SUM("orderCount"),
+              0
+            )::text AS "orderCount",
+
+            COALESCE(
+              SUM("grossRevenueCents"),
+              0
+            )::text AS "grossRevenueCents",
+
+            COALESCE(
+              SUM(
+                "ownerAnalyticsNetRevenueCents"
+              ),
+              0
+            )::text
+              AS "ownerAnalyticsNetRevenueCents"
+
+          FROM
+            "business_order_history_monthly"
+
+          WHERE
+            "businessId" = $1
+        `,
+        [businessId],
+      )
+
+    const row =
+      rows[0] || {
+        orderCount: '0',
+        grossRevenueCents: '0',
+        ownerAnalyticsNetRevenueCents:
+          '0',
+      }
+
+    return {
+      orderCount:
+        Number(
+          row.orderCount || 0,
+        ),
+
+      grossRevenue:
+        Number(
+          row.grossRevenueCents || 0,
+        ) / 100,
+
+      ownerAnalyticsNetRevenue:
+        Number(
+          row.ownerAnalyticsNetRevenueCents ||
+            0,
+        ) / 100,
+    }
+  }
+
+  private async getHistoricalTopItems(
+    businessId: number,
+  ) {
+    const rows:
+      Array<{
+        itemName: string
+        quantitySold: string
+      }> =
+      await this.orderRepo.manager.query(
+        `
+          SELECT
+            "itemName",
+
+            SUM(
+              "quantitySold"
+            )::text AS "quantitySold"
+
+          FROM
+            "business_order_item_history_monthly"
+
+          WHERE
+            "businessId" = $1
+
+          GROUP BY
+            "itemName"
+        `,
+        [businessId],
+      )
+
+    return rows.map(
+      (row) => ({
+        itemName:
+          row.itemName,
+
+        quantitySold:
+          Number(
+            row.quantitySold || 0,
+          ),
+      }),
+    )
+  }
 
   private money(
     value: unknown,
@@ -139,8 +246,15 @@ export class AnalyticsService {
       await this.orderRepo.find({
         where: {
           businessId,
+          archivedAt:
+            IsNull(),
         },
       })
+
+    const historical =
+      await this.getHistoricalTotals(
+        businessId,
+      )
 
     const now =
       new Date()
@@ -260,10 +374,16 @@ export class AnalyticsService {
       monthRefunds
 
     const allTimeNetRevenue =
+      historical.ownerAnalyticsNetRevenue +
       allTimeSalesAfterFees -
       allTimeRefunds
 
+    const allTimeOrderCount =
+      historical.orderCount +
+      orders.length
+
     const grossRevenue =
+      historical.grossRevenue +
       orders.reduce(
         (sum, order) =>
           sum +
@@ -308,14 +428,14 @@ export class AnalyticsService {
         ),
 
       allTimeOrders:
-        orders.length,
+        allTimeOrderCount,
 
       averageOrderValue:
-        orders.length > 0
+        allTimeOrderCount > 0
           ? Number(
               (
                 grossRevenue /
-                orders.length
+                  allTimeOrderCount
               ).toFixed(2),
             )
           : 0,
@@ -333,6 +453,8 @@ export class AnalyticsService {
       await this.orderRepo.find({
         where: {
           businessId,
+          archivedAt:
+            IsNull(),
         },
       })
 
@@ -341,6 +463,21 @@ export class AnalyticsService {
         string,
         number
       >()
+
+    const historicalItems =
+      await this.getHistoricalTopItems(
+        businessId,
+      )
+
+    for (
+      const item
+      of historicalItems
+    ) {
+      itemMap.set(
+        item.itemName,
+        item.quantitySold,
+      )
+    }
 
     for (const order of orders) {
       const items =
@@ -403,6 +540,8 @@ export class AnalyticsService {
       await this.orderRepo.find({
         where: {
           businessId,
+          archivedAt:
+            IsNull(),
         },
       })
 
@@ -512,6 +651,8 @@ export class AnalyticsService {
       await this.orderRepo.find({
         where: {
           businessId,
+          archivedAt:
+            IsNull(),
         },
 
         order: {
@@ -575,6 +716,8 @@ export class AnalyticsService {
     return this.orderRepo.find({
       where: {
         businessId,
+        archivedAt:
+          IsNull(),
       },
 
       order: {
@@ -584,11 +727,25 @@ export class AnalyticsService {
     })
   }
 
-  async getStats() {
+  async getStats(
+    businessId: number,
+  ) {
     const orders =
-      await this.orderRepo.find()
+      await this.orderRepo.find({
+        where: {
+          businessId,
+          archivedAt:
+            IsNull(),
+        },
+      })
+
+    const historical =
+      await this.getHistoricalTotals(
+        businessId,
+      )
 
     const netRevenue =
+      historical.ownerAnalyticsNetRevenue +
       orders.reduce(
         (sum, order) =>
           sum +
@@ -603,6 +760,7 @@ export class AnalyticsService {
 
     return {
       totalOrders:
+        historical.orderCount +
         orders.length,
 
       revenue:

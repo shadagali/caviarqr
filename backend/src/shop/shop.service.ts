@@ -34,6 +34,11 @@ import {
   ShopOrderItem,
 } from './shop-order-item.entity'
 
+import {
+  SalesPartner,
+  SalesPartnerStatus,
+} from '../sales/entities/sales-partner.entity'
+
 type CheckoutItemInput = {
   productId: number
   quantity: number
@@ -1247,8 +1252,29 @@ export class ShopService {
   async createCheckout(
     body: {
       items?: CheckoutItemInput[]
+      salesCode?: string
     },
   ) {
+    /*
+     * Referral codes are never trusted
+     * for partner IDs or discount amounts.
+     * The browser supplies only a code.
+     */
+    const salesCode =
+      String(
+        body?.salesCode || '',
+      )
+        .trim()
+        .toUpperCase()
+
+    if (
+      salesCode.length > 32
+    ) {
+      throw new BadRequestException(
+        'Sales Partner code is invalid or unavailable.',
+      )
+    }
+
     const requested =
       this.normalizeCheckoutItems(
         body?.items,
@@ -1267,6 +1293,73 @@ export class ShopService {
       await this.dataSource
         .transaction(
           async (manager) => {
+            /*
+             * Resolve attribution inside the same
+             * transaction that creates the hardware
+             * order. Only ACTIVE partners may create
+             * new attributed sales.
+             */
+            let salesPartner:
+              SalesPartner | null =
+              null
+
+            if (salesCode) {
+              salesPartner =
+                await manager
+                  .getRepository(
+                    SalesPartner,
+                  )
+                  .createQueryBuilder(
+                    'salesPartner',
+                  )
+                  .setLock(
+                    'pessimistic_read',
+                  )
+                  .where(
+                    'salesPartner.referralCode = :salesCode',
+                    {
+                      salesCode,
+                    },
+                  )
+                  .andWhere(
+                    'salesPartner.status = :salesPartnerStatus',
+                    {
+                      salesPartnerStatus:
+                        SalesPartnerStatus
+                          .ACTIVE,
+                    },
+                  )
+                  .getOne()
+
+              if (!salesPartner) {
+                throw new BadRequestException(
+                  'Sales Partner code is invalid or unavailable.',
+                )
+              }
+            }
+
+            const hardwareDiscountBps =
+              salesPartner
+                ? Number(
+                    salesPartner
+                      .hardwareDiscountBps ||
+                      0,
+                  )
+                : 0
+
+            if (
+              !Number.isInteger(
+                hardwareDiscountBps,
+              ) ||
+              hardwareDiscountBps < 0 ||
+              hardwareDiscountBps >
+                10000
+            ) {
+              throw new BadRequestException(
+                'Sales Partner promotion is unavailable.',
+              )
+            }
+
             const productRepo =
               manager.getRepository(
                 ShopProduct,
@@ -1297,13 +1390,22 @@ export class ShopService {
               )
             }
 
+            /*
+             * subtotalCents remains the original
+             * merchandise subtotal. The actual
+             * Sales Partner discount is snapshotted
+             * separately on ShopOrder.
+             */
             let subtotalCents = 0
+            let salesDiscountCents = 0
 
             const lineData:
               {
                 product:
                   ShopProduct
                 quantity:
+                  number
+                checkoutUnitPriceCents:
                   number
               }[] = []
 
@@ -1335,12 +1437,46 @@ export class ShopService {
                 product.priceCents *
                 quantity
 
+              /*
+               * Discount each physical unit in
+               * integer cents. This guarantees
+               * the amount saved in our database
+               * exactly matches the Stripe line
+               * item amounts we later create.
+               */
+              const unitDiscountCents =
+                Math.floor(
+                  (
+                    product.priceCents *
+                    hardwareDiscountBps
+                  ) /
+                    10000,
+                )
+
+              const checkoutUnitPriceCents =
+                product.priceCents -
+                unitDiscountCents
+
+              if (
+                checkoutUnitPriceCents <
+                0
+              ) {
+                throw new BadRequestException(
+                  'Sales Partner promotion is unavailable.',
+                )
+              }
+
+              salesDiscountCents +=
+                unitDiscountCents *
+                quantity
+
               product.inventory -=
                 quantity
 
               lineData.push({
                 product,
                 quantity,
+                checkoutUnitPriceCents,
               })
             }
 
@@ -1351,7 +1487,8 @@ export class ShopService {
             const shippingCents = 0
 
             const totalCents =
-              subtotalCents +
+              subtotalCents -
+              salesDiscountCents +
               shippingCents
 
             const orderRepo =
@@ -1409,6 +1546,25 @@ export class ShopService {
                   checkoutExpiresAt:
                     expiresAt,
 
+                  /*
+                   * Immutable Sales Partner
+                   * attribution snapshot.
+                   * Never derive historical
+                   * attribution from a mutable
+                   * referral code later.
+                   */
+                  salesPartnerId:
+                    salesPartner
+                      ?.id ||
+                    null,
+
+                  salesCode:
+                    salesPartner
+                      ? salesCode
+                      : null,
+
+                  salesDiscountCents,
+
                   paidAt: null,
 
                   shippedAt: null,
@@ -1436,6 +1592,11 @@ export class ShopService {
                     productName:
                       product.name,
 
+                    /*
+                     * Historical list price
+                     * snapshot before the
+                     * referral discount.
+                     */
                     unitPriceCents:
                       product
                         .priceCents,
@@ -1448,14 +1609,35 @@ export class ShopService {
               items,
             )
 
+            const checkoutItems =
+              lineData.map(
+                ({
+                  product,
+                  quantity,
+                  checkoutUnitPriceCents,
+                }) => ({
+                  productName:
+                    product.name,
+
+                  unitPriceCents:
+                    checkoutUnitPriceCents,
+
+                  quantity,
+                }),
+              )
+
             return {
               order,
               items,
+              checkoutItems,
             }
           },
         )
 
-    const metadata = {
+    const metadata: {
+      [key: string]:
+        string
+    } = {
       checkoutType:
         'hardware_store',
 
@@ -1467,6 +1649,30 @@ export class ShopService {
       orderNumber:
         reserved.order
           .orderNumber,
+    }
+
+    if (
+      reserved.order
+        .salesPartnerId &&
+      reserved.order
+        .salesCode
+    ) {
+      metadata.salesPartnerId =
+        String(
+          reserved.order
+            .salesPartnerId,
+        )
+
+      metadata.salesCode =
+        reserved.order
+          .salesCode
+
+      metadata.salesDiscountCents =
+        String(
+          reserved.order
+            .salesDiscountCents ||
+            0,
+        )
     }
 
     let session:
@@ -1487,7 +1693,9 @@ export class ShopService {
               ],
 
               line_items:
-                reserved.items.map(
+                reserved
+                  .checkoutItems
+                  .map(
                   (item) => ({
                     price_data: {
                       currency:

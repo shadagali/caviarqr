@@ -30,6 +30,8 @@ export class ShopController {
         productId: number
         quantity: number
       }[]
+
+      salesCode?: string
     },
   ) {
     return this.shopService

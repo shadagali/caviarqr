@@ -23,13 +23,16 @@ import {
   Socket,
 } from 'socket.io'
 
-import {
+import { OrderStatus,
   Order,
 } from './order.entity'
+
+import { Business } from '../business/business.entity'
 
 import {
   KitchenSession,
   verifyKitchenToken,
+  kitchenSessionMatchesPassword,
 } from '../kitchen-auth/kitchen-token'
 
 function socketOrigins() {
@@ -78,6 +81,10 @@ export class OrderGateway {
     @InjectRepository(Order)
     private readonly orderRepo:
       Repository<Order>,
+
+    @InjectRepository(Business)
+    private readonly businessRepo:
+      Repository<Business>,
   ) {}
 
   @SubscribeMessage('join')
@@ -87,7 +94,7 @@ export class OrderGateway {
   ) {
     try {
       const kitchen =
-        this.authenticate(client)
+        await this.authenticate(client)
 
       client.data.kitchen =
         kitchen
@@ -154,7 +161,7 @@ export class OrderGateway {
 
     try {
       const kitchen =
-        this.sessionFor(client)
+        await this.sessionFor(client)
 
       orderId = Number(
         payload?.orderId,
@@ -189,6 +196,12 @@ export class OrderGateway {
         )
       }
 
+      if (order.status === OrderStatus.PENDING_PAYMENT) {
+        throw new Error(
+          'Cannot acknowledge an unpaid order.',
+        )
+      }
+
       const now = new Date()
 
       if (
@@ -203,6 +216,29 @@ export class OrderGateway {
 
       order.lastKitchenAckAt =
         now
+
+      /*
+       * If the only outstanding Action Center problem was
+       * a missing kitchen ACK, receiving the ACK proves that
+       * specific problem has recovered.
+       *
+       * Do not resolve or overwrite any other issue type.
+       */
+      if (
+        order.requiresOwnerAction === true &&
+        order.issueResolved !== true &&
+        order.ownerIssueType ===
+          'KITCHEN_ACK_TIMEOUT'
+      ) {
+        order.requiresOwnerAction =
+          false
+        order.issueResolved =
+          true
+        order.ownerActionResolvedAt =
+          now
+        order.ownerActionResolvedBy =
+          'SYSTEM_KITCHEN_ACK'
+      }
 
       order.kitchenAckCount =
         Math.max(
@@ -324,29 +360,13 @@ export class OrderGateway {
       )
   }
 
-  private sessionFor(
-    client: Socket,
-  ) {
-    const existing =
-      client.data
-        .kitchen as
-        | KitchenSession
-        | undefined
-
-    if (existing) {
-      return existing
-    }
-
-    const kitchen =
-      this.authenticate(client)
-
-    client.data.kitchen =
-      kitchen
-
+  private async sessionFor(client: Socket) {
+    const kitchen = await this.authenticate(client)
+    client.data.kitchen = kitchen
     return kitchen
   }
 
-  private authenticate(
+  private async authenticate(
     client: Socket,
   ) {
     const authToken =
@@ -379,9 +399,35 @@ export class OrderGateway {
       )
     }
 
-    return verifyKitchenToken(
-      token,
-    )
+    const kitchen = verifyKitchenToken(token)
+
+    const business = await this.businessRepo.findOne({
+      where: {
+        id: kitchen.businessId,
+        storeCode: kitchen.storeCode,
+      },
+    })
+
+    if (!business || !kitchenSessionMatchesPassword(
+      kitchen,
+      business.kitchenPassword,
+    )) {
+      throw new Error('Kitchen session was revoked.')
+    }
+
+    return kitchen
+  }
+
+  revokeKitchenSessions(businessId: number) {
+    if (!this.server) return
+
+    const room = this.room(businessId)
+
+    this.server.to(room).emit('kitchenAuthFailed', {
+      message: 'Kitchen password changed. Sign in again.',
+    })
+
+    this.server.in(room).disconnectSockets(true)
   }
 
   private room(

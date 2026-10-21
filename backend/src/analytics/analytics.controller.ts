@@ -1,15 +1,27 @@
 import {
   Controller,
   Get,
-  Param,
+  Req,
+  UseGuards,
 } from '@nestjs/common'
 
-import { AnalyticsService } from './analytics.service'
+import {
+  AnalyticsService,
+} from './analytics.service'
+
+import {
+  OwnerSessionGuard,
+} from '../owner-auth/owner-session.guard'
+
+import type {
+  OwnerRequest,
+} from '../owner-auth/owner-session.guard'
 
 @Controller('analytics')
 export class AnalyticsController {
   constructor(
-    private readonly analyticsService: AnalyticsService,
+    private readonly analyticsService:
+      AnalyticsService,
   ) {}
 
   // ====================================
@@ -19,13 +31,15 @@ export class AnalyticsController {
   @Get(
     'dashboard/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   getDashboard(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
   ) {
-    return this.analyticsService.getDashboard(
-      Number(businessId),
-    )
+    return this.analyticsService
+      .getDashboard(
+        request.owner!.businessId,
+      )
   }
 
   // ====================================
@@ -35,30 +49,33 @@ export class AnalyticsController {
   @Get(
     'top-items/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   getTopItems(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
   ) {
-    return this.analyticsService.getTopItems(
-      Number(businessId),
-    )
+    return this.analyticsService
+      .getTopItems(
+        request.owner!.businessId,
+      )
   }
 
   // ====================================
   // REVENUE CHART
-  // LAST 30 DAYS
   // ====================================
 
   @Get(
     'revenue-chart/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   getRevenueChart(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
   ) {
-    return this.analyticsService.getRevenueChart(
-      Number(businessId),
-    )
+    return this.analyticsService
+      .getRevenueChart(
+        request.owner!.businessId,
+      )
   }
 
   // ====================================
@@ -68,46 +85,63 @@ export class AnalyticsController {
   @Get(
     'recent-orders/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   getRecentOrders(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
   ) {
-    return this.analyticsService.getRecentOrders(
-      Number(businessId),
-    )
+    return this.analyticsService
+      .getRecentOrders(
+        request.owner!.businessId,
+      )
   }
 
   // ====================================
   // LEGACY ENDPOINTS
-  // KEEP FOR COMPATIBILITY
+  // URLs kept for compatibility.
+  // Signed owner cafe is authoritative.
   // ====================================
 
   @Get(
     'revenue/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   getRevenue(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
   ) {
-    return this.analyticsService.getRevenue(
-      Number(businessId),
-    )
+    return this.analyticsService
+      .getRevenue(
+        request.owner!.businessId,
+      )
   }
 
   @Get(
     'orders/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   getOrders(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
   ) {
-    return this.analyticsService.getOrders(
-      Number(businessId),
-    )
+    return this.analyticsService
+      .getOrders(
+        request.owner!.businessId,
+      )
   }
 
+  // Previously returned data across ALL cafes.
+  // Preserve response shape but scope it to
+  // the authenticated owner's cafe.
   @Get('stats')
-  getStats() {
-    return this.analyticsService.getStats()
+  @UseGuards(OwnerSessionGuard)
+  getStats(
+    @Req()
+    request: OwnerRequest,
+  ) {
+    return this.analyticsService
+      .getStats(
+        request.owner!.businessId,
+      )
   }
 }

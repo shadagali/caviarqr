@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react"
 import { useParams, useSearchParams } from "next/navigation"
 import axios from "axios"
 import html2canvas from "html2canvas"
+import MenuCustomizationModal from "../../../components/MenuCustomizationModal"
+import MenuDescriptionDetails from "../../../components/MenuDescriptionDetails"
+import RecommendedMenuGrid from "../../../components/RecommendedMenuGrid"
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
@@ -302,15 +305,57 @@ const css = `
     object-fit: cover;
   }
 
+  /* PHOTO_ON_TOP_MENU_CARDS_20261010 */
+
+  .menu-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 12px;
+    row-gap: 14px;
+  }
+
+  .menu-row .menu-right {
+    display: contents;
+  }
+
+  .menu-row .menu-img-wrap {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    width: 100%;
+    height: clamp(180px, 58vw, 260px);
+    min-width: 0;
+    border-radius: 16px;
+  }
+
+  .menu-row .menu-img-wrap img {
+    display: block;
+  }
+
+  .menu-row .menu-info {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: start;
+  }
+
+  .menu-row .menu-right > .add-btn,
+  .menu-row .menu-right > .qty-control {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    align-self: start;
+  }
+
+
   .add-btn {
     background: var(--bg);
-    border: 2px solid var(--accent-light);
+    border: 2px solid #e5e5e5;
     border-radius: 50%;
     width: 34px;
     height: 34px;
     font-size: 20px;
     font-weight: 400;
-    color: var(--accent);
+    color: #111;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -339,7 +384,7 @@ const css = `
     width: 30px;
     height: 30px;
     font-size: 16px;
-    color: var(--accent);
+    color: #111;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -375,16 +420,18 @@ const css = `
 
   .pay-btn {
     width: 100%;
-    background: var(--accent);
-    color: white;
+    background: #fff;
+    color: #111;
     border: none;
+    outline: 1px solid #111;
+    outline-offset: -1px;
     border-radius: var(--radius);
     font-family: var(--font);
     font-size: 16px;
     font-weight: 700;
     padding: 16px 20px;
     cursor: pointer;
-    box-shadow: 0 8px 20px rgba(255,48,8,0.28);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.12);
     transition: transform 0.15s ease;
   }
 
@@ -587,6 +634,13 @@ export default function StorePage() {
   const [business, setBusiness] = useState<any>(null)
   const [stand, setStand] = useState<any>(null)
   const [cart, setCart] = useState<any[]>([])
+
+  const [
+    customizationItem,
+    setCustomizationItem,
+  ] = useState<any | null>(
+    null,
+  )
   const [loading, setLoading] = useState(true)
   const [scrolled, setScrolled] = useState(false)
 
@@ -835,48 +889,247 @@ export default function StorePage() {
       link.click()
     }
 
-  const addToCart = (item: any) => {
+  const getCartKey = (
+    item: any,
+  ) =>
+    String(
+      item?.cartKey ||
+        `item:${item?.id}`,
+    )
+
+  const addToCart = (
+    item: any,
+  ) => {
+    const key =
+      getCartKey(item)
+
     setCart((prev) => {
-      const existing = prev.find(
-        (i) => i.id === item.id,
-      )
+      const existing =
+        prev.find(
+          (candidate) =>
+            getCartKey(
+              candidate,
+            ) === key,
+        )
 
       if (existing) {
-        return prev.map((i) =>
-          i.id === item.id
-            ? {
-                ...i,
-                qty: (i.qty || 1) + 1,
-              }
-            : i,
+        return prev.map(
+          (candidate) =>
+            getCartKey(
+              candidate,
+            ) === key
+              ? {
+                  ...candidate,
+                  qty:
+                    Number(
+                      candidate.qty ||
+                        1,
+                    ) + 1,
+                }
+              : candidate,
         )
       }
 
-      return [...prev, { ...item, qty: 1 }]
+      return [
+        ...prev,
+        {
+          ...item,
+          cartKey: key,
+          qty: 1,
+        },
+      ]
     })
   }
 
-  const removeFromCart = (id: any) => {
-    setCart((prev) => {
-      const existing = prev.find(
-        (i) => i.id === id,
+  const removeFromCart = (
+    idOrKey: any,
+  ) => {
+    const targetKey =
+      String(
+        idOrKey,
+      ).startsWith(
+        "item:",
       )
+        ? String(idOrKey)
+        : `item:${idOrKey}`
 
-      if (!existing) return prev
+    setCart((prev) => {
+      const existing =
+        prev.find(
+          (candidate) =>
+            getCartKey(
+              candidate,
+            ) ===
+            targetKey,
+        )
 
-      if ((existing.qty || 1) <= 1) {
-        return prev.filter((i) => i.id !== id)
+      if (!existing) {
+        return prev
       }
 
-      return prev.map((i) =>
-        i.id === id
-          ? {
-              ...i,
-              qty: i.qty - 1,
-            }
-          : i,
+      if (
+        Number(
+          existing.qty ||
+            1,
+        ) <= 1
+      ) {
+        return prev.filter(
+          (candidate) =>
+            getCartKey(
+              candidate,
+            ) !==
+            targetKey,
+        )
+      }
+
+      return prev.map(
+        (candidate) =>
+          getCartKey(
+            candidate,
+          ) ===
+          targetKey
+            ? {
+                ...candidate,
+                qty:
+                  Number(
+                    candidate.qty ||
+                      1,
+                  ) - 1,
+              }
+            : candidate,
       )
     })
+  }
+
+  const beginAdd = (
+    item: any,
+  ) => {
+    const groups =
+      Array.isArray(
+        item?.customizations,
+      )
+        ? item.customizations
+        : []
+
+    /*
+     * CRITICAL BACKWARD-COMPATIBILITY RULE:
+     * no customization groups = old CaviarQR
+     * one-tap Add to Cart behavior.
+     */
+    if (
+      groups.length === 0
+    ) {
+      addToCart(item)
+      return
+    }
+
+    setCustomizationItem(
+      item,
+    )
+  }
+
+  const addCustomizedItem = (
+    result: {
+      selections: Array<{
+        groupId: string
+        optionIds: string[]
+      }>
+      summary: string[]
+      extraPrice: number
+    },
+  ) => {
+    if (
+      !customizationItem
+    ) {
+      return
+    }
+
+    const originalPrice =
+      Number(
+        customizationItem
+          .price ||
+          0,
+      )
+
+    const discount =
+      Number(
+        customizationItem
+          .discount ||
+          0,
+      )
+
+    const discountedBase =
+      discount > 0
+        ? originalPrice *
+          (
+            1 -
+            discount /
+              100
+          )
+        : originalPrice
+
+    const finalUnitPrice =
+      Number(
+        (
+          discountedBase +
+          Number(
+            result.extraPrice ||
+              0,
+          )
+        ).toFixed(2),
+      )
+
+    const selectionSignature =
+      JSON.stringify(
+        [...result.selections]
+          .map(
+            (selection) => ({
+              groupId:
+                selection.groupId,
+              optionIds:
+                [
+                  ...selection
+                    .optionIds,
+                ].sort(),
+            }),
+          )
+          .sort(
+            (left, right) =>
+              left.groupId
+                .localeCompare(
+                  right.groupId,
+                ),
+          ),
+      )
+
+    addToCart({
+      ...customizationItem,
+
+      /*
+       * Cart displays the final unit
+       * price. Checkout still ignores
+       * this browser price and
+       * recalculates it from PostgreSQL.
+       */
+      price:
+        finalUnitPrice,
+
+      discount:
+        0,
+
+      cartKey:
+        `item:${customizationItem.id}:${selectionSignature}`,
+
+      customizations:
+        result.selections,
+
+      customizationSummary:
+        result.summary,
+    })
+
+    setCustomizationItem(
+      null,
+    )
   }
 
   const total = cart.reduce((sum, i) => {
@@ -1180,10 +1433,13 @@ export default function StorePage() {
 
             <div className="success-sub">
               Your order has been sent to the kitchen.
+              </div>
+              <div className="success-sub">
+                Your receipt will be emailed to you.
             </div>
 
             <div
-              className="receipt-box"
+              className="receipt-box" style={{ display: "none" }}
               ref={receiptRef}
             >
               <div
@@ -1445,7 +1701,7 @@ export default function StorePage() {
             </div>
 
             <button
-              className="success-btn receipt-download"
+              className="success-btn receipt-download" style={{ display: "none" }}
               onClick={
                 downloadReceipt
               }
@@ -1455,11 +1711,17 @@ export default function StorePage() {
 
             <button
               className="success-btn"
+                style={{
+                  background: "#FFFFFF",
+                  color: "#000000",
+                  border: "1px solid #000000",
+                  boxShadow: "none",
+                }}
               onClick={() =>
                 setShowSuccess(false)
               }
             >
-              Continue
+              Done
             </button>
           </div>
         </div>
@@ -1639,6 +1901,21 @@ export default function StorePage() {
               </div>
             )}
 
+          <RecommendedMenuGrid
+            items={Object.keys(grouped)
+              .flatMap((cat) => grouped[cat])
+              .filter((i: any) => !i.isHidden)}
+            cart={cart}
+            isOpen={business?.isOpen !== false}
+            paymentsReady={business?.paymentsReady !== false}
+            paymentMessage={business?.paymentMessage}
+            onAdd={(i: any) => beginAdd(i)}
+            onRemove={(id: any) => removeFromCart(id)}
+            formatPrice={(amount: number) =>
+              formatMoney(amount, business?.currency)
+            }
+          />
+
           {Object.keys(grouped).map((cat) => (
             <div
               key={cat}
@@ -1689,17 +1966,34 @@ export default function StorePage() {
                       </div>
 
                       {i.description && (
-                        <div
-                          style={{
-                            fontSize: 13,
-                            color: "#666",
-                            marginTop: 4,
-                            marginBottom: 6,
-                          }}
-                        >
-                          {i.description}
-                        </div>
-                      )}
+                          <MenuDescriptionDetails
+                            description={String(i.description)}
+                            name={String(i.name)}
+                            imageSrc={
+                              i.imageUrl
+                                ? `${process.env.NEXT_PUBLIC_API_URL}${i.imageUrl}`
+                                : undefined
+                            }
+                            priceText={formatMoney(
+                              Number(discountedPrice ?? i.price),
+                              business?.currency,
+                            )}
+                            showAdd={
+                              business?.isOpen !== false && !isOut
+                            }
+                            onAdd={() => {
+                              if (isOut) return
+                              if (business?.paymentsReady === false) {
+                                alert(
+                                  business?.paymentMessage ||
+                                    "Online ordering is temporarily unavailable.",
+                                )
+                                return
+                              }
+                              beginAdd(i)
+                            }}
+                          />
+                        )}
 
                       <div className="price-row">
                         {isOut && (
@@ -1759,7 +2053,7 @@ export default function StorePage() {
                         />
                       </div>
 
-                      {business?.isOpen === false ? null : cartItem ? (
+                      {business?.isOpen === false ? null : cartItem && !(Array.isArray(i.customizations) && i.customizations.length > 0) ? (
                         <div className="qty-control">
                           <button
                             className="qty-btn"
@@ -1787,7 +2081,7 @@ export default function StorePage() {
                                 return
                               }
 
-                              addToCart(i)
+                              beginAdd(i)
                             }}
                           >
                             +
@@ -1807,7 +2101,7 @@ export default function StorePage() {
                               return
                             }
 
-                            addToCart(i)
+                            beginAdd(i)
                           }}
                         >
                           +
@@ -1820,6 +2114,17 @@ export default function StorePage() {
             </div>
           ))}
         </div>
+      )}
+
+      {customizationItem && (
+        <MenuCustomizationModal
+          item={customizationItem}
+          currency={business?.currency}
+          onClose={() =>
+            setCustomizationItem(null)
+          }
+          onAdd={addCustomizedItem}
+        />
       )}
 
       {!loading && (

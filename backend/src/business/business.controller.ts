@@ -1,12 +1,26 @@
 import {
   Controller,
   Post,
+  Get,
   Patch,
-  Param,
   Body,
+  Req,
+  UseGuards,
 } from '@nestjs/common'
 
 import { BusinessService } from './business.service'
+
+import type {
+  Request,
+} from 'express'
+
+import {
+  OwnerSessionGuard,
+} from '../owner-auth/owner-session.guard'
+
+import type {
+  OwnerRequest,
+} from '../owner-auth/owner-session.guard'
 
 @Controller('business')
 export class BusinessController {
@@ -26,10 +40,30 @@ export class BusinessController {
       email: string
       password: string
       storeCode: string
+      termsAccepted?: boolean
+      termsVersion?: string
+      privacyAcknowledged?: boolean
+      privacyVersion?: string
     },
+
+    @Req()
+    request: Request,
   ) {
     return this.businessService.signup(
       body,
+      {
+        ipAddress:
+          request.ip ||
+          request.socket
+            ?.remoteAddress ||
+          null,
+
+        userAgent:
+          request.get(
+            'user-agent',
+          ) ||
+          null,
+      },
     )
   }
 
@@ -99,9 +133,10 @@ export class BusinessController {
   @Patch(
     'country-currency/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   async setCountryAndCurrency(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
 
     @Body()
     body: {
@@ -110,7 +145,7 @@ export class BusinessController {
   ) {
     return this.businessService
       .setCountryAndCurrency(
-        Number(businessId),
+        request.owner!.businessId,
         body.countryCode,
       )
   }
@@ -137,19 +172,32 @@ export class BusinessController {
   // 🔥 SET KITCHEN PASSWORD
   // =========================
 
+  @Get('kitchen-password-status')
+  @UseGuards(OwnerSessionGuard)
+  async kitchenPasswordStatus(
+    @Req()
+    request: OwnerRequest,
+  ) {
+    return this.businessService
+      .kitchenPasswordStatus(
+        request.owner!.businessId,
+      )
+  }
+
   @Post('set-kitchen-password')
+  @UseGuards(OwnerSessionGuard)
   async setKitchenPassword(
+    @Req()
+    request: OwnerRequest,
+
     @Body()
     body: {
-      businessId: number
       password: string
     },
   ) {
     return this.businessService
       .setKitchenPassword(
-        Number(
-          body.businessId,
-        ),
+        request.owner!.businessId,
         body.password,
       )
   }
@@ -161,17 +209,14 @@ export class BusinessController {
   @Post(
     'disable-kitchen-password',
   )
+  @UseGuards(OwnerSessionGuard)
   async disableKitchenPassword(
-    @Body()
-    body: {
-      businessId: number
-    },
+    @Req()
+    request: OwnerRequest,
   ) {
     return this.businessService
       .disableKitchenPassword(
-        Number(
-          body.businessId,
-        ),
+        request.owner!.businessId,
       )
   }
 
@@ -180,18 +225,19 @@ export class BusinessController {
   // =========================
 
   @Post('set-service-fee')
+  @UseGuards(OwnerSessionGuard)
   async setServiceFee(
+    @Req()
+    request: OwnerRequest,
+
     @Body()
     body: {
-      businessId: number
       fee: number
     },
   ) {
     return this.businessService
       .setServiceFee(
-        Number(
-          body.businessId,
-        ),
+        request.owner!.businessId,
         Number(
           body.fee,
         ),
@@ -203,19 +249,20 @@ export class BusinessController {
   // =========================
 
   @Post('update-branding')
+  @UseGuards(OwnerSessionGuard)
   async updateBranding(
+    @Req()
+    request: OwnerRequest,
+
     @Body()
     body: {
-      businessId: number
       name?: string
       logo?: string
     },
   ) {
     return this.businessService
       .updateBranding(
-        Number(
-          body.businessId,
-        ),
+        request.owner!.businessId,
         body.name,
         body.logo,
       )
@@ -228,15 +275,14 @@ export class BusinessController {
   @Patch(
     'toggle-open/:businessId',
   )
+  @UseGuards(OwnerSessionGuard)
   async toggleOpen(
-    @Param('businessId')
-    businessId: string,
+    @Req()
+    request: OwnerRequest,
   ) {
     return this.businessService
       .toggleOpen(
-        Number(
-          businessId,
-        ),
+        request.owner!.businessId,
       )
   }
 }

@@ -1,3 +1,4 @@
+import { SalesModule } from '../sales/sales.module'
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 
@@ -12,12 +13,15 @@ import { SupportThread } from '../support/support-thread.entity'
 import { OrderModule } from '../order/order.module'
 import { MarketingModule } from '../marketing/marketing.module'
 import { ShopModule } from '../shop/shop.module'
+import { RefundModule } from '../refund/refund.module'
 
 @Module({
   imports: [
+    SalesModule,
     OrderModule,
     MarketingModule,
     ShopModule,
+    RefundModule,
 
     TypeOrmModule.forFeature([
       Order,

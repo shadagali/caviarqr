@@ -4,6 +4,9 @@ const MAINTENANCE_TOKEN_KEY =
 const OWNER_TOKEN_KEY =
   'token'
 
+const SALES_PARTNER_TOKEN_KEY =
+  'caviarqr_sales_partner_token'
+
 function getOwnerToken() {
   if (
     typeof window ===
@@ -62,12 +65,67 @@ export function clearMaintenanceToken() {
   )
 }
 
+export function getSalesPartnerToken() {
+  if (
+    typeof window ===
+    'undefined'
+  ) {
+    return ''
+  }
+
+  return (
+    localStorage.getItem(
+      SALES_PARTNER_TOKEN_KEY,
+    ) || ''
+  )
+}
+
+export function setSalesPartnerToken(
+  token: string,
+) {
+  if (
+    typeof window ===
+    'undefined'
+  ) {
+    return
+  }
+
+  localStorage.setItem(
+    SALES_PARTNER_TOKEN_KEY,
+    token,
+  )
+}
+
+export function clearSalesPartnerToken() {
+  if (
+    typeof window ===
+    'undefined'
+  ) {
+    return
+  }
+
+  localStorage.removeItem(
+    SALES_PARTNER_TOKEN_KEY,
+  )
+}
+
 function shouldAttachMaintenanceToken(
   url: string,
 ) {
   return (
     url.includes('/maintenance') &&
     !url.includes('/maintenance-auth')
+  )
+}
+
+function shouldAttachSalesPartnerToken(
+  url: string,
+) {
+  return (
+    url.includes('/sales/') &&
+    !url.includes('/sales/signup') &&
+    !url.includes('/sales/login') &&
+    !url.includes('/sales/agreement')
   )
 }
 
@@ -121,6 +179,22 @@ export async function apiFetch(
       }
     }
 
+    if (
+      shouldAttachSalesPartnerToken(
+        url,
+      )
+    ) {
+      const token =
+        getSalesPartnerToken()
+
+      if (token) {
+        headers.set(
+          'Authorization',
+          `Bearer ${token}`,
+        )
+      }
+    }
+
     const res = await fetch(url, {
       ...options,
       headers,
@@ -145,7 +219,24 @@ export async function apiFetch(
           'undefined'
         ) {
           window.location.href =
-            '/dashboard/maintenance/login'
+            '/maintenance/login'
+        }
+      }
+
+      if (
+        res.status === 401 &&
+        shouldAttachSalesPartnerToken(
+          url,
+        )
+      ) {
+        clearSalesPartnerToken()
+
+        if (
+          typeof window !==
+          'undefined'
+        ) {
+          window.location.href =
+            '/sales/login'
         }
       }
 

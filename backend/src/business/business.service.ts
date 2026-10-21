@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common'
 
+import Stripe from 'stripe'
 import { InjectRepository } from '@nestjs/typeorm'
 import { DataSource, Repository } from 'typeorm'
 
@@ -14,6 +15,7 @@ import {
 } from './business.entity'
 
 import * as bcrypt from 'bcrypt'
+import { OrderGateway } from '../order/order.gateway'
 
 import {
   createHash,
@@ -32,6 +34,18 @@ import {
   StandCodeStatus,
 } from '../stand/stand-code.entity'
 
+import {
+  SalesPartner,
+} from '../sales/entities/sales-partner.entity'
+
+import {
+  LegalDocument,
+} from '../maintenance/legal-document.entity'
+
+import {
+  BusinessLegalAcceptance,
+} from './business-legal-acceptance.entity'
+
 
 @Injectable()
 export class BusinessService {
@@ -48,17 +62,30 @@ export class BusinessService {
 
     private readonly dataSource:
       DataSource,
+
+    private readonly orderGateway:
+      OrderGateway,
   ) {}
 
   // =========================
   // 🔥 SIGNUP
   // =========================
 
-  async signup(data: {
-    email: string
-    password: string
-    storeCode: string
-  }) {
+  async signup(
+    data: {
+      email: string
+      password: string
+      storeCode: string
+      termsAccepted?: boolean
+      termsVersion?: string
+      privacyAcknowledged?: boolean
+      privacyVersion?: string
+    },
+    context: {
+      ipAddress?: string | null
+      userAgent?: string | null
+    } = {},
+  ) {
     const email =
       String(
         data.email || '',
@@ -73,12 +100,6 @@ export class BusinessService {
         .trim()
         .toLowerCase()
 
-    /*
-     * Manufactured activation codes
-     * are hexadecimal and generated
-     * uppercase. Accept lowercase input
-     * from restaurant owners too.
-     */
     if (
       !email ||
       !data.password ||
@@ -86,6 +107,36 @@ export class BusinessService {
     ) {
       throw new BadRequestException(
         'Email, password and store code are required',
+      )
+    }
+
+    if (
+      data.termsAccepted !==
+        true ||
+      data.privacyAcknowledged !==
+        true
+    ) {
+      throw new BadRequestException(
+        'You must agree to the Terms of Service and acknowledge the Privacy Policy.',
+      )
+    }
+
+    const submittedTermsVersion =
+      String(
+        data.termsVersion || '',
+      ).trim()
+
+    const submittedPrivacyVersion =
+      String(
+        data.privacyVersion || '',
+      ).trim()
+
+    if (
+      !submittedTermsVersion ||
+      !submittedPrivacyVersion
+    ) {
+      throw new BadRequestException(
+        'Current Terms of Service and Privacy Policy versions are required.',
       )
     }
 
@@ -111,6 +162,74 @@ export class BusinessService {
           manager.getRepository(
             StandCode,
           )
+
+        const legalRepo =
+          manager.getRepository(
+            LegalDocument,
+          )
+
+        const acceptanceRepo =
+          manager.getRepository(
+            BusinessLegalAcceptance,
+          )
+
+        /*
+         * Lock the published versions while
+         * this signup records acceptance.
+         * Publishing a replacement version
+         * therefore cannot race this signup.
+         */
+        const termsDocument =
+          await legalRepo.findOne({
+            where: {
+              documentType:
+                'TERMS',
+
+              status:
+                'PUBLISHED',
+            },
+
+            lock: {
+              mode:
+                'pessimistic_read',
+            },
+          })
+
+        const privacyDocument =
+          await legalRepo.findOne({
+            where: {
+              documentType:
+                'PRIVACY',
+
+              status:
+                'PUBLISHED',
+            },
+
+            lock: {
+              mode:
+                'pessimistic_read',
+            },
+          })
+
+        if (
+          !termsDocument ||
+          !privacyDocument
+        ) {
+          throw new BadRequestException(
+            'Current Terms of Service and Privacy Policy are unavailable.',
+          )
+        }
+
+        if (
+          termsDocument.version !==
+            submittedTermsVersion ||
+          privacyDocument.version !==
+            submittedPrivacyVersion
+        ) {
+          throw new BadRequestException(
+            'The Terms of Service or Privacy Policy changed. Please review the current versions and try again.',
+          )
+        }
 
         const existing =
           await businessRepo.findOne({
@@ -160,6 +279,102 @@ export class BusinessService {
             )
           }
 
+          if (!stand.verifiedAt) {
+            stand.verifiedAt =
+              new Date()
+          }
+        }
+
+        let salesPartnerId:
+          number | null =
+          null
+
+        let salesCommissionBps:
+          number | null =
+          null
+
+        let salesAttributionSource:
+          string | null =
+          null
+
+        let salesAttributedAt:
+          Date | null =
+          null
+
+        /*
+         * Carry attribution only from the
+         * immutable partner ID stored on the
+         * manufactured stand.
+         *
+         * Never resolve historical attribution
+         * from a mutable referral code.
+         */
+        if (
+          stand?.salesPartnerId
+        ) {
+          const salesPartner =
+            await manager
+              .getRepository(
+                SalesPartner,
+              )
+              .findOne({
+                where: {
+                  id:
+                    stand
+                      .salesPartnerId,
+                },
+
+                lock: {
+                  mode:
+                    'pessimistic_read',
+                },
+              })
+
+          if (!salesPartner) {
+            throw new BadRequestException(
+              'Sales Partner attribution is unavailable',
+            )
+          }
+
+          const commissionBps =
+            Number(
+              salesPartner
+                .commissionBps,
+            )
+
+          if (
+            !Number.isInteger(
+              commissionBps,
+            ) ||
+            commissionBps < 0 ||
+            commissionBps >
+              10000
+          ) {
+            throw new BadRequestException(
+              'Sales Partner commission configuration is invalid',
+            )
+          }
+
+          salesPartnerId =
+            salesPartner.id
+
+          salesCommissionBps =
+            commissionBps
+
+          salesAttributionSource =
+            String(
+              stand
+                .salesAttributionSource ||
+                'HARDWARE_ORDER',
+            )
+              .trim()
+              .slice(
+                0,
+                32,
+              )
+
+          salesAttributedAt =
+            new Date()
         }
 
         const business =
@@ -171,6 +386,8 @@ export class BusinessService {
 
             storeCode,
 
+            processingFeePercent: 4.75,
+
             isOpen:
               true,
 
@@ -180,12 +397,105 @@ export class BusinessService {
 
             currency:
               BusinessCurrency.USD,
+
+            salesPartnerId,
+
+            salesCommissionBps,
+
+            salesAttributionSource,
+
+            salesAttributedAt,
+
+            /*
+             * Locking occurs when the first
+             * eligible real restaurant order
+             * is processed.
+             */
+            salesAttributionLockedAt:
+              null,
           })
 
         const saved =
           await businessRepo.save(
             business,
           )
+
+        const acceptedAt =
+          new Date()
+
+        const ipAddress =
+          context.ipAddress
+            ? String(
+                context.ipAddress,
+              )
+                .trim()
+                .slice(
+                  0,
+                  64,
+                ) ||
+              null
+            : null
+
+        const userAgent =
+          context.userAgent
+            ? String(
+                context.userAgent,
+              )
+                .trim()
+                .slice(
+                  0,
+                  2000,
+                ) ||
+              null
+            : null
+
+        await acceptanceRepo.save([
+          acceptanceRepo.create({
+            businessId:
+              saved.id,
+
+            documentType:
+              'TERMS',
+
+            documentVersion:
+              termsDocument.version,
+
+            documentHash:
+              termsDocument.contentHash,
+
+            acceptanceAction:
+              'AGREED',
+
+            acceptedAt,
+
+            ipAddress,
+
+            userAgent,
+          }),
+
+          acceptanceRepo.create({
+            businessId:
+              saved.id,
+
+            documentType:
+              'PRIVACY',
+
+            documentVersion:
+              privacyDocument.version,
+
+            documentHash:
+              privacyDocument.contentHash,
+
+            acceptanceAction:
+              'ACKNOWLEDGED',
+
+            acceptedAt,
+
+            ipAddress,
+
+            userAgent,
+          }),
+        ])
 
         /*
          * Business creation and stand
@@ -835,20 +1145,7 @@ If you did not request this reset, you can ignore this email.`,
       )
     }
 
-    // 🔥 PASSWORDLESS MODE
-    if (
-      !business.kitchenPassword
-    ) {
-      return {
-        businessId:
-          business.id,
-
-        storeCode:
-          business.storeCode,
-      }
-    }
-
-    if (!data.password) {
+    if (!business.kitchenPassword || !data.password) {
       throw new UnauthorizedException(
         'Invalid credentials',
       )
@@ -878,6 +1175,30 @@ If you did not request this reset, you can ignore this email.`,
   // =========================
   // 🔥 SET KITCHEN PASSWORD
   // =========================
+
+  async kitchenPasswordStatus(
+    businessId: number,
+  ) {
+    const business = await this.businessRepo.findOne({
+      where: {
+        id: businessId,
+      },
+    })
+
+    if (!business) {
+      throw new UnauthorizedException(
+        'Owner session is invalid.',
+      )
+    }
+
+    return {
+      businessId: business.id,
+      storeCode: business.storeCode,
+      hasKitchenPassword: Boolean(
+        business.kitchenPassword,
+      ),
+    }
+  }
 
   async setKitchenPassword(
     businessId: number,
@@ -920,6 +1241,8 @@ If you did not request this reset, you can ignore this email.`,
       },
     )
 
+    this.orderGateway.revokeKitchenSessions(businessId)
+
     return {
       success:
         true,
@@ -931,34 +1254,11 @@ If you did not request this reset, you can ignore this email.`,
   // =========================
 
   async disableKitchenPassword(
-    businessId: number,
+    _businessId: number,
   ) {
-    const business =
-      await this.businessRepo.findOne({
-        where: {
-          id:
-            businessId,
-        },
-      })
-
-    if (!business) {
-      throw new BadRequestException(
-        'Business not found',
-      )
-    }
-
-    await this.businessRepo.update(
-      businessId,
-      {
-        kitchenPassword:
-          null,
-      },
+    throw new BadRequestException(
+      'Kitchen passwords cannot be disabled',
     )
-
-    return {
-      success:
-        true,
-    }
   }
 
   // =========================
@@ -1084,12 +1384,56 @@ If you did not request this reset, you can ignore this email.`,
       },
     )
 
+    // Check Stripe merchant branding without changing
+    // the connected account's verified identity.
+    let stripeBrandingStatus = 'not_connected'
+    let stripeMerchantName: string | null = null
+
+    if (business.stripeAccountId) {
+      try {
+        const stripeKey =
+          process.env.STRIPE_SECRET_KEY?.trim()
+
+        if (!stripeKey) {
+          throw new Error('Stripe key unavailable')
+        }
+
+        const stripe = new Stripe(stripeKey, {
+          timeout: 5000,
+        })
+
+        const account = await stripe.accounts.retrieve(
+          business.stripeAccountId,
+        )
+
+        stripeMerchantName =
+          account.business_profile?.name?.trim() || null
+
+        const expectedName =
+          cleanedName || business.name?.trim() ||
+          business.storeCode
+
+        stripeBrandingStatus =
+          stripeMerchantName?.toLowerCase() ===
+          expectedName.toLowerCase()
+            ? 'matches'
+            : 'needs_owner_update'
+      } catch {
+        stripeBrandingStatus = 'unavailable'
+      }
+    }
+
     return {
       success:
         true,
 
       logo:
         finalLogo,
+
+      stripeBranding: {
+        status: stripeBrandingStatus,
+        merchantName: stripeMerchantName,
+      },
     }
   }
 
@@ -1226,6 +1570,8 @@ If you did not request this reset, you can ignore this email.`,
           hashed,
 
         storeCode,
+
+        processingFeePercent: 4.75,
 
         isOpen:
           true,

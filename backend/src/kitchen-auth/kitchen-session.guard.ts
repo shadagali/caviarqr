@@ -4,53 +4,58 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common'
-
-import type {
-  Request,
-} from 'express'
-
+import { InjectRepository } from '@nestjs/typeorm'
+import { Repository } from 'typeorm'
+import type { Request } from 'express'
+import { Business } from '../business/business.entity'
 import {
   bearerTokenFromHeader,
+  kitchenSessionMatchesPassword,
   verifyKitchenToken,
 } from './kitchen-token'
+import type { KitchenSession } from './kitchen-token'
 
-import type {
-  KitchenSession,
-} from './kitchen-token'
-
-export type KitchenRequest =
-  Request & {
-    kitchen?: KitchenSession
-  }
+export type KitchenRequest = Request & {
+  kitchen?: KitchenSession
+}
 
 @Injectable()
-export class KitchenSessionGuard
-  implements CanActivate
-{
-  canActivate(
-    context: ExecutionContext,
-  ) {
-    const request =
-      context
-        .switchToHttp()
-        .getRequest<KitchenRequest>()
+export class KitchenSessionGuard implements CanActivate {
+  constructor(
+    @InjectRepository(Business)
+    private readonly businesses: Repository<Business>,
+  ) {}
 
-    const token =
-      bearerTokenFromHeader(
-        request.headers
-          .authorization,
-      )
+  async canActivate(context: ExecutionContext) {
+    const request = context.switchToHttp()
+      .getRequest<KitchenRequest>()
+
+    const token = bearerTokenFromHeader(
+      request.headers.authorization,
+    )
 
     if (!token) {
-      throw new UnauthorizedException(
-        'Kitchen login required.',
-      )
+      throw new UnauthorizedException('Kitchen login required.')
     }
 
     try {
-      request.kitchen =
-        verifyKitchenToken(token)
+      const kitchen = verifyKitchenToken(token)
 
+      const business = await this.businesses.findOne({
+        where: {
+          id: kitchen.businessId,
+          storeCode: kitchen.storeCode,
+        },
+      })
+
+      if (!business || !kitchenSessionMatchesPassword(
+        kitchen,
+        business.kitchenPassword,
+      )) {
+        throw new Error('Kitchen password changed.')
+      }
+
+      request.kitchen = kitchen
       return true
     } catch {
       throw new UnauthorizedException(

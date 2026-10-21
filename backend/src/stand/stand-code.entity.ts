@@ -65,6 +65,36 @@ export class StandCode {
   })
   claimedBusinessId: number | null
 
+  // =========================
+  // SALES PARTNER ATTRIBUTION
+  // =========================
+
+  /*
+   * Hardware order that caused this
+   * storeCode to be allocated.
+   */
+  @Column({
+    type: 'integer',
+    nullable: true,
+  })
+  shopOrderId:
+    number | null
+
+  @Column({
+    type: 'integer',
+    nullable: true,
+  })
+  salesPartnerId:
+    number | null
+
+  @Column({
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+  })
+  salesAttributionSource:
+    string | null
+
   @CreateDateColumn({
     type: 'timestamptz',
   })

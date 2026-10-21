@@ -1,3 +1,4 @@
+import GlobalTapHaptics from "../components/GlobalTapHaptics"
 import './globals.css'
 
 export default function RootLayout({
@@ -11,7 +12,7 @@ export default function RootLayout({
         {/* ✅ CRITICAL: load Stripe globally */}
         <script src="https://js.stripe.com/v3"></script>
       </head>
-      <body>{children}</body>
+      <body>{children}<GlobalTapHaptics /></body>
     </html>
   )
 }

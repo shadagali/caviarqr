@@ -34,7 +34,7 @@ export default function KitchenPage() {
     )
 
   const [refundOrderId, setRefundOrderId] = useState<number | null>(null)
-  const [selectedItems, setSelectedItems] = useState<number[]>([])
+  const [refundSubmitting, setRefundSubmitting] = useState(false)
 
   const [search, setSearch] =
     useState('')
@@ -54,6 +54,21 @@ export default function KitchenPage() {
   const [newDiscount,
     setNewDiscount] =
     useState('0')
+
+  const [
+    editingDiscountItem,
+    setEditingDiscountItem,
+  ] = useState<any | null>(null)
+
+  const [
+    editDiscount,
+    setEditDiscount,
+  ] = useState('0')
+
+  const [
+    isSavingDiscount,
+    setIsSavingDiscount,
+  ] = useState(false)
 
   const [newCategory,
     setNewCategory] =
@@ -76,11 +91,16 @@ export default function KitchenPage() {
   const createItemLockRef =
     useRef(false)
 
+  const [ordersLoadError, setOrdersLoadError] = useState(false)
+  const kitchenJoinedRef = useRef(false)
+  const activeRefreshInFlightRef = useRef(false)
+  const orderEventSequenceRef = useRef(0)
+
   const socketRef = useRef<any>(null)
 
   const ackedOrdersRef =
-    useRef<Set<number>>(
-      new Set(),
+    useRef<Map<number, number>>(
+      new Map(),
     )
 
   const [storeCode, setStoreCode] =
@@ -117,9 +137,12 @@ export default function KitchenPage() {
       !savedToken
     ) {
       clearSession()
-      router.replace('/login')
+      router.replace('/login/kitchen')
       return
     }
+
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
     const initialize = async () => {
       try {
@@ -137,6 +160,8 @@ export default function KitchenPage() {
               },
             },
           )
+
+        if (cancelled) return
 
         const authoritativeStoreCode =
           String(
@@ -189,18 +214,41 @@ export default function KitchenPage() {
           response.data?.isOpen ===
             true,
         )
+        setOrdersLoadError(false)
         setSessionReady(true)
       } catch (error) {
+        if (cancelled) return
         console.error(
           'KITCHEN SESSION ERROR',
           error,
         )
-        clearSession()
-        router.replace('/login')
+        const status = axios.isAxiosError(error)
+          ? error.response?.status
+          : undefined
+
+        const invalidResponse =
+          error instanceof Error &&
+          error.message === 'Invalid kitchen session response.'
+
+        if (status === 401 || status === 403 || invalidResponse) {
+          clearSession()
+          router.replace('/login/kitchen')
+          return
+        }
+
+        // Temporary network/server failure: preserve credentials and retry.
+        setOrdersLoadError(true)
+        retryTimer = setTimeout(() => {
+          void initialize()
+        }, 5000)
       }
     }
 
     void initialize()
+    return () => {
+      cancelled = true
+      if (retryTimer !== null) clearTimeout(retryTimer)
+    }
   }, [router])
 
   const authConfig = () => {
@@ -221,7 +269,7 @@ export default function KitchenPage() {
   const acknowledgeOrder = (
     order: any,
   ) => {
-    if (!order?.id) return
+    if (!order?.id || order?.status === "PENDING_PAYMENT") return
 
     if (
       order.status === "DONE" ||
@@ -236,10 +284,12 @@ export default function KitchenPage() {
       return
     }
 
+    // KITCHEN_RETRY_AND_STALE_LOAD_GUARD_V2
+    // Avoid ACK floods, but retry if the server response is lost.
+    const lastAckAttempt = ackedOrdersRef.current.get(order.id)
     if (
-      ackedOrdersRef.current.has(
-        order.id,
-      )
+      lastAckAttempt !== undefined &&
+      Date.now() - lastAckAttempt < 20000
     ) {
       return
     }
@@ -249,13 +299,15 @@ export default function KitchenPage() {
 
     if (
       !socket ||
-      socket.connected !== true
+      socket.connected !== true ||
+      kitchenJoinedRef.current !== true
     ) {
       return
     }
 
-    ackedOrdersRef.current.add(
+    ackedOrdersRef.current.set(
       order.id,
+      Date.now(),
     )
 
     console.log(
@@ -271,7 +323,74 @@ export default function KitchenPage() {
     )
   }
 
+  const handleOrderLoadFailure = (err: unknown) => {
+    console.error(
+      "KITCHEN_ORDER_LOAD_FAILED",
+      err instanceof Error ? err.message : "Unknown request failure",
+    )
+    const status = axios.isAxiosError(err)
+      ? err.response?.status
+      : undefined
+
+    // An invalid kitchen session is not a transient network failure.
+    if (status === 401 || status === 403) {
+      localStorage.removeItem('businessId')
+      localStorage.removeItem('storeCode')
+      localStorage.removeItem('role')
+      localStorage.removeItem('token')
+      setOrders([])
+      setPastOrders([])
+      router.replace('/login/kitchen')
+      return
+    }
+
+    // Keep previously loaded orders on temporary connectivity failures.
+    setOrdersLoadError(true)
+  }
+
+  const refreshActiveOrders = async () => {
+    if (activeRefreshInFlightRef.current) return
+    activeRefreshInFlightRef.current = true
+
+    try {
+      const eventSequenceBefore = orderEventSequenceRef.current
+      const response = await axios.get(
+        `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/orders`,
+        { ...authConfig(), timeout: 8000 },
+      )
+
+      const data = Array.isArray(response.data)
+        ? response.data
+        : response.data?.orders
+
+      if (!Array.isArray(data)) {
+        throw new Error('Invalid active orders response')
+      }
+
+      const activeData = data
+        .filter((order: any) =>
+          Number(order?.businessId) === businessId &&
+          String(order?.storeCode || '') === storeCode &&
+          order?.status !== 'PENDING_PAYMENT',
+        )
+        .sort((a: any, b: any) => b.id - a.id)
+
+      // Discard a stale REST result if a newer socket or REST update arrived.
+      if (orderEventSequenceRef.current !== eventSequenceBefore) return
+      orderEventSequenceRef.current += 1
+
+      setOrders(activeData)
+      setOrdersLoadError(false)
+      activeData.forEach((order: any) => acknowledgeOrder(order))
+    } catch (err) {
+      handleOrderLoadFailure(err)
+    } finally {
+      activeRefreshInFlightRef.current = false
+    }
+  }
+
   const load = async () => {
+    const eventSequenceAtLoadStart = orderEventSequenceRef.current
     try {
       const activeRes =
         await axios.get(
@@ -325,13 +444,15 @@ export default function KitchenPage() {
       activeData = activeData.filter(
         (order) =>
           Number(order?.businessId) === businessId &&
-          String(order?.storeCode || '') === storeCode,
+          String(order?.storeCode || '') === storeCode &&
+          order?.status !== 'PENDING_PAYMENT',
       )
 
       historyData = historyData.filter(
         (order) =>
           Number(order?.businessId) === businessId &&
-          String(order?.storeCode || '') === storeCode,
+          String(order?.storeCode || '') === storeCode &&
+          order?.status !== 'PENDING_PAYMENT',
       )
 
       activeData.sort(
@@ -358,25 +479,27 @@ export default function KitchenPage() {
         latestOpen,
       )
 
-      setOrders(
-        activeData,
-      )
+      // Discard outdated full loads when a socket event or a newer
+      // accepted REST refresh changed the displayed orders in the meantime.
+      if (eventSequenceAtLoadStart === orderEventSequenceRef.current) {
+        orderEventSequenceRef.current += 1
+        setOrders(
+          activeData,
+        )
+        setOrdersLoadError(false)
 
-      setPastOrders(
-        historyData,
-      )
+        setPastOrders(
+          historyData,
+        )
 
-      activeData.forEach(
-        (order) => {
-          acknowledgeOrder(order)
-        },
-      )
+        activeData.forEach(
+          (order) => {
+            acknowledgeOrder(order)
+          },
+        )
+      }
     } catch (err) {
-      console.log(err)
-
-      setOrders([])
-
-      setPastOrders([])
+      handleOrderLoadFailure(err)
     }
   }
 
@@ -427,20 +550,19 @@ export default function KitchenPage() {
       return
     }
 
-    let poll: any
+    // One lightweight active-orders query per 10 seconds, including while
+    // Socket.IO is connected. No overlapping refresh requests.
+    let poll: ReturnType<typeof setInterval> | null = null
 
     const startPolling = () => {
-      if (poll) return
-
+      if (poll !== null) return
       poll = setInterval(() => {
-        if (tab === 'orders') {
-          load()
-        }
-      }, 3000)
+        void refreshActiveOrders()
+      }, 10000)
     }
 
     const stopPolling = () => {
-      if (poll) {
+      if (poll !== null) {
         clearInterval(poll)
         poll = null
       }
@@ -472,44 +594,37 @@ export default function KitchenPage() {
     socketRef.current = socket
 
     socket.on("connect", () => {
-      console.log(
-        "SOCKET CONNECTED",
-      )
-
-      socket.emit(
-        "join",
-      )
-
-      stopPolling()
-
-      load()
+      // `connect` fires on first connection and all successful reconnects.
+      kitchenJoinedRef.current = false
+      ackedOrdersRef.current.clear()
+      socket.emit("join")
     })
 
-    socket.on(
-      "reconnect",
-      () => {
-        console.log(
-          "SOCKET RECONNECTED",
-        )
+    socket.on("kitchenJoined", (data: any) => {
+      if (
+        Number(data?.businessId) !== businessId ||
+        String(data?.storeCode || '') !== storeCode
+      ) {
+        console.error("KITCHEN_JOIN_TENANT_MISMATCH")
+        kitchenJoinedRef.current = false
+        setOrdersLoadError(true)
+        socket.disconnect()
+        return
+      }
 
-        socket.emit(
-          "join",
-        )
-
-        stopPolling()
-
-        load()
-      },
-    )
+      kitchenJoinedRef.current = true
+      void load()
+    })
 
     socket.on(
       "disconnect",
       () => {
         console.log(
-          "SOCKET DISCONNECTED",
-        )
+        "SOCKET DISCONNECTED",
+      )
 
-        startPolling()
+      kitchenJoinedRef.current = false
+      startPolling()
       },
     )
 
@@ -531,7 +646,7 @@ export default function KitchenPage() {
         localStorage.removeItem('storeCode')
         localStorage.removeItem('role')
         localStorage.removeItem('token')
-        router.replace('/login')
+        router.replace('/login/kitchen')
       },
     )
 
@@ -543,6 +658,11 @@ export default function KitchenPage() {
           data,
         )
 
+        const confirmedOrderId = Number(data?.orderId)
+        if (!Number.isInteger(confirmedOrderId) || confirmedOrderId < 1) return
+        ackedOrdersRef.current.delete(confirmedOrderId)
+        // A late REST response must not overwrite a confirmed ACK.
+        orderEventSequenceRef.current += 1
         setOrders((prev) =>
           prev.map((o) =>
             o.id === data.orderId
@@ -594,6 +714,9 @@ export default function KitchenPage() {
           return
         }
 
+        if (order?.status === "PENDING_PAYMENT") return
+
+        orderEventSequenceRef.current += 1
         acknowledgeOrder(order)
 
         setOrders((prev) => {
@@ -640,6 +763,9 @@ export default function KitchenPage() {
           return
         }
 
+        if (order?.status === "PENDING_PAYMENT") return
+
+        orderEventSequenceRef.current += 1
         acknowledgeOrder(order)
 
         setOrders((prev) =>
@@ -657,17 +783,17 @@ export default function KitchenPage() {
       },
     )
 
-    load()
+    // Initial order load waits for authenticated `kitchenJoined`.
+    // The periodic REST fallback remains active regardless of socket state.
     loadMenu()
-
     startPolling()
 
     return () => {
       stopPolling()
 
       socket.off("connect")
+      socket.off("kitchenJoined")
       socket.off("disconnect")
-      socket.off("reconnect")
       socket.off("connect_error")
       socket.off("kitchenAuthFailed")
       socket.off("kitchenAckSuccess")
@@ -999,31 +1125,130 @@ export default function KitchenPage() {
       }
     }
 
+  const saveMenuDiscount =
+    async (
+      overrideValue?: number,
+    ) => {
+      if (
+        !editingDiscountItem ||
+        isSavingDiscount
+      ) {
+        return
+      }
+
+      const value =
+        overrideValue ??
+        Number(editDiscount)
+
+      if (
+        !Number.isFinite(value) ||
+        value < 0 ||
+        value >= 100
+      ) {
+        alert(
+          'Discount must be between 0 and less than 100.',
+        )
+        return
+      }
+
+      setIsSavingDiscount(true)
+
+      try {
+        await axios.patch(
+          `${process.env.NEXT_PUBLIC_API_URL}/menu/discount/${editingDiscountItem.id}`,
+          {
+            discount: value,
+          },
+          authConfig(),
+        )
+
+        setEditingDiscountItem(null)
+        setEditDiscount('0')
+
+        await loadMenu()
+      } catch (err: any) {
+        console.error(
+          'UPDATE MENU DISCOUNT ERROR',
+          err,
+        )
+
+        const message =
+          err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          err?.message ||
+          'Failed to update discount'
+
+        alert(
+          `Failed to update discount: ${message}`,
+        )
+      } finally {
+        setIsSavingDiscount(false)
+      }
+    }
+
+
+
   const openRefund = (
     id: number,
   ) => {
     setRefundOrderId(id)
-
-    setSelectedItems([])
-  }
-
-  const toggleItem = (
-    index: number,
-  ) => {
-    setSelectedItems((prev) =>
-      prev.includes(index)
-        ? prev.filter(
-            (i) => i !== index,
-          )
-        : [...prev, index],
-    )
   }
 
   const submitRefund = async () => {
-    alert(
-      'Refunds are handled from the CaviarQR Action Center so they stay audited and cannot be triggered by a kitchen device.',
-    )
-    setRefundOrderId(null)
+    if (
+      !refundOrderId ||
+      refundSubmitting
+    ) {
+      return
+    }
+
+    setRefundSubmitting(true)
+
+    try {
+      const response =
+        await axios.patch(
+          `${process.env.NEXT_PUBLIC_API_URL}/kitchen-auth/orders/${refundOrderId}/refund`,
+          {},
+          authConfig(),
+        )
+
+      const result =
+        response.data
+
+      if (result?.pending) {
+        alert(
+          'Refund is processing. CaviarQR will reconcile the final Stripe result automatically.',
+        )
+      } else if (result?.success) {
+        alert(
+          'Refund issued successfully.',
+        )
+      } else {
+        throw new Error(
+          result?.message ||
+            'Refund could not be completed.',
+        )
+      }
+
+      setRefundOrderId(null)
+
+      await load()
+    } catch (err: any) {
+      console.error(
+        'KITCHEN REFUND ERROR',
+        err,
+      )
+
+      const message =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        err?.message ||
+        'Refund could not be completed.'
+
+      alert(message)
+    } finally {
+      setRefundSubmitting(false)
+    }
   }
 
   const currentOrders =
@@ -1151,6 +1376,23 @@ export default function KitchenPage() {
         background: "#f4f2ed",
       }}
     >
+      {ordersLoadError && (
+        <div
+          role="alert"
+          style={{
+            padding: "12px 14px",
+            marginBottom: 16,
+            border: "1px solid #d39e36",
+            background: "#fff7e5",
+            color: "#6b4700",
+            borderRadius: 8,
+            fontSize: 13,
+          }}
+        >
+          Connection warning: Kitchen orders could not be refreshed.
+          Existing orders remain visible; retrying automatically.
+        </div>
+      )}
       <div
         style={{
           display: "flex",
@@ -1475,6 +1717,13 @@ export default function KitchenPage() {
                                   '',
                               ).trim()
 
+                            const selectedCustomizations =
+                              Array.isArray(
+                                item.customizations,
+                              )
+                                ? item.customizations
+                                : []
+
                             return (
                               <div
                                 key={idx}
@@ -1516,6 +1765,56 @@ export default function KitchenPage() {
                                     x{item.qty || 1}
                                   </span>
                                 </div>
+
+                                {selectedCustomizations.length > 0 && (
+                                  <div
+                                    style={{
+                                      display: 'flex',
+                                      flexDirection: 'column',
+                                      gap: 4,
+                                      padding: '7px 9px',
+                                      borderRadius: 8,
+                                      background: '#F2F7FF',
+                                      color: '#24456B',
+                                      border: '0.5px solid #C9DDF6',
+                                    }}
+                                  >
+                                    {selectedCustomizations.map(
+                                      (
+                                        group: any,
+                                        groupIndex: number,
+                                      ) => (
+                                        <div
+                                          key={
+                                            group.groupId ||
+                                            groupIndex
+                                          }
+                                          style={{
+                                            fontSize: 12,
+                                            lineHeight: 1.4,
+                                            fontWeight: 600,
+                                          }}
+                                        >
+                                          <strong>
+                                            {group.groupName}:
+                                          </strong>{' '}
+                                          {Array.isArray(
+                                            group.options,
+                                          )
+                                            ? group.options
+                                                .map(
+                                                  (
+                                                    option: any,
+                                                  ) =>
+                                                    option.name,
+                                                )
+                                                .join(', ')
+                                            : ''}
+                                        </div>
+                                      ),
+                                    )}
+                                  </div>
+                                )}
 
                                 {customerNote && (
                                   <div
@@ -1843,6 +2142,24 @@ export default function KitchenPage() {
                 >
 
                   <button
+                      type="button"
+                      onClick={() => {
+                        setEditingDiscountItem(
+                          item,
+                        )
+                        setEditDiscount(
+                          String(
+                            Number(
+                              item.discount || 0,
+                            ),
+                          ),
+                        )
+                      }}
+                    >
+                      Edit sale
+                    </button>
+
+                    <button
                     onClick={() =>
                       toggleHide(
                         item.id,
@@ -1860,6 +2177,169 @@ export default function KitchenPage() {
           </div>
         </>
       )}
+
+        {editingDiscountItem && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,.4)',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              zIndex: 1000,
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                background: 'white',
+                padding: 20,
+                borderRadius: 12,
+                width: '100%',
+                maxWidth: 400,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+              }}
+            >
+              <h3 style={{ margin: 0 }}>
+                Edit sale
+              </h3>
+
+              <div
+                style={{
+                  fontSize: 17,
+                  fontWeight: 600,
+                }}
+              >
+                {editingDiscountItem.name}
+              </div>
+
+              <div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: '#666',
+                  }}
+                >
+                  Regular price
+                </div>
+
+                <strong>
+                  ${Number(
+                    editingDiscountItem.price,
+                  ).toFixed(2)}
+                </strong>
+              </div>
+
+              <label
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                Discount (%)
+              </label>
+
+              <input
+                type="number"
+                min="0"
+                max="99.99"
+                step="0.01"
+                value={editDiscount}
+                onChange={(e) =>
+                  setEditDiscount(
+                    e.target.value,
+                  )
+                }
+                placeholder="0"
+              />
+
+              {Number(editDiscount) > 0 &&
+                Number(editDiscount) < 100 && (
+                  <div
+                    style={{
+                      padding: 12,
+                      background: '#f7f7f5',
+                      borderRadius: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: '#666',
+                      }}
+                    >
+                      Customer pays
+                    </div>
+
+                    <strong
+                      style={{
+                        fontSize: 20,
+                      }}
+                    >
+                      ${(
+                        Number(
+                          editingDiscountItem.price,
+                        ) *
+                        (1 -
+                          Number(
+                            editDiscount,
+                          ) /
+                            100)
+                      ).toFixed(2)}
+                    </strong>
+                  </div>
+                )}
+
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  disabled={isSavingDiscount}
+                  onClick={() =>
+                    void saveMenuDiscount()
+                  }
+                >
+                  {isSavingDiscount
+                    ? 'Saving...'
+                    : 'Save sale'}
+                </button>
+
+                {Number(
+                  editingDiscountItem.discount || 0,
+                ) > 0 && (
+                  <button
+                    type="button"
+                    disabled={isSavingDiscount}
+                    onClick={() =>
+                      void saveMenuDiscount(0)
+                    }
+                  >
+                    Remove discount
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={isSavingDiscount}
+                  onClick={() => {
+                    setEditingDiscountItem(null)
+                    setEditDiscount('0')
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       {showAddModal && (
         <div
@@ -2068,7 +2548,7 @@ export default function KitchenPage() {
                   fontWeight: 500,
                 }}
               >
-                Select items to refund
+                Refund this order?
               </h3>
 
               <p
@@ -2088,96 +2568,19 @@ export default function KitchenPage() {
               </p>
             </div>
 
-            <div
+            <p
               style={{
-                display: "flex",
-                flexDirection:
-                  "column",
-                gap: 6,
+                fontSize: 12,
+                color: "#666",
+                lineHeight: 1.5,
+                margin: 0,
               }}
             >
-              {refundOrder?.items?.map(
-                (
-                  item: any,
-                  idx: number,
-                ) => {
-                  const checked =
-                    selectedItems.includes(
-                      idx,
-                    )
-
-                  return (
-                    <label
-                      key={idx}
-                      style={{
-                        display:
-                          "flex",
-                        alignItems:
-                          "center",
-                        gap: 10,
-                        padding:
-                          "8px 10px",
-                        borderRadius: 8,
-                        cursor:
-                          "pointer",
-                        border: `0.5px solid ${
-                          checked
-                            ? "#97C459"
-                            : "#e0ddd7"
-                        }`,
-                        background:
-                          checked
-                            ? "#EAF3DE"
-                            : "white",
-                        transition:
-                          "background 0.12s, border-color 0.12s",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={
-                          checked
-                        }
-                        onChange={() =>
-                          toggleItem(
-                            idx,
-                          )
-                        }
-                        style={{
-                          accentColor:
-                            "#639922",
-                          width: 15,
-                          height: 15,
-                          cursor:
-                            "pointer",
-                        }}
-                      />
-
-                      <span
-                        style={{
-                          fontSize: 13,
-                        }}
-                      >
-                        {
-                          item.name
-                        }{" "}
-                        <span
-                          style={{
-                            color:
-                              "#aaa",
-                            fontSize: 12,
-                          }}
-                        >
-                          x
-                          {item.qty ||
-                            1}
-                        </span>
-                      </span>
-                    </label>
-                  )
-                },
-              )}
-            </div>
+              This will refund the eligible order amount
+              to the customer&apos;s original payment method.
+              Payment processing fees and the CaviarQR
+              application fee are not refunded.
+            </p>
 
             <div
               style={{
@@ -2216,7 +2619,14 @@ export default function KitchenPage() {
                 onClick={
                   submitRefund
                 }
+                disabled={
+                  refundSubmitting
+                }
                 style={{
+                  opacity:
+                    refundSubmitting
+                      ? 0.6
+                      : 1,
                   flex: 1,
                   fontSize: 13,
                   fontWeight: 500,
@@ -2235,7 +2645,9 @@ export default function KitchenPage() {
                     "inherit",
                 }}
               >
-                Issue refund
+                {refundSubmitting
+                  ? "Refunding…"
+                  : "Issue refund"}
               </button>
             </div>
           </div>

@@ -8,6 +8,10 @@ import { Repository } from 'typeorm'
 
 import { MenuItem } from './menu.entity'
 
+import {
+  normalizeCustomizationsForSave,
+} from './menu-customization'
+
 @Injectable()
 export class MenuService {
   constructor(
@@ -37,6 +41,10 @@ export class MenuService {
       category: data.category || 'Menu',
       price: Number(data.price || 0),
       discount: Number(data.discount || 0),
+      customizations:
+        normalizeCustomizationsForSave(
+          data.customizations,
+        ),
       imageUrl,
       isHidden: false,
       isOutOfStock: false,
@@ -64,10 +72,16 @@ export class MenuService {
   // =========================
   // 🔥 DELETE ITEM
   // =========================
-  async delete(id: number) {
+  async delete(
+    id: number,
+    businessId: number,
+  ) {
     const item =
       await this.menuRepo.findOne({
-        where: { id },
+        where: {
+          id,
+          businessId,
+        },
       })
 
     if (!item) {
@@ -76,7 +90,10 @@ export class MenuService {
       )
     }
 
-    await this.menuRepo.delete(id)
+    await this.menuRepo.delete({
+      id,
+      businessId,
+    })
 
     return {
       success: true,
@@ -86,10 +103,16 @@ export class MenuService {
   // =========================
   // 🔥 HIDE ITEM
   // =========================
-  async toggleHide(id: number) {
+  async toggleHide(
+    id: number,
+    businessId: number,
+  ) {
     const item =
       await this.menuRepo.findOne({
-        where: { id },
+        where: {
+          id,
+          businessId,
+        },
       })
 
     if (!item) {
@@ -107,10 +130,16 @@ export class MenuService {
   // =========================
   // 🔥 OUT OF STOCK
   // =========================
-  async toggleStock(id: number) {
+  async toggleStock(
+    id: number,
+    businessId: number,
+  ) {
     const item =
       await this.menuRepo.findOne({
-        where: { id },
+        where: {
+          id,
+          businessId,
+        },
       })
 
     if (!item) {
@@ -130,11 +159,30 @@ export class MenuService {
   // =========================
   async setDiscount(
     id: number,
+    businessId: number,
     discount: number,
   ) {
+    const normalizedDiscount =
+      Number(discount)
+
+    if (
+      !Number.isFinite(
+        normalizedDiscount,
+      ) ||
+      normalizedDiscount < 0 ||
+      normalizedDiscount >= 100
+    ) {
+      throw new BadRequestException(
+        'Discount must be between 0 and less than 100.',
+      )
+    }
+
     const item =
       await this.menuRepo.findOne({
-        where: { id },
+        where: {
+          id,
+          businessId,
+        },
       })
 
     if (!item) {
@@ -144,7 +192,7 @@ export class MenuService {
     }
 
     item.discount =
-      Number(discount || 0)
+      normalizedDiscount
 
     return this.menuRepo.save(item)
   }

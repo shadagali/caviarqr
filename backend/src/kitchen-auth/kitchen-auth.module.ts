@@ -19,6 +19,10 @@ import {
 } from '../order/order.module'
 
 import {
+  RefundModule,
+} from '../refund/refund.module'
+
+import {
   KitchenAuthController,
 } from './kitchen-auth.controller'
 
@@ -29,6 +33,7 @@ import {
 @Module({
   imports: [
     OrderModule,
+    RefundModule,
 
     TypeOrmModule.forFeature([
       Business,

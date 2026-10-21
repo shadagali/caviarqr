@@ -19,6 +19,10 @@ import {
   MenuItem,
 } from '../menu/menu.entity'
 import {
+  normalizeRequestedSelections,
+  validateCustomizationSelections,
+} from '../menu/menu-customization'
+import {
   PendingOrder,
   PendingOrderStatus,
   type PendingOrderItem,
@@ -42,6 +46,10 @@ type RequestedItem = {
   id: number
   qty: number
   note?: string
+  customizations?: Array<{
+    groupId: string
+    optionIds: string[]
+  }>
 }
 
 @Injectable()
@@ -247,8 +255,13 @@ export class StripeService {
         )
 
       const requestedItemIds =
-        requestedItems.map(
-          (item) => item.id,
+        Array.from(
+          new Set(
+            requestedItems.map(
+              (item) =>
+                item.id,
+            ),
+          ),
         )
 
       const databaseItems =
@@ -283,6 +296,10 @@ export class StripeService {
 
       // All amounts are calculated in
       // integer cents to avoid float errors.
+      //
+      // Base-item discounts apply to the base
+      // item. Customization add-on prices are
+      // then added at their configured amount.
       const safeItems:
         PendingOrderItem[] =
         requestedItems.map(
@@ -343,7 +360,7 @@ export class StripeService {
               )
             }
 
-            const unitPriceCents =
+            const discountedBasePriceCents =
               Math.round(
                 originalPriceCents *
                   (
@@ -352,6 +369,35 @@ export class StripeService {
                       100
                   ),
               )
+
+            if (
+              discountedBasePriceCents <
+              1
+            ) {
+              throw new BadRequestException(
+                `${menuItem.name} has an invalid final price.`,
+              )
+            }
+
+            const customizationResult =
+              validateCustomizationSelections(
+                String(
+                  menuItem.name,
+                ),
+                Array.isArray(
+                  menuItem.customizations,
+                )
+                  ? menuItem.customizations
+                  : [],
+                requestedItem
+                  .customizations ||
+                  [],
+              )
+
+            const unitPriceCents =
+              discountedBasePriceCents +
+              customizationResult
+                .extraPriceCents
 
             if (
               unitPriceCents < 1
@@ -363,7 +409,9 @@ export class StripeService {
 
             return {
               id:
-                Number(menuItem.id),
+                Number(
+                  menuItem.id,
+                ),
 
               name:
                 String(
@@ -377,6 +425,15 @@ export class StripeService {
                 ? {
                     note:
                       requestedItem.note,
+                  }
+                : {}),
+
+              ...(customizationResult
+                .snapshot.length
+                ? {
+                    customizations:
+                      customizationResult
+                        .snapshot,
                   }
                 : {}),
 
@@ -782,6 +839,18 @@ export class StripeService {
               mode:
                 'payment',
 
+              /*
+               * Show the restaurant's Branding name on Stripe Checkout.
+               * storeCode remains internal only.
+               */
+              branding_settings: {
+                display_name:
+                  String(
+                    business.name ||
+                    storeCode,
+                  ).trim(),
+              },
+
               client_reference_id:
                 String(
                   savedPendingOrder.id,
@@ -864,11 +933,6 @@ export class StripeService {
                     }
                   : {}),
 
-                transfer_data: {
-                  destination:
-                    connectedAccountId,
-                },
-
                 metadata:
                   paymentMetadata,
               },
@@ -883,6 +947,9 @@ export class StripeService {
                 `${this.frontendUrl}/store/${encodedStoreCode}?table=${encodedTableNumber}`,
             },
             {
+              stripeAccount:
+                connectedAccountId,
+
               idempotencyKey:
                 `caviarqr-checkout-${checkoutRequestId}`,
             },
@@ -1325,6 +1392,10 @@ export class StripeService {
     let accountId =
       business.stripeAccountId
 
+    const stripeDisplayName =
+      business.name?.trim() ||
+      business.storeCode
+
     /*
      * If an account ID is already saved, verify it
      * is a US connected account before generating
@@ -1346,6 +1417,11 @@ export class StripeService {
 
             country:
               countryCode,
+
+            business_profile: {
+              name:
+                stripeDisplayName,
+            },
 
             ...(business.email
               ? {
@@ -1457,6 +1533,7 @@ export class StripeService {
           .stripeAccountId,
       )
 
+    // Dashboard login must not modify merchant identity.
     const loginLink =
       await this.stripe
         .accounts
@@ -1844,8 +1921,11 @@ export class StripeService {
   private normalizeRequestedItems(
     items: CreateCheckoutDto['items'],
   ): RequestedItem[] {
-    const itemById =
-      new Map<number, RequestedItem>()
+    const itemBySignature =
+      new Map<
+        string,
+        RequestedItem
+      >()
 
     for (const item of items) {
       const id =
@@ -1857,6 +1937,11 @@ export class StripeService {
       const note =
         this.normalizeCustomerNote(
           item.note,
+        )
+
+      const customizations =
+        normalizeRequestedSelections(
+          item.customizations,
         )
 
       if (
@@ -1878,27 +1963,27 @@ export class StripeService {
         )
       }
 
+      const signature =
+        JSON.stringify({
+          id,
+          note,
+          customizations,
+        })
+
       const existing =
-        itemById.get(id)
+        itemBySignature.get(
+          signature,
+        )
 
       if (existing) {
-        const existingNote =
-          existing.note || ''
-
-        if (
-          existingNote !== note
-        ) {
-          throw new BadRequestException(
-            'The same menu item cannot have different notes in one checkout.',
-          )
-        }
-
         const combinedQty =
           existing.qty + qty
 
-        if (combinedQty > 50) {
+        if (
+          combinedQty > 50
+        ) {
           throw new BadRequestException(
-            'The combined quantity for one item cannot exceed 50.',
+            'The combined quantity for one item variant cannot exceed 50.',
           )
         }
 
@@ -1908,45 +1993,59 @@ export class StripeService {
         continue
       }
 
-      itemById.set(
-        id,
+      itemBySignature.set(
+        signature,
         {
           id,
           qty,
+
           ...(note
             ? {
                 note,
+              }
+            : {}),
+
+          ...(customizations.length
+            ? {
+                customizations,
               }
             : {}),
         },
       )
     }
 
-    if (itemById.size > 99) {
+    if (
+      itemBySignature.size >
+      99
+    ) {
       throw new BadRequestException(
         'Cart contains too many different items.',
       )
     }
 
     return Array.from(
-      itemById.values(),
-    ).sort(
-      (left, right) =>
-        left.id -
-        right.id,
+      itemBySignature.entries(),
     )
+      .sort(
+        (
+          [leftKey],
+          [rightKey],
+        ) =>
+          leftKey.localeCompare(
+            rightKey,
+          ),
+      )
+      .map(
+        ([, value]) =>
+          value,
+      )
   }
 
   private createItemSignature(
     items: PendingOrderItem[],
   ) {
-    return JSON.stringify(
+    const normalized =
       [...items]
-        .sort(
-          (left, right) =>
-            left.id -
-            right.id,
-        )
         .map(
           (item) => ({
             id:
@@ -1960,11 +2059,31 @@ export class StripeService {
                 item.note || '',
               ).trim(),
 
+            customizations:
+              Array.isArray(
+                item.customizations,
+              )
+                ? item.customizations
+                : [],
+
             unitPriceCents:
               item
                 .unitPriceCents,
           }),
-        ),
+        )
+        .sort(
+          (left, right) =>
+            JSON.stringify(
+              left,
+            ).localeCompare(
+              JSON.stringify(
+                right,
+              ),
+            ),
+        )
+
+    return JSON.stringify(
+      normalized,
     )
   }
 

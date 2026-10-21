@@ -8,6 +8,27 @@ import {
 
 import axios from 'axios'
 
+import {
+  getMaintenanceToken,
+} from '../../../lib/api'
+
+const maintenanceApi =
+  axios.create()
+
+maintenanceApi.interceptors.request.use(
+  (config) => {
+    const token =
+      getMaintenanceToken()
+
+    if (token) {
+      config.headers.Authorization =
+        `Bearer ${token}`
+    }
+
+    return config
+  },
+)
+
 const API =
   (
     process.env
@@ -253,10 +274,11 @@ function isOpenSupportThread(
   }
 
   return (
-    thread.status !==
-      'RESOLVED' &&
-    thread.status !==
-      'REFUNDED'
+    thread.status ===
+      'AWAITING_RESTAURANT' &&
+    thread.latestMessage
+      .senderType ===
+      'CUSTOMER'
   )
 }
 
@@ -278,7 +300,16 @@ function mergeIssuesWithSupport(
     if (
       issue
         .requiresOwnerAction !==
-      true
+        true ||
+      issue
+        .issueResolved ===
+        true ||
+      !(
+        issue
+          .ownerIssueType ||
+        issue
+          .issueType
+      )
     ) {
       continue
     }
@@ -570,11 +601,11 @@ export default function ActionCenter() {
       ] =
         await Promise.allSettled(
           [
-            axios.get(
+            maintenanceApi.get(
               `${API}/maintenance/issues`,
             ),
 
-            axios.get(
+            maintenanceApi.get(
               `${API}/maintenance/support/threads`,
             ),
           ],
@@ -646,7 +677,7 @@ export default function ActionCenter() {
 
     try {
       const res =
-        await axios.get(
+        await maintenanceApi.get(
           `${API}/maintenance/support/order/${encodeURIComponent(
             String(
               orderId,
@@ -716,7 +747,7 @@ export default function ActionCenter() {
     }
 
     try {
-      await axios.patch(
+      await maintenanceApi.patch(
         `${API}/maintenance/support/order/${encodeURIComponent(
           String(
             order.id,
@@ -919,7 +950,7 @@ export default function ActionCenter() {
     }
 
     try {
-      await axios.patch(
+      await maintenanceApi.patch(
         `${API}/maintenance/refund/${encodeURIComponent(
           String(
             order.id,
@@ -927,6 +958,8 @@ export default function ActionCenter() {
         )}`,
         {
           reason:
+            'ORDER_NOT_DELIVERED',
+          note:
             order.hasSupport
               ? 'Customer support request refunded from the CaviarQR Action Center.'
               : 'Refunded from the CaviarQR Action Center.',
@@ -942,7 +975,7 @@ export default function ActionCenter() {
         order.hasSupport
       ) {
         try {
-          await axios.patch(
+          await maintenanceApi.patch(
             `${API}/maintenance/support/order/${encodeURIComponent(
               String(
                 order.id,
@@ -998,7 +1031,7 @@ export default function ActionCenter() {
         order.ownerIssueType ===
           'CUSTOMER_SUPPORT_REQUEST'
       ) {
-        await axios.patch(
+        await maintenanceApi.patch(
           `${API}/maintenance/support/order/${encodeURIComponent(
             String(
               order.id,
@@ -1006,7 +1039,7 @@ export default function ActionCenter() {
           )}/resolve`,
         )
       } else {
-        await axios.patch(
+        await maintenanceApi.patch(
           `${API}/maintenance/resolve/${encodeURIComponent(
             String(
               order.id,
@@ -1062,7 +1095,7 @@ export default function ActionCenter() {
         true,
       )
 
-      await axios.post(
+      await maintenanceApi.post(
         `${API}/maintenance/support/order/${encodeURIComponent(
           String(
             order.id,
@@ -1124,7 +1157,7 @@ export default function ActionCenter() {
         true,
       )
 
-      await axios.patch(
+      await maintenanceApi.patch(
         `${API}/maintenance/support/order/${encodeURIComponent(
           String(
             order.id,

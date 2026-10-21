@@ -49,6 +49,16 @@ export type OrderItem = {
   qty: number
   price: number
   note?: string
+
+  customizations?: Array<{
+    groupId: string
+    groupName: string
+    options: Array<{
+      optionId: string
+      name: string
+      priceDelta: number
+    }>
+  }>
 }
 
 const decimalNumberTransformer: ValueTransformer = {
@@ -530,10 +540,47 @@ export class Order {
   refundLastAttemptAt: Date | null
 
   @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  refundConfirmationEmailSentAt: Date | null
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  refundConfirmationEmailLastAttemptAt: Date | null
+
+  @Column({
+    type: 'int',
+    default: 0,
+  })
+  refundConfirmationEmailAttempts: number
+
+  @Column({
+    type: 'text',
+    nullable: true,
+  })
+  refundConfirmationEmailFailureMessage: string | null
+
+  @Column({
     type: 'int',
     default: 1,
   })
   paymentProcessingVersion: number
+
+  @Column({
+    type: 'timestamptz',
+    nullable: true,
+  })
+  archivedAt: Date | null
+
+  @Column({
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+  })
+  archiveBatchId: string | null
 
   @CreateDateColumn({
     type: 'timestamptz',

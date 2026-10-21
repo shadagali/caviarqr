@@ -19,6 +19,10 @@ import {
 } from './shop-order-item.entity'
 
 import {
+  SalesPartner,
+} from '../sales/entities/sales-partner.entity'
+
+import {
   ShopController,
 } from './shop.controller'
 
@@ -32,6 +36,7 @@ import {
       ShopProduct,
       ShopOrder,
       ShopOrderItem,
+      SalesPartner,
     ]),
   ],
 

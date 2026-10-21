@@ -6,11 +6,21 @@ import {
   HttpStatus,
   Post,
   Query,
+  Req,
+  UseGuards,
 } from '@nestjs/common'
 
 import {
   Throttle,
 } from '@nestjs/throttler'
+
+import {
+  OwnerSessionGuard,
+} from '../owner-auth/owner-session.guard'
+
+import type {
+  OwnerRequest,
+} from '../owner-auth/owner-session.guard'
 
 import {
   CreateCheckoutDto,
@@ -63,13 +73,14 @@ export class StripeController {
       ttl: 60_000,
     },
   })
+  @UseGuards(OwnerSessionGuard)
   connect(
-    @Body()
-    dto: StripeBusinessDto,
+    @Req()
+    request: OwnerRequest,
   ) {
     return this.service
       .createConnectLink(
-        dto.businessId,
+        request.owner!.businessId,
       )
   }
 
@@ -85,13 +96,14 @@ export class StripeController {
       ttl: 60_000,
     },
   })
+  @UseGuards(OwnerSessionGuard)
   dashboard(
-    @Body()
-    dto: StripeBusinessDto,
+    @Req()
+    request: OwnerRequest,
   ) {
     return this.service
       .getDashboardLink(
-        dto.businessId,
+        request.owner!.businessId,
       )
   }
 
@@ -106,13 +118,14 @@ export class StripeController {
       ttl: 60_000,
     },
   })
+  @UseGuards(OwnerSessionGuard)
   balance(
-    @Query()
-    query: StripeBusinessDto,
+    @Req()
+    request: OwnerRequest,
   ) {
     return this.service
       .getBalance(
-        query.businessId,
+        request.owner!.businessId,
       )
   }
 
@@ -127,14 +140,15 @@ export class StripeController {
       ttl: 60_000,
     },
   })
+  @UseGuards(OwnerSessionGuard)
   async status(
-    @Query()
-    query: StripeBusinessDto,
+    @Req()
+    request: OwnerRequest,
   ) {
     const status =
       await this.service
         .isStripeReady(
-          query.businessId,
+          request.owner!.businessId,
         )
 
     /*

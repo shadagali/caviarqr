@@ -25,6 +25,11 @@ import { MaintenanceService } from './maintenance.service'
 import { PlatformPayoutService } from './platform-payout.service'
 import { MaintenanceJwtGuard } from '../maintenance-auth/maintenance-jwt.guard'
 import { StandService } from '../stand/stand.service'
+import { SalesCommissionService } from '../sales/sales-commission.service'
+import { SalesTaxReportService } from '../sales/sales-tax-report.service'
+import { DemoRequestService } from '../demo-request/demo-request.service'
+import { DemoRequestStatus } from '../demo-request/demo-request.entity'
+import { LegalDocumentService } from './legal-document.service'
 
 @Controller('maintenance')
 @UseGuards(MaintenanceJwtGuard)
@@ -34,9 +39,90 @@ export class MaintenanceController {
     private readonly maintenanceService: MaintenanceService,
     private readonly platformPayoutService: PlatformPayoutService,
     private readonly standService: StandService,
+    private readonly salesCommissionService: SalesCommissionService,
+    private readonly salesTaxReportService: SalesTaxReportService,
+    private readonly legalDocumentService: LegalDocumentService,
 
+    private readonly demoRequestService: DemoRequestService,
     private readonly shopService: ShopService,
   ) {}
+
+  // =========================
+  // LEGAL DOCUMENTS
+  // =========================
+
+  @Get('legal-documents')
+  async legalDocuments() {
+    return this
+      .legalDocumentService
+      .list()
+  }
+
+  @Post('legal-documents/draft')
+  async createLegalDraft(
+    @Body()
+    body: {
+      documentType: string
+      version: string
+      title: string
+      effectiveDate: string
+      content: string
+      requiresReacceptance?: boolean
+    },
+  ) {
+    return this
+      .legalDocumentService
+      .createDraft(
+        body,
+      )
+  }
+
+  @Patch('legal-documents/:id')
+  async updateLegalDraft(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: {
+      version?: string
+      title?: string
+      effectiveDate?: string
+      content?: string
+      requiresReacceptance?: boolean
+    },
+  ) {
+    return this
+      .legalDocumentService
+      .updateDraft(
+        id,
+        body,
+      )
+  }
+
+  @Post('legal-documents/:id/publish')
+  async publishLegalDocument(
+    @Param('id')
+    id: string,
+  ) {
+    return this
+      .legalDocumentService
+      .publish(
+        id,
+      )
+  }
+
+  @Post('legal-documents/:id/archive')
+  async archiveLegalDocument(
+    @Param('id')
+    id: string,
+  ) {
+    return this
+      .legalDocumentService
+      .archive(
+        id,
+      )
+  }
+
 
   // =========================
   // 🔥 CREATE STORE + QR LINKS
@@ -48,6 +134,7 @@ export class MaintenanceController {
     body: {
       storeCode: string
       tables?: number
+      shopOrderId?: number
     },
   ) {
     const storeCode =
@@ -59,6 +146,30 @@ export class MaintenanceController {
       Number(
         body?.tables ?? 10,
       )
+
+    const shopOrderId =
+      body?.shopOrderId ===
+          undefined ||
+        body?.shopOrderId ===
+          null
+        ? null
+        : Number(
+            body.shopOrderId,
+          )
+
+    if (
+      shopOrderId !== null &&
+      (
+        !Number.isInteger(
+          shopOrderId,
+        ) ||
+        shopOrderId < 1
+      )
+    ) {
+      throw new BadRequestException(
+        'Valid hardware order is required',
+      )
+    }
 
     if (
       !storeCode ||
@@ -90,6 +201,15 @@ export class MaintenanceController {
         )
 
     if (existingBusiness) {
+      /*
+       * Existing restaurants may always regenerate /
+       * reprint their table QR codes.
+       *
+       * A selected hardware order must never overwrite
+       * or change the restaurant's existing immutable
+       * sales attribution. For an existing Business we
+       * simply ignore shopOrderId and return its links.
+       */
       const frontendUrl =
         process.env.FRONTEND_URL ||
         process.env.WEB_URL ||
@@ -134,6 +254,9 @@ export class MaintenanceController {
         alreadyExists:
           true,
 
+        activationCode:
+          null,
+
         links,
       }
     }
@@ -143,6 +266,9 @@ export class MaintenanceController {
         .createAllocation(
           storeCode,
           tables,
+          {
+            shopOrderId,
+          },
         )
 
     const stand =
@@ -190,6 +316,27 @@ export class MaintenanceController {
 
       alreadyExists:
         allocation.alreadyExists,
+
+      /*
+       * The plaintext activation code exists
+       * only during initial creation. The DB
+       * stores only its SHA-256 hash.
+       */
+      activationCode:
+        allocation.activationCode ||
+        null,
+
+      shopOrderId:
+        stand.shopOrderId ||
+        null,
+
+      salesPartnerId:
+        stand.salesPartnerId ||
+        null,
+
+      salesAttributionSource:
+        stand.salesAttributionSource ||
+        null,
 
       links,
     }
@@ -398,12 +545,14 @@ export class MaintenanceController {
   @Get('stores')
   async getStores() {
     const stores =
-      await this.businessService.getAllStoreCodes()
+      await this.maintenanceService.getCafeSummaries()
 
     return {
       success: true,
+
       count:
         stores.length,
+
       stores,
     }
   }
@@ -472,6 +621,43 @@ export class MaintenanceController {
   }
 
   // =========================
+  // ☕ PAGINATED CAFE ORDERS
+  // =========================
+
+  @Get(
+    'cafe/:storeCode/orders',
+  )
+  async getCafeOrders(
+    @Param('storeCode')
+    storeCode: string,
+
+    @Query('limit')
+    limit?: string,
+
+    @Query('cursor')
+    cursor?: string,
+
+    @Query('search')
+    search?: string,
+  ) {
+    const data =
+      await this.maintenanceService
+        .getCafeOrders(
+          storeCode,
+          {
+            limit,
+            cursor,
+            search,
+          },
+        )
+
+    return {
+      success: true,
+      ...data,
+    }
+  }
+
+  // =========================
   // 🔥 GET CAFE DETAILS
   // =========================
 
@@ -503,6 +689,145 @@ export class MaintenanceController {
   }
 
   // =========================
+  // 💼 SALES PARTNERS
+  // =========================
+
+  @Get('sales-tax-summary')
+  async getSalesTaxSummary(
+    @Query('year')
+    year?: string,
+  ) {
+    return this
+      .salesTaxReportService
+      .maintenanceSummary(
+        year,
+      )
+  }
+
+  @Get('sales-partners')
+  async getSalesPartners() {
+    return this
+      .salesCommissionService
+      .getMaintenanceSalesPartners()
+  }
+
+  @Patch(
+    'sales-partner/:id/monthly-cap',
+  )
+  async updateSalesPartnerMonthlyCap(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: {
+      monthlyCommissionCapCents?: unknown
+    },
+  ) {
+    const salesPartnerId =
+      Number(id)
+
+    const monthlyCommissionCapCents =
+      Number(
+        body
+          ?.monthlyCommissionCapCents,
+      )
+
+    if (
+      !Number.isInteger(
+        salesPartnerId,
+      ) ||
+      salesPartnerId < 1
+    ) {
+      throw new BadRequestException(
+        'Valid Sales Partner id is required.',
+      )
+    }
+
+    if (
+      !Number.isInteger(
+        monthlyCommissionCapCents,
+      ) ||
+      monthlyCommissionCapCents < 0
+    ) {
+      throw new BadRequestException(
+        'Monthly commission cap must be a valid non-negative cent amount.',
+      )
+    }
+
+    return this
+      .salesCommissionService
+      .updateMonthlyCommissionCap(
+        salesPartnerId,
+        monthlyCommissionCapCents,
+      )
+  }
+
+  @Patch(
+    'cafe/:storeCode/sales-commission/terminate',
+  )
+  async terminateCafeSalesCommission(
+    @Param('storeCode')
+    storeCode: string,
+  ) {
+    return this
+      .salesCommissionService
+      .terminateCafeCommission(
+        storeCode,
+      )
+  }
+
+  // =========================
+  // CAVIARQR_HOME_DEMO_V1
+  // =========================
+  // DEMO REQUESTS
+  // =========================
+
+  @Get('demos')
+  async getDemoRequests(
+    @Query('status')
+    status?: string,
+  ) {
+    return this.demoRequestService
+      .list(status)
+  }
+
+  @Patch('demos/:id/status')
+  async updateDemoRequestStatus(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: {
+      status?: unknown
+    },
+  ) {
+    const status =
+      String(
+        body?.status || '',
+      )
+        .trim()
+        .toUpperCase() as
+        DemoRequestStatus
+
+    if (
+      ![
+        'NEW',
+        'CONTACTED',
+        'CLOSED',
+      ].includes(status)
+    ) {
+      throw new BadRequestException(
+        'Demo status must be NEW, CONTACTED or CLOSED.',
+      )
+    }
+
+    return this.demoRequestService
+      .updateStatus(
+        id,
+        status,
+      )
+  }
+
   // 🔥 UPDATE PROCESSING FEE
   // =========================
 
@@ -614,48 +939,6 @@ export class MaintenanceController {
 
     return this.maintenanceService.resolveIssue(
       orderId,
-    )
-  }
-
-  // =========================
-  // 💳 REFUND ORDER
-  // =========================
-
-  @Patch('refund/:id')
-  async refundOrder(
-    @Param('id')
-    id: string,
-
-    @Body()
-    body: {
-      reason?: string
-    },
-  ) {
-    const orderId =
-      Number(id)
-
-    if (
-      !orderId ||
-      Number.isNaN(orderId)
-    ) {
-      throw new BadRequestException(
-        'Valid order id is required.',
-      )
-    }
-
-    const reason =
-      String(
-        body?.reason ||
-          'Refunded by CaviarQR maintenance.',
-      ).trim()
-
-    return this.maintenanceService.refundOrder(
-      orderId,
-      {
-        reason,
-        performedBy:
-          'MAINTENANCE_ADMIN',
-      },
     )
   }
 

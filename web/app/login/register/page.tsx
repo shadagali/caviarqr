@@ -1,6 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import {
+  useEffect,
+  useState,
+} from 'react'
 import { useRouter } from 'next/navigation'
 import { apiFetch } from '@/lib/api'
 
@@ -207,6 +210,126 @@ export default function RegisterPage() {
   const [termsAccepted, setTermsAccepted] =
     useState(false)
 
+  const [
+    termsVersion,
+    setTermsVersion,
+  ] =
+    useState('')
+
+  const [
+    privacyVersion,
+    setPrivacyVersion,
+  ] =
+    useState('')
+
+  const [
+    legalLoading,
+    setLegalLoading,
+  ] =
+    useState(true)
+
+  const [
+    legalError,
+    setLegalError,
+  ] =
+    useState('')
+
+  useEffect(() => {
+    let active = true
+
+    async function loadLegalVersions() {
+      try {
+        setLegalLoading(true)
+        setLegalError('')
+
+        const [
+          termsResponse,
+          privacyResponse,
+        ] =
+          await Promise.all([
+            fetch(
+              `${API}/legal/TERMS`,
+              {
+                cache:
+                  'no-store',
+              },
+            ),
+
+            fetch(
+              `${API}/legal/PRIVACY`,
+              {
+                cache:
+                  'no-store',
+              },
+            ),
+          ])
+
+        if (
+          !termsResponse.ok ||
+          !privacyResponse.ok
+        ) {
+          throw new Error(
+            'Legal documents unavailable.',
+          )
+        }
+
+        const [
+          terms,
+          privacy,
+        ] =
+          await Promise.all([
+            termsResponse.json(),
+            privacyResponse.json(),
+          ])
+
+        if (
+          typeof terms?.version !==
+            'string' ||
+          typeof terms?.contentHash !==
+            'string' ||
+          typeof privacy?.version !==
+            'string' ||
+          typeof privacy?.contentHash !==
+            'string'
+        ) {
+          throw new Error(
+            'Invalid legal document response.',
+          )
+        }
+
+        if (active) {
+          setTermsVersion(
+            terms.version,
+          )
+
+          setPrivacyVersion(
+            privacy.version,
+          )
+        }
+      } catch {
+        if (active) {
+          setTermsVersion('')
+          setPrivacyVersion('')
+          setTermsAccepted(false)
+
+          setLegalError(
+            'Terms of Service and Privacy Policy are temporarily unavailable. Please try again later.',
+          )
+        }
+      } finally {
+        if (active) {
+          setLegalLoading(false)
+        }
+      }
+    }
+
+    void loadLegalVersions()
+
+    return () => {
+      active = false
+    }
+  }, [])
+
   const handle = async () => {
     if (loading) {
       return
@@ -227,6 +350,18 @@ export default function RegisterPage() {
     ) {
       setError(
         'Store code, email and password are required',
+      )
+      return
+    }
+
+    if (
+      legalLoading ||
+      legalError ||
+      !termsVersion ||
+      !privacyVersion
+    ) {
+      setError(
+        'Current Terms of Service and Privacy Policy are unavailable. Please try again.',
       )
       return
     }
@@ -261,6 +396,16 @@ export default function RegisterPage() {
                 cleanEmail,
 
               password,
+
+              termsAccepted:
+                true,
+
+              termsVersion,
+
+              privacyAcknowledged:
+                true,
+
+              privacyVersion,
             }),
           },
         )
@@ -457,7 +602,13 @@ export default function RegisterPage() {
             <input
               type="checkbox"
               checked={termsAccepted}
-              disabled={loading}
+              disabled={
+                loading ||
+                legalLoading ||
+                Boolean(
+                  legalError,
+                )
+              }
               onChange={(e) =>
                 setTermsAccepted(
                   e.target.checked,
@@ -497,12 +648,47 @@ export default function RegisterPage() {
             </span>
           </label>
 
+          {legalLoading && (
+            <div
+              className="reg-error"
+              style={{
+                color:
+                  '#6e6e73',
+                background:
+                  'rgba(0,0,0,0.04)',
+                marginBottom:
+                  10,
+              }}
+            >
+              Loading current legal documents…
+            </div>
+          )}
+
+          {legalError && (
+            <div
+              className="reg-error"
+              style={{
+                marginBottom:
+                  10,
+              }}
+            >
+              {legalError}
+            </div>
+          )}
+
           <button
             className="reg-btn"
             onClick={() => {
               void handle()
             }}
-            disabled={loading || !termsAccepted}
+            disabled={
+              loading ||
+              legalLoading ||
+              Boolean(
+                legalError,
+              ) ||
+              !termsAccepted
+            }
           >
             {loading
               ? 'Creating account…'

@@ -8,13 +8,25 @@ import {
   Param,
   UploadedFile,
   UseInterceptors,
+  UseGuards,
+  Req,
   BadRequestException,
 } from '@nestjs/common'
 
 import { FileInterceptor } from '@nestjs/platform-express'
 import { diskStorage } from 'multer'
+import { randomBytes } from 'crypto'
+import { extname } from 'path'
 
 import { MenuService } from './menu.service'
+
+import {
+  MenuAccessGuard,
+} from './menu-access.guard'
+
+import type {
+  MenuAccessRequest,
+} from './menu-access.guard'
 
 @Controller('menu')
 export class MenuController {
@@ -26,9 +38,15 @@ export class MenuController {
   // 🔥 CREATE ITEM
   // =========================
   @Post('create')
-  async create(@Body() body: any) {
+  @UseGuards(MenuAccessGuard)
+  async create(
+    @Req()
+    request: MenuAccessRequest,
+
+    @Body()
+    body: any,
+  ) {
     if (
-      !body?.businessId ||
       !body?.name ||
       !body?.price
     ) {
@@ -37,10 +55,23 @@ export class MenuController {
       )
     }
 
+    const discount =
+      Number(body.discount || 0)
+
+    if (
+      !Number.isFinite(discount) ||
+      discount < 0 ||
+      discount >= 100
+    ) {
+      throw new BadRequestException(
+        'Discount must be between 0 and less than 100.',
+      )
+    }
+
     return this.menuService.create({
-      businessId: Number(
-        body.businessId,
-      ),
+      businessId:
+        request.menuAccess!
+          .businessId,
       name: body.name,
       price: Number(body.price),
       category:
@@ -49,10 +80,9 @@ export class MenuController {
         body.imageUrl || '',
       description:
         body.description || '',
-      discount:
-        Number(
-          body.discount,
-        ) || 0,
+      discount,
+      customizations:
+        body.customizations || [],
     })
   }
 
@@ -73,11 +103,17 @@ export class MenuController {
   // 🔥 DELETE
   // =========================
   @Delete(':id')
+  @UseGuards(MenuAccessGuard)
   async delete(
+    @Req()
+    request: MenuAccessRequest,
+
     @Param('id') id: string,
   ) {
     return this.menuService.delete(
       Number(id),
+      request.menuAccess!
+        .businessId,
     )
   }
 
@@ -85,11 +121,17 @@ export class MenuController {
   // 🔥 HIDE / UNHIDE
   // =========================
   @Patch('hide/:id')
+  @UseGuards(MenuAccessGuard)
   async hide(
+    @Req()
+    request: MenuAccessRequest,
+
     @Param('id') id: string,
   ) {
     return this.menuService.toggleHide(
       Number(id),
+      request.menuAccess!
+        .businessId,
     )
   }
 
@@ -97,11 +139,40 @@ export class MenuController {
   // 🔥 OUT OF STOCK
   // =========================
   @Patch('stock/:id')
+  @UseGuards(MenuAccessGuard)
   async stock(
+    @Req()
+    request: MenuAccessRequest,
+
     @Param('id') id: string,
   ) {
     return this.menuService.toggleStock(
       Number(id),
+      request.menuAccess!
+        .businessId,
+    )
+  }
+
+  // =========================
+  // SALE / DISCOUNT
+  // =========================
+  @Patch('discount/:id')
+  @UseGuards(MenuAccessGuard)
+  async discount(
+    @Req()
+    request: MenuAccessRequest,
+
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: any,
+  ) {
+    return this.menuService.setDiscount(
+      Number(id),
+      request.menuAccess!
+        .businessId,
+      Number(body?.discount ?? 0),
     )
   }
 
@@ -109,24 +180,79 @@ export class MenuController {
   // 🔥 IMAGE UPLOAD
   // =========================
   @Post('upload')
+  @UseGuards(MenuAccessGuard)
   @UseInterceptors(
     FileInterceptor('file', {
       storage: diskStorage({
         destination:
           './uploads',
+
         filename: (
-          req,
+          _req,
           file,
           cb,
         ) => {
-          const unique =
-            Date.now() +
-            '-' +
-            file.originalname
+          const originalExt =
+            extname(
+              file.originalname ||
+                '',
+            ).toLowerCase()
 
-          cb(null, unique)
+          const allowedExt =
+            new Set([
+              '.jpg',
+              '.jpeg',
+              '.png',
+              '.webp',
+            ])
+
+          const safeExt =
+            allowedExt.has(
+              originalExt,
+            )
+              ? originalExt
+              : '.jpg'
+
+          cb(
+            null,
+            `menu-${randomBytes(16)
+              .toString('hex')}${safeExt}`,
+          )
         },
       }),
+
+      limits: {
+        fileSize:
+          5 * 1024 * 1024,
+      },
+
+      fileFilter: (
+        _req,
+        file,
+        cb,
+      ) => {
+        const allowed =
+          new Set([
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+          ])
+
+        if (
+          !allowed.has(
+            file.mimetype,
+          )
+        ) {
+          return cb(
+            new BadRequestException(
+              'Only JPG, PNG and WebP images are allowed.',
+            ),
+            false,
+          )
+        }
+
+        cb(null, true)
+      },
     }),
   )
   async upload(

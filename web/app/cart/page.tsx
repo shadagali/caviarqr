@@ -22,6 +22,12 @@ type CartItem = {
   imageUrl?: string | null
   category?: string | null
   note?: string
+  cartKey?: string
+  customizationSummary?: string[]
+  customizations?: Array<{
+    groupId: string
+    optionIds: string[]
+  }>
 }
 
 type MenuSuggestion = {
@@ -33,12 +39,17 @@ type MenuSuggestion = {
   category?: string | null
   isHidden?: boolean
   isOutOfStock?: boolean
+  customizations?: unknown[]
 }
 
 type CheckoutItem = {
   id: number
   qty: number
   note?: string
+  customizations?: Array<{
+    groupId: string
+    optionIds: string[]
+  }>
 }
 
 type StoredCheckoutRequest = {
@@ -229,7 +240,7 @@ const css = `
     border: none;
     border-radius: 50%;
     background: #fff;
-    color: var(--accent);
+    color: #111;
     font-family: var(--font);
     font-size: 17px;
     font-weight: 800;
@@ -363,7 +374,7 @@ const css = `
     border-radius: 10px;
     border: 1px solid #dedede;
     background: #fff;
-    color: var(--accent);
+    color: #111;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -525,9 +536,11 @@ const css = `
 
   .pay-btn {
     width: 100%;
-    background: var(--accent);
-    color: white;
+    background: #fff;
+    color: #111;
     border: none;
+    outline: 1px solid #111;
+    outline-offset: -1px;
     border-radius: var(--radius);
     font-family: var(--font);
     font-size: 16px;
@@ -537,8 +550,30 @@ const css = `
     display: flex;
     align-items: center;
     justify-content: space-between;
-    box-shadow: 0 4px 20px rgba(255,48,8,0.28);
-    transition: background 0.15s;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+    transition: background 0.15s, transform 0.08s ease-out, box-shadow 0.08s ease-out;
+  }
+
+  /* PAY_NOW_WHITE_WHILE_PRESSED */
+  .cart-page .pay-btn,
+  .cart-page .pay-btn:hover,
+  .cart-page .pay-btn:active,
+  .cart-page .pay-btn:focus,
+  .cart-page .pay-btn:focus-visible,
+  .cart-page .pay-btn:disabled {
+    background: #fff !important;
+    color: #111 !important;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* PAY_NOW_MATCH_ADD_TO_CART_SHADOW */
+  .cart-page .pay-btn:active {
+    transform: translateY(2px) scale(0.97);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.12) !important;
+  }
+
+  .cart-page .pay-btn:focus-visible {
+    box-shadow: 0 8px 20px rgba(0,0,0,0.12) !important;
   }
 
   .pay-btn:disabled {
@@ -652,8 +687,11 @@ function normalizeCustomerNote(
 function normalizeCheckoutItems(
   cart: CartItem[],
 ): CheckoutItem[] {
-  const itemById =
-    new Map<number, CheckoutItem>()
+  const itemBySignature =
+    new Map<
+      string,
+      CheckoutItem
+    >()
 
   for (const item of cart) {
     const id =
@@ -666,6 +704,58 @@ function normalizeCheckoutItems(
       normalizeCustomerNote(
         item.note,
       )
+
+    const customizations =
+      Array.isArray(
+        item.customizations,
+      )
+        ? item.customizations
+            .map(
+              (selection) => ({
+                groupId:
+                  String(
+                    selection
+                      .groupId ||
+                      "",
+                  ),
+
+                optionIds:
+                  Array.from(
+                    new Set(
+                      (
+                        Array.isArray(
+                          selection
+                            .optionIds,
+                        )
+                          ? selection
+                              .optionIds
+                          : []
+                      ).map(
+                        (optionId) =>
+                          String(
+                            optionId,
+                          ),
+                      ),
+                    ),
+                  ).sort(),
+              }),
+            )
+            .filter(
+              (selection) =>
+                selection.groupId &&
+                selection
+                  .optionIds
+                  .length > 0,
+            )
+            .sort(
+              (left, right) =>
+                left.groupId
+                  .localeCompare(
+                    right
+                      .groupId,
+                  ),
+            )
+        : []
 
     if (
       !Number.isInteger(id) ||
@@ -686,25 +776,27 @@ function normalizeCheckoutItems(
       )
     }
 
+    const signature =
+      JSON.stringify({
+        id,
+        note,
+        customizations,
+      })
+
     const existing =
-      itemById.get(id)
+      itemBySignature.get(
+        signature,
+      )
 
     if (existing) {
-      const existingNote =
-        existing.note || ""
-
-      if (existingNote !== note) {
-        throw new Error(
-          "The same menu item cannot have different notes in one checkout.",
-        )
-      }
-
       const combinedQty =
         existing.qty + qty
 
-      if (combinedQty > 50) {
+      if (
+        combinedQty > 50
+      ) {
         throw new Error(
-          "The quantity for one item cannot exceed 50.",
+          "The quantity for one item variant cannot exceed 50.",
         )
       }
 
@@ -714,32 +806,52 @@ function normalizeCheckoutItems(
       continue
     }
 
-    itemById.set(
-      id,
+    itemBySignature.set(
+      signature,
       {
         id,
         qty,
+
         ...(note
           ? {
               note,
+            }
+          : {}),
+
+        ...(customizations.length
+          ? {
+              customizations,
             }
           : {}),
       },
     )
   }
 
-  if (itemById.size > 99) {
+  if (
+    itemBySignature.size >
+    99
+  ) {
     throw new Error(
       "Your cart contains too many different items.",
     )
   }
 
   return Array.from(
-    itemById.values(),
-  ).sort(
-    (left, right) =>
-      left.id - right.id,
+    itemBySignature.entries(),
   )
+    .sort(
+      (
+        [leftKey],
+        [rightKey],
+      ) =>
+        leftKey.localeCompare(
+          rightKey,
+        ),
+    )
+    .map(
+      ([, value]) =>
+        value,
+    )
 }
 
 function createCartFingerprint(
@@ -1036,6 +1148,12 @@ function CartContent() {
               (item: MenuSuggestion) =>
                 !item.isHidden &&
                 !item.isOutOfStock &&
+                (
+                  !Array.isArray(
+                    item.customizations,
+                  ) ||
+                  item.customizations.length === 0
+                ) &&
                 Number.isInteger(
                   Number(item.id),
                 ) &&
@@ -1787,9 +1905,7 @@ function CartContent() {
 
                 return (
                   <div
-                    key={String(
-                      item.id,
-                    )}
+                    key={item.cartKey || `${String(item.id)}:${index}`}
                     className="cart-item"
                     style={{
                       animationDelay: `${index * 50}ms`,
@@ -1817,6 +1933,31 @@ function CartContent() {
                         )}{" "}
                         each
                       </div>
+
+                      {Array.isArray(
+                        item.customizationSummary,
+                      ) &&
+                        item.customizationSummary.map(
+                          (
+                            line,
+                            customizationIndex,
+                          ) => (
+                            <div
+                              key={
+                                customizationIndex
+                              }
+                              style={{
+                                marginTop: 4,
+                                fontSize: 11,
+                                lineHeight: 1.35,
+                                color: "#555",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {line}
+                            </div>
+                          ),
+                        )}
 
 
                       <button
@@ -2303,6 +2444,44 @@ function CartContent() {
                 </>
               )}
             </button>
+            <div
+              style={{
+                marginTop: "10px",
+                padding: "0 8px",
+                textAlign: "center",
+                fontSize: "12px",
+                lineHeight: 1.5,
+                color: "#6b7280",
+              }}
+            >
+              By placing your order, you agree to our{" "}
+              <a
+                href="/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  color: "inherit",
+                  fontWeight: 600,
+                  textDecoration: "underline",
+                }}
+              >
+                Terms of Service
+              </a>{" "}
+              and{" "}
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  color: "inherit",
+                  fontWeight: 600,
+                  textDecoration: "underline",
+                }}
+              >
+                Privacy Policy
+              </a>
+              .
+            </div>
           </div>
         )}
       </div>

@@ -18,6 +18,26 @@ import {
   Type,
 } from 'class-transformer'
 
+export class CheckoutCustomizationSelectionDto {
+  @IsString()
+  @MaxLength(100)
+  groupId: string
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @IsString({
+    each: true,
+  })
+  @MaxLength(
+    100,
+    {
+      each: true,
+    },
+  )
+  optionIds: string[]
+}
+
 export class CheckoutItemDto {
   @Type(() => Number)
   @IsInt()
@@ -30,14 +50,23 @@ export class CheckoutItemDto {
   @Max(50)
   qty: number
 
-  // =====================================
-  // CUSTOMER COOKING / ALLERGY NOTE
-  // =====================================
-
   @IsOptional()
   @IsString()
   @MaxLength(300)
   note?: string
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({
+    each: true,
+  })
+  @Type(
+    () =>
+      CheckoutCustomizationSelectionDto,
+  )
+  customizations?:
+    CheckoutCustomizationSelectionDto[]
 }
 
 export class CreateCheckoutDto {
@@ -60,10 +89,6 @@ export class CreateCheckoutDto {
   @IsUUID()
   checkoutRequestId: string
 
-  /*
-   * Explicit restaurant marketing consent.
-   * Receipt email consent is completely separate.
-   */
   @IsOptional()
   @IsBoolean()
   marketingOptIn?: boolean

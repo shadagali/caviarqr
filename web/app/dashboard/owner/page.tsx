@@ -1,6 +1,7 @@
 "use client"
 import { useEffect, useState } from "react"
 import axios from "axios"
+import CustomizationBuilder from "../../../components/CustomizationBuilder"
 import { apiFetch } from "../../../lib/api"
 
 import {
@@ -883,9 +884,12 @@ export default function OwnerPage() {
   const [name, setName] = useState("")
   const [price, setPrice] = useState("")
   const [category, setCategory] = useState("")
+  const [description, setDescription] = useState("")
   const [file, setFile] = useState<any>(null)
   const [discount, setDiscount] = useState("")
+  const [customizations, setCustomizations] = useState<any[]>([])
   const [kitchenPass, setKitchenPass] = useState("")
+  const [showKitchenPass, setShowKitchenPass] = useState(false)
   const [msg, setMsg] = useState("")
   const [serviceFee, setServiceFee] = useState("")
   const [cafeName, setCafeName] = useState("")
@@ -991,6 +995,35 @@ export default function OwnerPage() {
       }
 
       try {
+        const ownerToken = localStorage.getItem("token")
+        if (!ownerToken) {
+          throw new Error("Owner login required")
+        }
+
+        const authRes = await axios.get(
+          `${API}/business/kitchen-password-status`,
+          {
+            headers: {
+              Authorization: `Bearer ${ownerToken}`,
+            },
+          },
+        )
+
+        const authenticatedBusinessId = Number(
+          authRes.data?.businessId,
+        )
+        const authenticatedStoreCode = String(
+          authRes.data?.storeCode || "",
+        ).trim()
+
+        if (
+          !Number.isInteger(authenticatedBusinessId) ||
+          authenticatedBusinessId < 1 ||
+          authenticatedStoreCode !== savedStoreCode
+        ) {
+          throw new Error("Owner session mismatch")
+        }
+
         const res = await axios.get(
           `${API}/public/store/${encodeURIComponent(savedStoreCode)}`,
         )
@@ -1007,6 +1040,13 @@ export default function OwnerPage() {
           !resolvedStoreCode
         ) {
           throw new Error("Invalid owner session")
+        }
+
+        if (
+          resolvedBusinessId !== authenticatedBusinessId ||
+          resolvedStoreCode !== authenticatedStoreCode
+        ) {
+          throw new Error("Owner cafe mismatch")
         }
 
         setBusinessId(resolvedBusinessId)
@@ -1041,9 +1081,9 @@ export default function OwnerPage() {
         }
 
         setKitchenMode(
-          business?.kitchenPassword
+          authRes.data?.hasKitchenPassword === true
             ? "password"
-            : "passwordless",
+            : "setup",
         )
 
         setSessionReady(true)
@@ -1309,17 +1349,6 @@ export default function OwnerPage() {
     activeSection,
   ])
 
-  const enablePasswordless = async () => {
-    if (!businessId) return
-
-    try {
-      await axios.post(`${API}/business/disable-kitchen-password`, { businessId })
-      showToast("Passwordless mode enabled")
-      setKitchenPass("")
-      setKitchenMode("passwordless")
-    } catch { showToast("Failed to enable passwordless") }
-  }
-
   const load = async () => {
     if (!businessId) return
 
@@ -1365,29 +1394,50 @@ export default function OwnerPage() {
     const checkMode = async () => {
       try {
         const res = await axios.get(
-          `${API}/public/store/${encodeURIComponent(storeCode)}`,
+          `${API}/business/kitchen-password-status`,
+          ownerAuthConfig(),
         )
+
+        if (
+          Number(res.data?.businessId) !== businessId ||
+          String(res.data?.storeCode || "").trim() !== storeCode
+        ) {
+          return
+        }
+
         setKitchenMode(
-          res.data?.business?.kitchenPassword
+          res.data?.hasKitchenPassword === true
             ? "password"
-            : "passwordless",
+            : "setup",
         )
       } catch {}
     }
 
     void checkMode()
     void loadBusinessConfig()
-  }, [sessionReady, storeCode])
+  }, [sessionReady, storeCode, businessId])
 
   const loadAnalytics = async () => {
     if (!businessId) return
 
     try {
       const [dashRes, itemsRes, chartRes, ordersRes] = await Promise.all([
-        axios.get(`${API}/analytics/dashboard/${businessId}`),
-        axios.get(`${API}/analytics/top-items/${businessId}`),
-        axios.get(`${API}/analytics/revenue-chart/${businessId}`),
-        axios.get(`${API}/analytics/recent-orders/${businessId}`),
+        axios.get(
+          `${API}/analytics/dashboard/${businessId}`,
+          ownerAuthConfig(),
+        ),
+        axios.get(
+          `${API}/analytics/top-items/${businessId}`,
+          ownerAuthConfig(),
+        ),
+        axios.get(
+          `${API}/analytics/revenue-chart/${businessId}`,
+          ownerAuthConfig(),
+        ),
+        axios.get(
+          `${API}/analytics/recent-orders/${businessId}`,
+          ownerAuthConfig(),
+        ),
       ])
       setDashboard(dashRes.data)
       setTopItems(itemsRes.data)
@@ -1396,12 +1446,30 @@ export default function OwnerPage() {
     } catch (err) { console.error(err) }
   }
 
+  const ownerAuthConfig = () => {
+    const token =
+      typeof window !== "undefined"
+        ? localStorage.getItem("token")
+        : null
+
+    return {
+      headers: token
+        ? {
+            Authorization: `Bearer ${token}`,
+          }
+        : {},
+    }
+  }
+
   // CHANGE 2: point Action Center loads at the order controller, scoped to this store
   const loadActionCenter = async () => {
     if (!storeCode) return
 
     try {
-      const res = await axios.get(`${API}/order/action-center/${encodeURIComponent(storeCode)}`)
+      const res = await axios.get(
+        `${API}/order/action-center/${encodeURIComponent(storeCode)}`,
+        ownerAuthConfig(),
+      )
       setIssues(res.data)
     } catch {
       setIssues([])
@@ -1412,7 +1480,10 @@ export default function OwnerPage() {
     if (!businessId) return
 
     try {
-      const res = await axios.get(`${API}/stripe/status?businessId=${businessId}`)
+      const res = await axios.get(
+        `${API}/stripe/status?businessId=${businessId}`,
+        ownerAuthConfig(),
+      )
       setStripeStatus(res.data)
     } catch {
       setStripeStatus(null)
@@ -1452,7 +1523,11 @@ export default function OwnerPage() {
     if (!file) return ""
     try {
       const form = new FormData(); form.append("file", file)
-      const res = await axios.post(`${API}/menu/upload`, form)
+      const res = await axios.post(
+        `${API}/menu/upload`,
+        form,
+        ownerAuthConfig(),
+      )
       return res.data.url
     } catch { return "" }
   }
@@ -1461,7 +1536,11 @@ export default function OwnerPage() {
     if (!logoFile) return ""
     try {
       const form = new FormData(); form.append("file", logoFile)
-      const res = await axios.post(`${API}/menu/upload`, form)
+      const res = await axios.post(
+        `${API}/menu/upload`,
+        form,
+        ownerAuthConfig(),
+      )
       return res.data.url
     } catch { return "" }
   }
@@ -1471,7 +1550,11 @@ export default function OwnerPage() {
     if (!coverFile) return ""
     try {
       const form = new FormData(); form.append("file", coverFile)
-      const res = await axios.post(`${API}/menu/upload`, form)
+      const res = await axios.post(
+        `${API}/menu/upload`,
+        form,
+        ownerAuthConfig(),
+      )
       return res.data.url
     } catch { return "" }
   }
@@ -1479,13 +1562,54 @@ export default function OwnerPage() {
   const add = async () => {
     if (!businessId) return
     if (!name || !price) return setMsg("Name and price are required")
+    const customizationsForSave =
+      customizations
+        .map((group: any) => ({
+          ...group,
+          name: String(
+            group?.name || "",
+          ).trim(),
+          options: (
+            Array.isArray(
+              group?.options,
+            )
+              ? group.options
+              : []
+          )
+            .filter(
+              (option: any) =>
+                String(
+                  option?.name || "",
+                ).trim(),
+            )
+            .map(
+              (option: any) => ({
+                ...option,
+                name: String(
+                  option?.name || "",
+                ).trim(),
+              }),
+            ),
+        }))
+        .filter(
+          (group: any) =>
+            group.name ||
+            group.options.length > 0,
+        )
+
     const imageUrl = await upload()
-    await axios.post(`${API}/menu/create`, {
-      businessId, name, price: Number(price),
-      category: category.trim().toLowerCase(),
-      imageUrl, discount: discount ? Number(discount) : 0,
-    })
-    setName(""); setPrice(""); setCategory(""); setFile(null); setDiscount(""); setMsg("")
+    await axios.post(
+      `${API}/menu/create`,
+      {
+        businessId, name, price: Number(price),
+        category: category.trim().toLowerCase(),
+        description: description.trim(),
+        imageUrl, discount: discount ? Number(discount) : 0,
+      customizations: customizationsForSave,
+      },
+      ownerAuthConfig(),
+    )
+    setName(""); setPrice(""); setCategory(""); setDescription(""); setFile(null); setDiscount(""); setMsg(""); setCustomizations([])
     // Change 3: reload analytics after adding item
     showToast("Item added")
     await load()
@@ -1498,14 +1622,29 @@ export default function OwnerPage() {
     const logo = await uploadLogo()
     // Change 7: send coverUrl to branding endpoint
     const coverUrl = await uploadCover()
-    await axios.post(`${API}/business/update-branding`, { businessId, name: cafeName, logo, coverUrl })
-    showToast("Branding saved")
+    const response = await axios.post(
+      `${API}/business/update-branding`,
+      { businessId, name: cafeName, logo, coverUrl },
+      ownerAuthConfig(),
+    )
+    const status = response.data?.stripeBranding?.status
+
+    if (status === "needs_owner_update") {
+      showToast("Branding saved. Review merchant name in Stripe Express.")
+    } else if (status === "unavailable") {
+      showToast("Branding saved. Stripe merchant name could not be verified.")
+    } else {
+      showToast("Branding saved")
+    }
   }
 
   // Change 4: reload analytics after deleting item
   const del = (id: any) =>
     axios
-      .delete(`${API}/menu/${id}`)
+      .delete(
+        `${API}/menu/${id}`,
+        ownerAuthConfig(),
+      )
       .then(async () => {
         await load()
         await loadAnalytics()
@@ -1515,7 +1654,11 @@ export default function OwnerPage() {
   // Change 5: reload analytics after hiding item
   const hide = (id: any) =>
     axios
-      .patch(`${API}/menu/hide/${id}`)
+      .patch(
+        `${API}/menu/hide/${id}`,
+        {},
+        ownerAuthConfig(),
+      )
       .then(async () => {
         await load()
         await loadAnalytics()
@@ -1525,18 +1668,29 @@ export default function OwnerPage() {
     if (!businessId) return Promise.resolve()
 
     return axios
-      .post(`${API}/business/set-kitchen-password`, {
-        businessId,
-        password: kitchenPass,
+      .post(
+        `${API}/business/set-kitchen-password`,
+        {
+          businessId,
+          password: kitchenPass,
+        },
+        ownerAuthConfig(),
+      )
+      .then(() => {
+        setKitchenMode("password")
+        showToast("Password saved. You can show it until this page is refreshed.")
       })
-      .then(() => showToast("Password saved"))
   }
 
   const saveServiceFee = async () => {
     if (!businessId) return
 
     try {
-      await axios.post(`${API}/business/set-service-fee`, { businessId, fee: Number(serviceFee) })
+      await axios.post(
+        `${API}/business/set-service-fee`,
+        { businessId, fee: Number(serviceFee) },
+        ownerAuthConfig(),
+      )
       showToast("Service fee saved")
     } catch { showToast("Failed to save fee") }
   }
@@ -1552,6 +1706,7 @@ export default function OwnerPage() {
       const res = await axios.patch(
         `${API}/business/country-currency/${businessId}`,
         { countryCode },
+        ownerAuthConfig(),
       )
 
       const savedCountry: SupportedCountry =
@@ -1602,7 +1757,11 @@ export default function OwnerPage() {
         if (!saved) return
       }
 
-      const res = await axios.post(`${API}/stripe/connect`, { businessId })
+      const res = await axios.post(
+        `${API}/stripe/connect`,
+        { businessId },
+        ownerAuthConfig(),
+      )
       await loadStripeStatus()
       window.location.href = res.data.url
     } catch (error: any) {
@@ -1622,7 +1781,11 @@ export default function OwnerPage() {
     if (!businessId) return
 
     try {
-      const res = await axios.get(`${API}/stripe/dashboard?businessId=${businessId}`)
+      const res = await axios.post(
+        `${API}/stripe/dashboard`,
+        { businessId },
+        ownerAuthConfig(),
+      )
       window.open(res.data.url, "_blank")
     } catch { showToast("Could not open dashboard") }
   }
@@ -1631,7 +1794,11 @@ export default function OwnerPage() {
   const refundIssue = async (issue: any) => {
     if (!confirm("Refund this customer?")) return
     try {
-      await axios.patch(`${API}/order/refund/${issue.stripePaymentIntentId}`)
+      await axios.patch(
+        `${API}/order/refund/${issue.stripePaymentIntentId}`,
+        undefined,
+        ownerAuthConfig(),
+      )
       await loadActionCenter()
       showToast("✅ Customer refunded.")
     } catch {
@@ -1643,7 +1810,11 @@ export default function OwnerPage() {
   const resolveIssue = async (id: any) => {
     if (!confirm("Mark this issue resolved?")) return
     try {
-      await axios.patch(`${API}/order/resolve/${id}`, { resolvedBy: "OWNER" })
+      await axios.patch(
+        `${API}/order/resolve/${id}`,
+        { resolvedBy: "OWNER" },
+        ownerAuthConfig(),
+      )
       await loadActionCenter()
       showToast("✅ Issue resolved.")
     } catch {
@@ -2053,6 +2224,24 @@ export default function OwnerPage() {
                 </div>
                 <div className="field-grid one">
                   <div className="field">
+                    <div className="field-label">Description</div>
+                    <textarea
+                      className="inp"
+                      placeholder="Describe the item, ingredients, flavors…"
+                      value={description}
+                      rows={3}
+                      maxLength={1000}
+                      onChange={(e) => setDescription(e.target.value)}
+                      style={{
+                        resize: "vertical",
+                        minHeight: 90,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="field-grid one">
+                  <div className="field">
                     <div className="field-label">Photo</div>
                     <label className={`file-zone${file ? " loaded" : ""}`}>
                       <div className="file-icon">📷</div>
@@ -2062,7 +2251,13 @@ export default function OwnerPage() {
                   </div>
                 </div>
 
-                <div className="btn-row">
+                                <CustomizationBuilder
+                  value={customizations}
+                  onChange={setCustomizations}
+                  currencySymbol={currencySymbol(currency)}
+                />
+
+<div className="btn-row">
                   <button className="btn btn-primary" onClick={add}>Add to Menu</button>
                   {msg && <span style={{ fontSize: 12, color: "var(--red)" }}>{msg}</span>}
                 </div>
@@ -2078,27 +2273,27 @@ export default function OwnerPage() {
                   <div className="ph-title">Kitchen Access</div>
                   <div className="ph-sub">Control how kitchen staff sign in</div>
                 </div>
-                <div className={`chip ${kitchenMode === "passwordless" ? "chip-green" : kitchenMode === "password" ? "chip-amber" : "chip-gray"}`} style={{ padding: "5px 12px" }}>
+                <div className={`chip ${kitchenMode === "password" ? "chip-amber" : "chip-gray"}`} style={{ padding: "5px 12px" }}>
                   <span className="chip-dot" />
-                  {kitchenMode === "password" ? "Password Protected" : kitchenMode === "passwordless" ? "Passwordless" : "Checking…"}
+                  {kitchenMode === "password" ? "Password Protected" : kitchenMode === "setup" ? "Password Not Set" : "Checking…"}
                 </div>
               </div>
 
               <div className="card">
                 <div className="card-top">
                   <div>
-                    <div className="card-title">Access Modes</div>
+                    <div className="card-title">Required Kitchen Credentials</div>
                   </div>
                   <div className="card-icon-wrap">📡</div>
                 </div>
                 <table className="info-tbl">
                   <tbody>
                     <tr className="info-tr">
-                      <td className="info-td lbl">Passwordless</td>
-                      <td className="info-td val">Instant access — no login required</td>
+                      <td className="info-td lbl">Store code</td>
+                      <td className="info-td val">Staff enter their café store code</td>
                     </tr>
                     <tr className="info-tr">
-                      <td className="info-td lbl">Password mode</td>
+                      <td className="info-td lbl">Password</td>
                       <td className="info-td val">Staff must enter a shared password</td>
                     </tr>
                   </tbody>
@@ -2108,20 +2303,48 @@ export default function OwnerPage() {
               <div className="card" style={{ maxWidth: 440 }}>
                 <div className="card-top">
                   <div>
-                    <div className="card-title">Set Password</div>
-                    <div className="card-sub">Leave blank and use Enable Passwordless for instant access</div>
+                    <div className="card-title">Set or Reset Password</div>
+                    <div className="card-sub">Set a password before kitchen staff can sign in</div>
                   </div>
                   <div className="card-icon-wrap">🔑</div>
                 </div>
                 <div className="field-grid one">
                   <div className="field">
                     <div className="field-label">Kitchen Password</div>
-                    <input type="password" className="inp" placeholder="Leave blank for passwordless" value={kitchenPass} onChange={e => setKitchenPass(e.target.value)} />
+                    <input type={showKitchenPass ? "text" : "password"} className="inp" placeholder="Enter kitchen password" value={kitchenPass} onChange={e => setKitchenPass(e.target.value)} />
+                    <div className="btn-row" style={{ marginTop: 8 }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => setShowKitchenPass(!showKitchenPass)}
+                      >
+                        {showKitchenPass ? "Hide Password" : "Show Password"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        disabled={!kitchenPass}
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(kitchenPass)
+                            showToast("Kitchen password copied")
+                          } catch {
+                            showToast("Unable to copy password")
+                          }
+                        }}
+                      >
+                        Copy Password
+                      </button>
+                    </div>
+                    <div className="card-sub">
+                      Show or copy the password entered here to share it with kitchen staff.
+                      If a saved password is forgotten, set a new one.
+                    </div>
                   </div>
                 </div>
                 <div className="btn-row">
                   <button className="btn btn-primary" onClick={saveKitchen}>Save Password</button>
-                  <button className="btn btn-ghost" onClick={enablePasswordless}>Enable Passwordless</button>
+
                 </div>
               </div>
             </div>

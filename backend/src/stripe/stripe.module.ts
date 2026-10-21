@@ -19,6 +19,10 @@ import {
 } from '../pending-order/pending-order.entity'
 
 import {
+  OwnerSessionGuard,
+} from '../owner-auth/owner-session.guard'
+
+import {
   StripeController,
 } from './stripe.controller'
 
@@ -37,6 +41,7 @@ import {
 
   providers: [
     StripeService,
+    OwnerSessionGuard,
   ],
 
   controllers: [

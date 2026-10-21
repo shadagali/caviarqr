@@ -1,3 +1,4 @@
+import { SalesCommissionService } from '../sales/sales-commission.service'
 import {
   Injectable,
   BadRequestException,
@@ -27,6 +28,7 @@ import {
   OwnerIssueSeverity,
   OwnerIssueType,
 } from '../order/order.entity'
+import { OrderGateway } from '../order/order.gateway'
 
 import { Business } from '../business/business.entity'
 
@@ -55,7 +57,16 @@ export class MaintenanceService {
 
   private reconciliationRunning = false
 
+  private salesCommissionSweepRunning =
+    false
+
+  private kitchenAckWatchdogRunning =
+    false
+
   constructor(
+    private readonly salesCommissionService:
+      SalesCommissionService,
+
     @InjectRepository(Order)
     private orderRepo: Repository<Order>,
 
@@ -69,6 +80,8 @@ export class MaintenanceService {
     private auditRepo: Repository<MaintenanceAuditLog>,
 
     private stripeService: StripeService,
+
+    private orderGateway: OrderGateway,
   ) {
     const key =
       process.env.STRIPE_SECRET_KEY
@@ -97,6 +110,357 @@ export class MaintenanceService {
       this.resend = new Resend(
         resendKey,
       )
+    }
+  }
+
+  private isPostgresUniqueViolation(
+    error: unknown,
+  ) {
+    const candidate =
+      error as {
+        code?: string
+        driverError?: {
+          code?: string
+        }
+      }
+
+    return (
+      candidate?.code === '23505' ||
+      candidate?.driverError?.code ===
+        '23505'
+    )
+  }
+
+  private isStripeResourceMissing(
+    error: unknown,
+  ) {
+    const candidate =
+      error as {
+        code?: string
+        raw?: {
+          code?: string
+        }
+      }
+
+    return (
+      candidate?.code ===
+        'resource_missing' ||
+      candidate?.raw?.code ===
+        'resource_missing'
+    )
+  }
+
+  /*
+   * Return the authoritative Stripe successful
+   * payment time for a restaurant PaymentIntent.
+   *
+   * New restaurant payments may live on the
+   * connected cafe account. Legacy payments may
+   * live on the CaviarQR platform account.
+   */
+  private async getRestaurantPaymentPaidAt(
+    paymentIntentId: string,
+    connectedAccountId?: string | null,
+  ): Promise<Date | null> {
+    if (!paymentIntentId) {
+      return null
+    }
+
+    const retrieve = async (
+      stripeAccount?: string | null,
+    ): Promise<Date | null> => {
+      const paymentIntent =
+        await this.stripe.paymentIntents.retrieve(
+          paymentIntentId,
+          {
+            expand: [
+              'latest_charge',
+            ],
+          },
+          stripeAccount
+            ? {
+                stripeAccount,
+              }
+            : undefined,
+        )
+
+      let charge:
+        | Stripe.Charge
+        | null = null
+
+      if (
+        typeof paymentIntent.latest_charge ===
+        'string'
+      ) {
+        charge =
+          await this.stripe.charges.retrieve(
+            paymentIntent.latest_charge,
+            {},
+            stripeAccount
+              ? {
+                  stripeAccount,
+                }
+              : undefined,
+          )
+      } else if (
+        paymentIntent.latest_charge &&
+        typeof paymentIntent.latest_charge ===
+          'object'
+      ) {
+        charge =
+          paymentIntent.latest_charge as Stripe.Charge
+      }
+
+      if (!charge) {
+        return null
+      }
+
+      const createdSeconds =
+        Number(
+          charge.created,
+        )
+
+      if (
+        !Number.isInteger(
+          createdSeconds,
+        ) ||
+        createdSeconds <= 0
+      ) {
+        return null
+      }
+
+      return new Date(
+        createdSeconds * 1000,
+      )
+    }
+
+    if (connectedAccountId) {
+      try {
+        return await retrieve(
+          connectedAccountId,
+        )
+      } catch (error: unknown) {
+        if (
+          !this.isStripeResourceMissing(
+            error,
+          )
+        ) {
+          throw error
+        }
+
+        /*
+         * Legacy destination-charge payment:
+         * fall back to the platform account.
+         */
+        return retrieve()
+      }
+    }
+
+    return retrieve()
+  }
+
+  /*
+   * Durable Sales payment-time repair.
+   *
+   * Paid restaurant orders must not depend on one
+   * webhook/process lifetime for Order.paidAt.
+   *
+   * We recover Stripe Charge.created and persist it
+   * conditionally. After repair, recordPaidOrderSafely()
+   * either creates the durable commission ledger row
+   * or fills an ACTIVE PENDING commission's exact
+   * 30-day availableAt timestamp.
+   */
+  private async repairMissingSalesPaidAt(
+    limit = 25,
+  ): Promise<{
+    checked: number
+    repaired: number
+  }> {
+    const safeLimit =
+      Number.isInteger(limit) &&
+      limit > 0 &&
+      limit <= 100
+        ? limit
+        : 25
+
+    const candidates =
+      await this.orderRepo
+        .createQueryBuilder(
+          'order',
+        )
+        .innerJoin(
+          Business,
+          'business',
+          'business.id = order.businessId',
+        )
+        .select(
+          'order.id',
+          'orderId',
+        )
+        .addSelect(
+          'order.stripePaymentIntentId',
+          'paymentIntentId',
+        )
+        .addSelect(
+          'business.stripeAccountId',
+          'stripeAccountId',
+        )
+        .where(
+          'order.paidAt IS NULL',
+        )
+        .andWhere(
+          'business.salesPartnerId IS NOT NULL',
+        )
+        .andWhere(
+          'business.salesAttributedAt IS NOT NULL',
+        )
+        .andWhere(
+          'order.createdAt >= business.salesAttributedAt',
+        )
+        .andWhere(
+          'order.status != :pendingPayment',
+          {
+            pendingPayment:
+              OrderStatus.PENDING_PAYMENT,
+          },
+        )
+        .andWhere(
+          'order.stripePaymentIntentId IS NOT NULL',
+        )
+        .andWhere(
+          'LOWER(order.currency) = :currency',
+          {
+            currency:
+              'usd',
+          },
+        )
+        .andWhere(
+          'order.refundApplicationFee = false',
+        )
+        .orderBy(
+          'order.id',
+          'ASC',
+        )
+        .take(
+          safeLimit,
+        )
+        .getRawMany<{
+          orderId:
+            string | number
+          paymentIntentId:
+            string | null
+          stripeAccountId:
+            string | null
+        }>()
+
+    let repaired =
+      0
+
+    for (const candidate of candidates) {
+      const orderId =
+        Number(
+          candidate.orderId,
+        )
+
+      const paymentIntentId =
+        String(
+          candidate.paymentIntentId ||
+            '',
+        ).trim()
+
+      const connectedAccountId =
+        String(
+          candidate.stripeAccountId ||
+            '',
+        ).trim() ||
+        null
+
+      if (
+        !Number.isInteger(
+          orderId,
+        ) ||
+        orderId < 1 ||
+        !paymentIntentId
+      ) {
+        continue
+      }
+
+      try {
+        const paidAt =
+          await this
+            .getRestaurantPaymentPaidAt(
+              paymentIntentId,
+              connectedAccountId,
+            )
+
+        if (!paidAt) {
+          continue
+        }
+
+        const update =
+          await this.orderRepo
+            .createQueryBuilder()
+            .update(Order)
+            .set({
+              paidAt,
+            })
+            .where(
+              'id = :orderId',
+              {
+                orderId,
+              },
+            )
+            .andWhere(
+              '"paidAt" IS NULL',
+            )
+            .execute()
+
+        if (
+          Number(
+            update.affected || 0,
+          ) > 0
+        ) {
+          repaired +=
+            1
+
+          this.logger.log(
+            `SALES_PAID_AT_REPAIRED order=${orderId} paidAt=${paidAt.toISOString()}`,
+          )
+        }
+
+        /*
+         * Safe whether the commission row already
+         * exists or not:
+         *
+         * - existing ACTIVE/PENDING + NULL availableAt
+         *   gets its 30-day timestamp;
+         * - missing ACTIVE commission is created;
+         * - missing non-ACTIVE commission becomes
+         *   permanently INELIGIBLE;
+         * - existing terminal rows are untouched.
+         */
+        await this
+          .salesCommissionService
+          .recordPaidOrderSafely(
+            orderId,
+            'PAID_AT_REPAIR',
+          )
+      } catch (error: any) {
+        this.logger.error(
+          `SALES_PAID_AT_REPAIR_FAILED order=${orderId} error=${String(
+            error?.message ||
+              error,
+          )}`,
+        )
+      }
+    }
+
+    return {
+      checked:
+        candidates.length,
+
+      repaired,
     }
   }
 
@@ -215,6 +579,260 @@ export class MaintenanceService {
   }
 
   // =========================
+  // 🍳 DURABLE KITCHEN ACK WATCHDOG
+  // Survives process/container restarts.
+  // The existing 30-second timer remains the fast path;
+  // this database scan is the recovery path.
+  // =========================
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async runKitchenAckWatchdog() {
+    if (this.kitchenAckWatchdogRunning) {
+      return
+    }
+
+    this.kitchenAckWatchdogRunning =
+      true
+
+    try {
+      const cutoff =
+        new Date(
+          Date.now() -
+            60 * 1000,
+        )
+
+      const candidates =
+        await this.orderRepo
+          .createQueryBuilder('order')
+          .where(
+            'order.kitchenAcknowledged = :acknowledged',
+            {
+              acknowledged:
+                false,
+            },
+          )
+          .andWhere(
+            'order.createdAt <= :cutoff',
+            {
+              cutoff,
+            },
+          )
+          .andWhere(
+            'order.status IN (:...statuses)',
+            {
+              statuses: [
+                OrderStatus.NEW,
+                OrderStatus.PREPARING,
+                OrderStatus.READY,
+              ],
+            },
+          )
+          .andWhere(
+            'order.stripePaymentIntentId IS NOT NULL',
+          )
+          .andWhere(
+            '(order.requiresOwnerAction = :noAction OR order.issueResolved = :resolved)',
+            {
+              noAction: false,
+              resolved: true,
+            },
+          )
+          .orderBy(
+            'order.id',
+            'ASC',
+          )
+          .take(100)
+          .getMany()
+
+      for (const candidate of candidates) {
+        const now =
+          new Date()
+
+        /*
+         * This UPDATE is deliberately conditional.
+         *
+         * If an ACK wins the race first,
+         * kitchenAcknowledged is already true and this
+         * update affects zero rows.
+         *
+         * This also refuses to overwrite any other
+         * unresolved Action Center issue.
+         */
+        const result =
+          await this.orderRepo
+            .createQueryBuilder()
+            .update(Order)
+            .set({
+              acknowledgementRetries:
+                () =>
+                  'COALESCE("acknowledgementRetries", 0) + 1',
+
+              requiresOwnerAction:
+                true,
+
+              issueResolved:
+                false,
+
+              issueType:
+                OwnerIssueType.KITCHEN_ACK_TIMEOUT,
+
+              ownerIssueType:
+                OwnerIssueType.KITCHEN_ACK_TIMEOUT,
+
+              ownerIssueSeverity:
+                OwnerIssueSeverity.CRITICAL,
+
+              ownerActionMessage:
+                'Kitchen did not confirm receiving this paid order. Check the kitchen tablet/internet and refund the customer if the order was not prepared.',
+
+              ownerActionCreatedAt:
+                now,
+
+              ownerActionResolvedAt:
+                null,
+
+              ownerActionResolvedBy:
+                null,
+
+              ownerActionId:
+                `ACT-${String(
+                  candidate.id,
+                ).padStart(6, '0')}`,
+            })
+            .where(
+              'id = :id',
+              {
+                id: candidate.id,
+              },
+            )
+            .andWhere(
+              '"kitchenAcknowledged" = :acknowledged',
+              {
+                acknowledged:
+                  false,
+              },
+            )
+            .andWhere(
+              'status IN (:...statuses)',
+              {
+                statuses: [
+                  OrderStatus.NEW,
+                  OrderStatus.PREPARING,
+                  OrderStatus.READY,
+                ],
+              },
+            )
+            .andWhere(
+              '"stripePaymentIntentId" IS NOT NULL',
+            )
+            .andWhere(
+              '("requiresOwnerAction" = :noAction OR "issueResolved" = :resolved)',
+              {
+                noAction:
+                  false,
+                resolved:
+                  true,
+              },
+            )
+            .execute()
+
+        if (
+          Number(
+            result.affected || 0,
+          ) !== 1
+        ) {
+          continue
+        }
+
+        this.logger.error(
+          `DURABLE_KITCHEN_ACK_TIMEOUT: Order ${candidate.id}`,
+        )
+      }
+
+      if (candidates.length > 0) {
+        this.logger.log(
+          `Kitchen ACK watchdog checked ${candidates.length} unacknowledged active orders.`,
+        )
+      }
+    } catch (err: any) {
+      this.logger.error(
+        'KITCHEN_ACK_WATCHDOG_FAILED',
+        err,
+      )
+    } finally {
+      this.kitchenAckWatchdogRunning =
+        false
+    }
+  }
+
+  // =========================
+  // 💰 SALES LEDGER REPAIR
+  // Runs every 1 minute independently
+  // from Stripe pending-order recovery.
+  // =========================
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async runSalesCommissionSweep() {
+    if (
+      this
+        .salesCommissionSweepRunning
+    ) {
+      return
+    }
+
+    this.salesCommissionSweepRunning =
+      true
+
+    try {
+      /*
+       * Ordering matters:
+       *
+       * 1. recover authoritative Stripe payment time;
+       * 2. repair/create durable commission ledger;
+       * 3. release commissions whose 30-day time
+       *    has actually arrived.
+       */
+      const paidAtResult =
+        await this
+          .repairMissingSalesPaidAt(
+            25,
+          )
+
+      const repairResult =
+        await this
+          .salesCommissionService
+          .reconcileMissingCommissions(
+            100,
+          )
+
+      const releaseResult =
+        await this
+          .salesCommissionService
+          .releaseMatureCommissions(
+            100,
+          )
+
+      if (
+        paidAtResult.checked > 0 ||
+        repairResult.checked > 0 ||
+        releaseResult.checked > 0
+      ) {
+        this.logger.log(
+          `Sales commission sweep checked ${paidAtResult.checked} missing paidAt orders, repaired ${paidAtResult.repaired}, checked ${repairResult.checked} missing ledger candidates, recorded ${repairResult.recorded}, checked ${releaseResult.checked} mature commissions, and released ${releaseResult.released}.`,
+        )
+      }
+    } catch (err: any) {
+      this.logger.error(
+        'SALES_COMMISSION_SWEEP_FAILED',
+        err,
+      )
+    } finally {
+      this.salesCommissionSweepRunning =
+        false
+    }
+  }
+
+  // =========================
   // 🔥 AUTOMATIC RECONCILIATION
   // Runs every 1 minute
   // =========================
@@ -303,10 +921,86 @@ export class MaintenanceService {
           continue
         }
 
-        const session =
-          await this.stripe.checkout.sessions.retrieve(
-            pending.stripeSessionId,
+        const business =
+          await this.businessRepo.findOne({
+            where: {
+              id: pending.businessId,
+            },
+          })
+
+        if (!business) {
+          pending.status =
+            PendingOrderStatus.FAILED
+
+          pending.failureReason =
+            'Business not found during reconciliation.'
+
+          pending.issueCreated =
+            true
+
+          await this.pendingOrderRepo.save(
+            pending,
           )
+
+          results.push({
+            pendingOrderId:
+              pending.id,
+            status:
+              'FAILED_BUSINESS_NOT_FOUND',
+          })
+
+          continue
+        }
+
+        const connectedAccountId =
+          String(
+            business.stripeAccountId ||
+              '',
+          ).trim()
+
+        let session:
+          Stripe.Checkout.Session
+
+        if (connectedAccountId) {
+          try {
+            /*
+             * New restaurant payments are direct
+             * charges, so their Checkout Session
+             * belongs to the connected café account.
+             */
+            session =
+              await this.stripe.checkout.sessions.retrieve(
+                pending.stripeSessionId,
+                {},
+                {
+                  stripeAccount:
+                    connectedAccountId,
+                },
+              )
+          } catch (error: unknown) {
+            if (
+              !this.isStripeResourceMissing(
+                error,
+              )
+            ) {
+              throw error
+            }
+
+            /*
+             * Legacy destination-charge orders were
+             * created on the CaviarQR platform account.
+             */
+            session =
+              await this.stripe.checkout.sessions.retrieve(
+                pending.stripeSessionId,
+              )
+          }
+        } else {
+          session =
+            await this.stripe.checkout.sessions.retrieve(
+              pending.stripeSessionId,
+            )
+        }
 
         const paymentIntentId =
           typeof session.payment_intent ===
@@ -320,10 +1014,25 @@ export class MaintenanceService {
 
         if (
           session.payment_status ===
-            'paid' ||
-          session.status ===
-            'complete'
+            'paid'
         ) {
+          let paidAt:
+            Date | null = null
+
+          try {
+            paidAt =
+              await this
+                .getRestaurantPaymentPaidAt(
+                  paymentIntentId,
+                  connectedAccountId,
+                )
+          } catch (error: unknown) {
+            this.logger.error(
+              `RECONCILIATION_PAID_AT_LOOKUP_FAILED: ${paymentIntentId}`,
+              error,
+            )
+          }
+
           const existingByPaymentIntent =
             paymentIntentId
               ? await this.orderRepo.findOne({
@@ -347,6 +1056,18 @@ export class MaintenanceService {
             existingBySession
 
           if (existingOrder) {
+            if (
+              !existingOrder.paidAt &&
+              paidAt
+            ) {
+              existingOrder.paidAt =
+                paidAt
+
+              await this.orderRepo.save(
+                existingOrder,
+              )
+            }
+
             pending.status =
               PendingOrderStatus.COMPLETED
 
@@ -355,6 +1076,9 @@ export class MaintenanceService {
 
             pending.failureReason =
               null
+
+            pending.completedAt =
+              new Date()
 
             await this.pendingOrderRepo.save(
               pending,
@@ -369,36 +1093,12 @@ export class MaintenanceService {
                 'ORDER_ALREADY_EXISTS',
             })
 
-            continue
-          }
-
-          const business =
-            await this.businessRepo.findOne({
-              where: {
-                id: pending.businessId,
-              },
-            })
-
-          if (!business) {
-            pending.status =
-              PendingOrderStatus.FAILED
-
-            pending.failureReason =
-              'Business not found during reconciliation.'
-
-            pending.issueCreated =
-              true
-
-            await this.pendingOrderRepo.save(
-              pending,
-            )
-
-            results.push({
-              pendingOrderId:
-                pending.id,
-              status:
-                'FAILED_BUSINESS_NOT_FOUND',
-            })
+            await this
+              .salesCommissionService
+              .recordPaidOrderSafely(
+                existingOrder.id,
+                'RECONCILIATION_EXISTING_ORDER',
+              )
 
             continue
           }
@@ -412,16 +1112,11 @@ export class MaintenanceService {
               ).toFixed(2),
             )
 
-          const processingFeePercent =
-            business.processingFeePercent ??
-            1.75
-
           const platformFee =
             Number(
-              (
-                total *
-                (processingFeePercent /
-                  100)
+              Number(
+                pending.platformFee ||
+                  0,
               ).toFixed(2),
             )
 
@@ -464,6 +1159,9 @@ export class MaintenanceService {
           order.stripeSessionId =
             pending.stripeSessionId
 
+          order.paidAt =
+            paidAt
+
           order.kitchenAcknowledged =
             false
 
@@ -503,11 +1201,105 @@ export class MaintenanceService {
           order.ownerActionCreatedAt =
             null
 
-          let saved =
-            await this.orderRepo.save(
-              order,
+          let saved: Order
+
+          try {
+            saved =
+              await this.orderRepo.save(
+                order,
+              )
+          } catch (error: unknown) {
+            if (
+              !this.isPostgresUniqueViolation(
+                error,
+              )
+            ) {
+              throw error
+            }
+
+            /*
+             * Another webhook/reconciliation worker
+             * may have created the same order between
+             * our duplicate check and INSERT.
+             */
+            const concurrentByPaymentIntent =
+              paymentIntentId
+                ? await this.orderRepo.findOne({
+                    where: {
+                      stripePaymentIntentId:
+                        paymentIntentId,
+                    },
+                  })
+                : null
+
+            const concurrentBySession =
+              await this.orderRepo.findOne({
+                where: {
+                  stripeSessionId:
+                    pending.stripeSessionId,
+                },
+              })
+
+            const concurrentOrder =
+              concurrentByPaymentIntent ||
+              concurrentBySession
+
+            if (!concurrentOrder) {
+              throw error
+            }
+
+            if (
+              !concurrentOrder.paidAt &&
+              paidAt
+            ) {
+              concurrentOrder.paidAt =
+                paidAt
+
+              await this.orderRepo.save(
+                concurrentOrder,
+              )
+            }
+
+            pending.status =
+              PendingOrderStatus.COMPLETED
+
+            pending.issueCreated =
+              true
+
+            pending.failureReason =
+              null
+
+            pending.completedAt =
+              new Date()
+
+            await this.pendingOrderRepo.save(
+              pending,
             )
 
+            results.push({
+              pendingOrderId:
+                pending.id,
+              orderId:
+                concurrentOrder.id,
+              status:
+                'ORDER_RECOVERED_CONCURRENTLY',
+            })
+
+            await this
+              .salesCommissionService
+              .recordPaidOrderSafely(
+                concurrentOrder.id,
+                'RECONCILIATION_CONCURRENT_ORDER',
+              )
+
+            continue
+          }
+
+          /*
+           * A recovered paid order was delayed, so keep
+           * a genuine Action Center issue for restaurant
+           * review even if realtime delivery succeeds.
+           */
           saved =
             await this.createOwnerIssue(
               saved,
@@ -515,6 +1307,34 @@ export class MaintenanceService {
               OwnerIssueSeverity.CRITICAL,
               'Stripe shows this customer paid, but the normal webhook flow did not finish. This order was recovered by reconciliation. Check the kitchen and refund the customer if the order was not prepared.',
             )
+
+          /*
+           * The old reconciliation path only saved the
+           * recovered order. It never sent it to kitchen.
+           */
+          try {
+            this.orderGateway.emitNewOrder(
+              business.id,
+              saved,
+            )
+
+            this.logger.log(
+              `Recovered Order ${saved.id} sent to kitchen.`,
+            )
+          } catch (error: unknown) {
+            saved =
+              await this.createOwnerIssue(
+                saved,
+                OwnerIssueType.SOCKET_EMIT_FAILED,
+                OwnerIssueSeverity.CRITICAL,
+                'Recovered paid order could not be delivered to the kitchen. Check this order immediately.',
+              )
+
+            this.logger.error(
+              `RECOVERED_ORDER_SOCKET_EMIT_FAILED: ${saved.id}`,
+              error,
+            )
+          }
 
           pending.status =
             PendingOrderStatus.COMPLETED
@@ -525,9 +1345,20 @@ export class MaintenanceService {
           pending.failureReason =
             'Paid order recovered by reconciliation.'
 
+          pending.completedAt =
+            new Date()
+
           await this.pendingOrderRepo.save(
             pending,
           )
+
+
+          await this
+            .salesCommissionService
+            .recordPaidOrderSafely(
+              saved.id,
+              'RECONCILIATION_RECOVERED_ORDER',
+            )
 
           results.push({
             pendingOrderId:
@@ -543,9 +1374,7 @@ export class MaintenanceService {
 
         if (
           session.status ===
-            'expired' ||
-          session.payment_status ===
-            'unpaid'
+            'expired'
         ) {
           pending.status =
             PendingOrderStatus.EXPIRED
@@ -610,15 +1439,36 @@ export class MaintenanceService {
   // =========================
 
   async getIssues() {
-    return this.orderRepo.find({
-      where: {
-        requiresOwnerAction: true,
-        issueResolved: false,
-      },
-      order: {
-        id: 'DESC',
-      },
-    })
+    return this.orderRepo
+      .createQueryBuilder('order')
+      .where(
+        'order.requiresOwnerAction = :required',
+        {
+          required: true,
+        },
+      )
+      .andWhere(
+        'order.issueResolved = :resolved',
+        {
+          resolved: false,
+        },
+      )
+      .andWhere(
+        `(
+          order.ownerIssueType IS NOT NULL
+          OR order.issueType IS NOT NULL
+        )`,
+      )
+      .orderBy(
+        'order.ownerActionCreatedAt',
+        'DESC',
+        'NULLS LAST',
+      )
+      .addOrderBy(
+        'order.id',
+        'DESC',
+      )
+      .getMany()
   }
 
   // =========================
@@ -793,36 +1643,108 @@ export class MaintenanceService {
     // Only errors from the Stripe refund request
     // are handled in this catch block.
     try {
+      let connectedAccountId:
+        string | null = null
+
+      let paymentIntent:
+        Stripe.PaymentIntent
+
+      try {
+        paymentIntent =
+          await this.stripe.paymentIntents.retrieve(
+            order.stripePaymentIntentId,
+          )
+      } catch (platformError: any) {
+        if (
+          platformError?.code !==
+          'resource_missing'
+        ) {
+          throw platformError
+        }
+
+        const business =
+          await this.businessRepo.findOne({
+            where: {
+              id: order.businessId,
+            },
+          })
+
+        connectedAccountId =
+          String(
+            business?.stripeAccountId ||
+              '',
+          ).trim() || null
+
+        if (!connectedAccountId) {
+          throw new BadRequestException(
+            'Connected Stripe account is missing for this order.',
+          )
+        }
+
+        paymentIntent =
+          await this.stripe.paymentIntents.retrieve(
+            order.stripePaymentIntentId,
+            {},
+            {
+              stripeAccount:
+                connectedAccountId,
+            },
+          )
+      }
+
+      const params:
+        Stripe.RefundCreateParams = {
+          payment_intent:
+            order.stripePaymentIntentId,
+
+          metadata: {
+            orderId:
+              String(order.id),
+
+            businessId:
+              String(
+                order.businessId,
+              ),
+
+            storeCode:
+              order.storeCode || '',
+
+            performedBy,
+          },
+        }
+
+      if (
+        !connectedAccountId &&
+        paymentIntent.transfer_data
+          ?.destination
+      ) {
+        params.reverse_transfer =
+          true
+
+        if (
+          Number(
+            paymentIntent
+              .application_fee_amount ||
+              0,
+          ) > 0
+        ) {
+          params.refund_application_fee =
+            true
+        }
+      }
+
       refund =
         await this.stripe.refunds.create(
-          {
-            payment_intent:
-              order.stripePaymentIntentId,
-
-            reverse_transfer:
-              true,
-
-            refund_application_fee:
-              true,
-
-            metadata: {
-              orderId:
-                String(order.id),
-
-              businessId:
-                String(
-                  order.businessId,
-                ),
-
-              storeCode:
-                order.storeCode || '',
-
-              performedBy,
-            },
-          },
+          params,
           {
             idempotencyKey:
               `maintenance-refund-order-${order.id}`,
+            ...(connectedAccountId
+              ? {
+                  stripeAccount:
+                    connectedAccountId,
+                }
+              : {}),
           },
         )
     } catch (err: any) {
@@ -1519,12 +2441,741 @@ CaviarQR Support`
   // 🔥 GET ALL ORDERS
   // =========================
 
+  private async getHistoricalMaintenanceByBusiness() {
+    const rows:
+      Array<{
+        businessId: string
+        orderCount: string
+        grossRevenueCents: string
+        netRevenueCents: string
+        dashboardRevenueCents: string
+        rawPlatformFeeCents: string
+        netPlatformFeeCents: string
+        statusRefundedOrderCount: string
+        refundedOrderCount: string
+        lastOrderAt:
+          | Date
+          | string
+          | null
+        currentMonthGrossRevenueCents: string
+        currentMonthRawPlatformFeeCents: string
+        currentMonthNetPlatformFeeCents: string
+      }> =
+      await this.orderRepo.manager.query(
+        `
+          SELECT
+            "businessId"::text
+              AS "businessId",
+
+            COALESCE(
+              SUM("orderCount"),
+              0
+            )::text
+              AS "orderCount",
+
+            COALESCE(
+              SUM("grossRevenueCents"),
+              0
+            )::text
+              AS "grossRevenueCents",
+
+            COALESCE(
+              SUM("netRevenueCents"),
+              0
+            )::text
+              AS "netRevenueCents",
+
+            COALESCE(
+              SUM("dashboardRevenueCents"),
+              0
+            )::text
+              AS "dashboardRevenueCents",
+
+            COALESCE(
+              SUM("rawPlatformFeeCents"),
+              0
+            )::text
+              AS "rawPlatformFeeCents",
+
+            COALESCE(
+              SUM("netPlatformFeeCents"),
+              0
+            )::text
+              AS "netPlatformFeeCents",
+
+            COALESCE(
+              SUM("statusRefundedOrderCount"),
+              0
+            )::text
+              AS "statusRefundedOrderCount",
+
+            COALESCE(
+              SUM("refundedOrderCount"),
+              0
+            )::text
+              AS "refundedOrderCount",
+
+            MAX("lastOrderAt")
+              AS "lastOrderAt",
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN
+                    "year" =
+                      EXTRACT(
+                        YEAR FROM CURRENT_TIMESTAMP
+                      )::int
+                    AND
+                    "month" =
+                      EXTRACT(
+                        MONTH FROM CURRENT_TIMESTAMP
+                      )::int
+                  THEN "grossRevenueCents"
+                  ELSE 0
+                END
+              ),
+              0
+            )::text
+              AS "currentMonthGrossRevenueCents",
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN
+                    "year" =
+                      EXTRACT(
+                        YEAR FROM CURRENT_TIMESTAMP
+                      )::int
+                    AND
+                    "month" =
+                      EXTRACT(
+                        MONTH FROM CURRENT_TIMESTAMP
+                      )::int
+                  THEN "rawPlatformFeeCents"
+                  ELSE 0
+                END
+              ),
+              0
+            )::text
+              AS "currentMonthRawPlatformFeeCents",
+
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN
+                    "year" =
+                      EXTRACT(
+                        YEAR FROM CURRENT_TIMESTAMP
+                      )::int
+                    AND
+                    "month" =
+                      EXTRACT(
+                        MONTH FROM CURRENT_TIMESTAMP
+                      )::int
+                  THEN "netPlatformFeeCents"
+                  ELSE 0
+                END
+              ),
+              0
+            )::text
+              AS "currentMonthNetPlatformFeeCents"
+
+          FROM
+            "business_order_history_monthly"
+
+          GROUP BY
+            "businessId"
+        `,
+      )
+
+    const result =
+      new Map<
+        number,
+        {
+          orderCount: number
+          grossRevenue: number
+          processedNetRevenue: number
+          dashboardRevenue: number
+          rawPlatformFees: number
+          netPlatformFees: number
+          statusRefundedOrderCount: number
+          refundedOrderCount: number
+          lastOrderAt: Date | null
+          currentMonthGrossRevenue: number
+          currentMonthRawPlatformFees: number
+          currentMonthNetPlatformFees: number
+        }
+      >()
+
+    for (const row of rows) {
+      const businessId =
+        Number(
+          row.businessId,
+        )
+
+      if (
+        !Number.isInteger(
+          businessId,
+        ) ||
+        businessId < 1
+      ) {
+        continue
+      }
+
+      result.set(
+        businessId,
+        {
+          orderCount:
+            Number(
+              row.orderCount ||
+                0,
+            ),
+
+          grossRevenue:
+            Number(
+              row.grossRevenueCents ||
+                0,
+            ) / 100,
+
+          processedNetRevenue:
+            Number(
+              row.netRevenueCents ||
+                0,
+            ) / 100,
+
+          dashboardRevenue:
+            Number(
+              row.dashboardRevenueCents ||
+                0,
+            ) / 100,
+
+          rawPlatformFees:
+            Number(
+              row.rawPlatformFeeCents ||
+                0,
+            ) / 100,
+
+          netPlatformFees:
+            Number(
+              row.netPlatformFeeCents ||
+                0,
+            ) / 100,
+
+          statusRefundedOrderCount:
+            Number(
+              row.statusRefundedOrderCount ||
+                0,
+            ),
+
+          refundedOrderCount:
+            Number(
+              row.refundedOrderCount ||
+                0,
+            ),
+
+          lastOrderAt:
+            row.lastOrderAt
+              ? new Date(
+                  row.lastOrderAt,
+                )
+              : null,
+
+          currentMonthGrossRevenue:
+            Number(
+              row.currentMonthGrossRevenueCents ||
+                0,
+            ) / 100,
+
+          currentMonthRawPlatformFees:
+            Number(
+              row.currentMonthRawPlatformFeeCents ||
+                0,
+            ) / 100,
+
+          currentMonthNetPlatformFees:
+            Number(
+              row.currentMonthNetPlatformFeeCents ||
+                0,
+            ) / 100,
+        },
+      )
+    }
+
+    return result
+  }
+
   async getAllOrders() {
-    return this.orderRepo.find({
-      order: {
-        id: 'DESC',
+    return this.orderRepo
+      .createQueryBuilder('order')
+      .where(
+        '"order"."archivedAt" IS NULL',
+      )
+      .orderBy(
+        '"order"."id"',
+        'DESC',
+      )
+      .getMany()
+  }
+
+  // =========================
+  // ☕ SCALABLE CAFE SUMMARIES
+  // =========================
+
+  async getCafeSummaries() {
+    const historical =
+      await this
+        .getHistoricalMaintenanceByBusiness()
+
+    const rows =
+      await this.businessRepo
+        .createQueryBuilder('business')
+        .leftJoin(
+          Order,
+          'order',
+          `
+            "order"."businessId" =
+              business.id
+            AND
+            "order"."archivedAt"
+              IS NULL
+          `,
+        )
+        .select(
+          'business.id',
+          'businessId',
+        )
+        .addSelect(
+          'business.storeCode',
+          'storeCode',
+        )
+        .addSelect(
+          'COUNT("order"."id")',
+          'orders',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              CASE
+                WHEN "order"."id" IS NULL
+                  THEN 0
+                WHEN "order"."refundProcessed" = true
+                  THEN GREATEST(
+                    "order"."total" -
+                    COALESCE(
+                      "order"."refundAmount",
+                      0
+                    ),
+                    0
+                  )
+                ELSE "order"."total"
+              END
+            ),
+            0
+          )`,
+          'revenue',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              CASE
+                WHEN
+                  "order"."createdAt" >=
+                    date_trunc(
+                      'month',
+                      CURRENT_TIMESTAMP
+                    )
+                  AND NOT (
+                    (
+                      "order"."status" = 'REFUNDED'
+                      OR
+                      "order"."refundProcessed" = true
+                    )
+                    AND
+                    "order"."refundApplicationFee" = true
+                  )
+                THEN
+                  COALESCE(
+                    "order"."platformFee",
+                    0
+                  )
+                ELSE 0
+              END
+            ),
+            0
+          )`,
+          'monthPlatformFees',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              CASE
+                WHEN
+                  (
+                    "order"."status" = 'REFUNDED'
+                    OR
+                    "order"."refundProcessed" = true
+                  )
+                  AND
+                  "order"."refundApplicationFee" = true
+                THEN 0
+                ELSE
+                  COALESCE(
+                    "order"."platformFee",
+                    0
+                  )
+              END
+            ),
+            0
+          )`,
+          'allTimePlatformFees',
+        )
+        .addSelect(
+          `COUNT("order"."id") FILTER (
+            WHERE
+              "order"."requiresOwnerAction" = true
+              AND
+              "order"."issueResolved" = false
+              AND (
+                "order"."ownerIssueType" IS NOT NULL
+                OR
+                "order"."issueType" IS NOT NULL
+              )
+          )`,
+          'openIssues',
+        )
+        .addSelect(
+          `COUNT("order"."id") FILTER (
+            WHERE
+              "order"."requiresOwnerAction" = true
+              AND
+              "order"."issueResolved" = false
+              AND
+              "order"."ownerIssueSeverity" = 'CRITICAL'
+              AND (
+                "order"."ownerIssueType" IS NOT NULL
+                OR
+                "order"."issueType" IS NOT NULL
+              )
+          )`,
+          'criticalIssues',
+        )
+        .addSelect(
+          'MAX("order"."createdAt")',
+          'lastOrderAt',
+        )
+        .groupBy(
+          'business.id',
+        )
+        .addGroupBy(
+          'business.storeCode',
+        )
+        .getRawMany()
+
+    return rows
+      .map((row: any) => {
+        const businessId =
+          Number(
+            row.businessId,
+          )
+
+        const history =
+          historical.get(
+            businessId,
+          )
+
+        const liveLast =
+          row.lastOrderAt
+            ? new Date(
+                row.lastOrderAt,
+              )
+            : null
+
+        const historicalLast =
+          history?.lastOrderAt ||
+          null
+
+        const lastOrderAt =
+          historicalLast &&
+          (
+            !liveLast ||
+            historicalLast.getTime() >
+              liveLast.getTime()
+          )
+            ? historicalLast
+            : liveLast
+
+        return {
+          businessId,
+
+          storeCode:
+            String(
+              row.storeCode ||
+                '',
+            ),
+
+          cafeName:
+            String(
+              row.storeCode ||
+                '',
+            ),
+
+          orders:
+            Number(
+              row.orders ||
+                0,
+            ) +
+            (
+              history?.orderCount ||
+              0
+            ),
+
+          revenue:
+            Number(
+              row.revenue ||
+                0,
+            ) +
+            (
+              history
+                ?.processedNetRevenue ||
+              0
+            ),
+
+          monthPlatformFees:
+            Number(
+              row.monthPlatformFees ||
+                0,
+            ) +
+            (
+              history
+                ?.currentMonthNetPlatformFees ||
+              0
+            ),
+
+          allTimePlatformFees:
+            Number(
+              row.allTimePlatformFees ||
+                0,
+            ) +
+            (
+              history
+                ?.netPlatformFees ||
+              0
+            ),
+
+          openIssues:
+            Number(
+              row.openIssues ||
+                0,
+            ),
+
+          criticalIssues:
+            Number(
+              row.criticalIssues ||
+                0,
+            ),
+
+          lastOrderAt,
+        }
+      })
+      .sort(
+        (a, b) =>
+          b.openIssues -
+            a.openIssues ||
+          b.criticalIssues -
+            a.criticalIssues ||
+          a.storeCode.localeCompare(
+            b.storeCode,
+          ),
+      )
+  }
+
+  // =========================
+  // ☕ PAGINATED CAFE ORDERS
+  // =========================
+
+  async getCafeOrders(
+    storeCode: string,
+    options?: {
+      limit?: string
+      cursor?: string
+      search?: string
+    },
+  ) {
+    const cleanStoreCode =
+      String(
+        storeCode || '',
+      )
+        .trim()
+        .toLowerCase()
+
+    if (!cleanStoreCode) {
+      throw new BadRequestException(
+        'Valid store code is required.',
+      )
+    }
+
+    const business =
+      await this.businessRepo.findOne({
+        where: {
+          storeCode:
+            cleanStoreCode,
+        },
+      })
+
+    if (!business) {
+      throw new BadRequestException(
+        'Cafe not found',
+      )
+    }
+
+    const requestedLimit =
+      Number(
+        options?.limit ||
+          50,
+      )
+
+    const limit =
+      Number.isFinite(
+        requestedLimit,
+      )
+        ? Math.min(
+            Math.max(
+              Math.trunc(
+                requestedLimit,
+              ),
+              1,
+            ),
+            100,
+          )
+        : 50
+
+    const cursor =
+      Number(
+        options?.cursor ||
+          0,
+      )
+
+    const search =
+      String(
+        options?.search ||
+          '',
+      )
+        .trim()
+        .slice(
+          0,
+          200,
+        )
+
+    const base =
+      this.orderRepo
+        .createQueryBuilder(
+          'order',
+        )
+        .where(
+          '"order"."storeCode" = :storeCode',
+          {
+            storeCode:
+              cleanStoreCode,
+          },
+        )
+          .andWhere(
+            '"order"."archivedAt" IS NULL',
+          )
+
+    const totalOrders =
+      await base
+        .clone()
+        .getCount()
+
+    if (
+      search
+    ) {
+      base.andWhere(
+        `(
+          CAST("order"."id" AS TEXT) ILIKE :search
+          OR COALESCE("order"."customerName", '') ILIKE :search
+          OR COALESCE("order"."customerEmail", '') ILIKE :search
+          OR COALESCE("order"."stripePaymentIntentId", '') ILIKE :search
+          OR CAST("order"."status" AS TEXT) ILIKE :search
+        )`,
+        {
+          search:
+            `%${search}%`,
+        },
+      )
+    }
+
+    const filteredTotal =
+      await base
+        .clone()
+        .getCount()
+
+    if (
+      Number.isInteger(
+        cursor,
+      ) &&
+      cursor > 0
+    ) {
+      base.andWhere(
+        '"order"."id" < :cursor',
+        {
+          cursor,
+        },
+      )
+    }
+
+    const rows =
+      await base
+        .orderBy(
+          '"order"."id"',
+          'DESC',
+        )
+        .take(
+          limit + 1,
+        )
+        .getMany()
+
+    const hasMore =
+      rows.length >
+      limit
+
+    const orders =
+      hasMore
+        ? rows.slice(
+            0,
+            limit,
+          )
+        : rows
+
+    const last =
+      orders[
+        orders.length - 1
+      ]
+
+    return {
+      business,
+
+      orders,
+
+      page: {
+        limit,
+
+        totalOrders,
+
+        filteredTotal,
+
+        hasMore,
+
+        nextCursor:
+          hasMore &&
+          last
+            ? String(
+                last.id,
+              )
+            : null,
       },
-    })
+    }
   }
 
   // =========================
@@ -1532,36 +3183,186 @@ CaviarQR Support`
   // =========================
 
   async getDashboardStats() {
-    const orders =
-      await this.orderRepo.find()
+    const historical =
+      await this
+        .getHistoricalMaintenanceByBusiness()
 
-    const revenue =
-      orders.reduce(
-        (sum, o) =>
-          sum + o.total,
-        0,
+    const row =
+      await this.orderRepo
+        .createQueryBuilder(
+          'order',
+        )
+        .select(
+          'COUNT("order"."id")',
+          'totalOrders',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              GREATEST(
+                "order"."total" -
+                CASE
+                  WHEN
+                    "order"."refundProcessed" = true
+                    OR
+                    "order"."status" = 'REFUNDED'
+                  THEN
+                    COALESCE(
+                      "order"."refundAmount",
+                      "order"."total",
+                      0
+                    )
+                  ELSE 0
+                END,
+                0
+              )
+            ),
+            0
+          )`,
+          'totalRevenue',
+        )
+        .addSelect(
+          `COUNT("order"."id") FILTER (
+            WHERE
+              "order"."requiresOwnerAction" = true
+              AND
+              "order"."issueResolved" = false
+              AND (
+                "order"."ownerIssueType" IS NOT NULL
+                OR
+                "order"."issueType" IS NOT NULL
+              )
+          )`,
+          'unresolvedIssues',
+        )
+        .addSelect(
+          `COUNT("order"."id") FILTER (
+            WHERE
+              "order"."status" = 'REFUNDED'
+              OR
+              "order"."refundProcessed" = true
+          )`,
+          'refundedOrders',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              COALESCE(
+                "order"."platformFee",
+                0
+              )
+            ),
+            0
+          )`,
+          'grossPlatformFees',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              CASE
+                WHEN
+                  (
+                    "order"."status" = 'REFUNDED'
+                    OR
+                    "order"."refundProcessed" = true
+                  )
+                  AND
+                  "order"."refundApplicationFee" = true
+                THEN
+                  COALESCE(
+                    "order"."platformFee",
+                    0
+                  )
+                ELSE 0
+              END
+            ),
+            0
+          )`,
+          'refundedPlatformFees',
+        )
+        .where(
+          '"order"."archivedAt" IS NULL',
+        )
+        .getRawOne()
+
+    let historicalOrders = 0
+    let historicalRevenue = 0
+    let historicalRefunded = 0
+    let historicalGrossFees = 0
+    let historicalNetFees = 0
+
+    for (
+      const history
+      of historical.values()
+    ) {
+      historicalOrders +=
+        history.orderCount
+
+      historicalRevenue +=
+        history.dashboardRevenue
+
+      historicalRefunded +=
+        history.refundedOrderCount
+
+      historicalGrossFees +=
+        history.rawPlatformFees
+
+      historicalNetFees +=
+        history.netPlatformFees
+    }
+
+    const grossPlatformFees =
+      historicalGrossFees +
+      Number(
+        row?.grossPlatformFees ||
+          0,
+      )
+
+    const refundedPlatformFees =
+      (
+        historicalGrossFees -
+        historicalNetFees
+      ) +
+      Number(
+        row?.refundedPlatformFees ||
+          0,
       )
 
     return {
       totalOrders:
-        orders.length,
+        historicalOrders +
+        Number(
+          row?.totalOrders ||
+            0,
+        ),
 
       totalRevenue:
-        revenue,
+        historicalRevenue +
+        Number(
+          row?.totalRevenue ||
+            0,
+        ),
 
       unresolvedIssues:
-        orders.filter(
-          (o) =>
-            o.requiresOwnerAction &&
-            !o.issueResolved,
-        ).length,
+        Number(
+          row?.unresolvedIssues ||
+            0,
+        ),
 
       refundedOrders:
-        orders.filter(
-          (o) =>
-            o.status ===
-            OrderStatus.REFUNDED,
-        ).length,
+        historicalRefunded +
+        Number(
+          row?.refundedOrders ||
+            0,
+        ),
+
+      grossPlatformFees,
+
+      refundedPlatformFees,
+
+      netPlatformFees:
+        grossPlatformFees -
+        refundedPlatformFees,
     }
   }
 
@@ -1570,43 +3371,163 @@ CaviarQR Support`
   // =========================
 
   async getAdminDashboard() {
-    const orders =
-      await this.orderRepo.find({
-        order: {
-          id: 'DESC',
-        },
-      })
+    const historical =
+      await this
+        .getHistoricalMaintenanceByBusiness()
 
-    const totalRevenue =
-      orders.reduce(
-        (sum, o) =>
-          sum + o.total,
-        0,
-      )
+    const [
+      stats,
+      recentOrders,
+    ] = await Promise.all([
+      this.orderRepo
+        .createQueryBuilder('o')
+        .select(
+          'COUNT(o.id)',
+          'totalOrders',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              CASE
+                WHEN
+                  o."refundProcessed" = true
+                THEN
+                  GREATEST(
+                    o.total -
+                    COALESCE(
+                      o."refundAmount",
+                      0
+                    ),
+                    0
+                  )
+                ELSE o.total
+              END
+            ),
+            0
+          )`,
+          'totalRevenue',
+        )
+        .addSelect(
+          `COUNT(o.id) FILTER (
+            WHERE
+              o."requiresOwnerAction" = true
+              AND
+              o."issueResolved" = false
+              AND (
+                o."ownerIssueType" IS NOT NULL
+                OR
+                o."issueType" IS NOT NULL
+              )
+          )`,
+          'unresolvedIssues',
+        )
+        .addSelect(
+          `COUNT(o.id) FILTER (
+            WHERE
+              o.status = 'REFUNDED'
+              OR
+              o."refundProcessed" = true
+          )`,
+          'refundedOrders',
+        )
+        .addSelect(
+          `COALESCE(
+            SUM(
+              CASE
+                WHEN
+                  (
+                    o.status = 'REFUNDED'
+                    OR
+                    o."refundProcessed" = true
+                  )
+                  AND
+                  o."refundApplicationFee" = true
+                THEN 0
+                ELSE
+                  COALESCE(
+                    o."platformFee",
+                    0
+                  )
+              END
+            ),
+            0
+          )`,
+          'platformFees',
+        )
+        .where(
+          'o."archivedAt" IS NULL',
+        )
+        .getRawOne(),
+
+      this.orderRepo
+        .createQueryBuilder('o')
+        .where(
+          'o."archivedAt" IS NULL',
+        )
+        .orderBy(
+          'o.id',
+          'DESC',
+        )
+        .take(
+          10,
+        )
+        .getMany(),
+    ])
+
+    let historicalOrders = 0
+    let historicalRevenue = 0
+    let historicalRefunded = 0
+    let historicalPlatformFees = 0
+
+    for (
+      const history
+      of historical.values()
+    ) {
+      historicalOrders +=
+        history.orderCount
+
+      historicalRevenue +=
+        history.processedNetRevenue
+
+      historicalRefunded +=
+        history.refundedOrderCount
+
+      historicalPlatformFees +=
+        history.netPlatformFees
+    }
 
     const totalOrders =
-      orders.length
+      historicalOrders +
+      Number(
+        stats?.totalOrders ||
+          0,
+      )
+
+    const totalRevenue =
+      historicalRevenue +
+      Number(
+        stats?.totalRevenue ||
+          0,
+      )
 
     const unresolvedIssues =
-      orders.filter(
-        (o) =>
-          o.requiresOwnerAction &&
-          !o.issueResolved,
-      ).length
+      Number(
+        stats?.unresolvedIssues ||
+          0,
+      )
 
     const refundedOrders =
-      orders.filter(
-        (o) =>
-          o.status ===
-          OrderStatus.REFUNDED,
-      ).length
+      historicalRefunded +
+      Number(
+        stats?.refundedOrders ||
+          0,
+      )
 
     const platformFees =
-      orders.reduce(
-        (sum, o) =>
-          sum +
-          (o.platformFee || 0),
-        0,
+      historicalPlatformFees +
+      Number(
+        stats?.platformFees ||
+          0,
       )
 
     const averageOrderValue =
@@ -1622,8 +3543,7 @@ CaviarQR Support`
       refundedOrders,
       platformFees,
       averageOrderValue,
-      recentOrders:
-        orders.slice(0, 10),
+      recentOrders,
     }
   }
 
@@ -1647,15 +3567,34 @@ CaviarQR Support`
       )
     }
 
+    const historical =
+      (
+        await this
+          .getHistoricalMaintenanceByBusiness()
+      ).get(
+        business.id,
+      )
+
     const orders =
-      await this.orderRepo.find({
-        where: {
-          storeCode,
-        },
-        order: {
-          id: 'DESC',
-        },
-      })
+      await this.orderRepo
+        .createQueryBuilder(
+          'order',
+        )
+        .where(
+          '"order"."businessId" = :businessId',
+          {
+            businessId:
+              business.id,
+          },
+        )
+        .andWhere(
+          '"order"."archivedAt" IS NULL',
+        )
+        .orderBy(
+          '"order"."id"',
+          'DESC',
+        )
+        .getMany()
 
     const today =
       new Date()
@@ -1695,6 +3634,52 @@ CaviarQR Support`
           ) >= month,
       )
 
+    const liveGross =
+      orders.reduce(
+        (s, o) =>
+          s +
+          Number(
+            o.total ||
+              0,
+          ),
+        0,
+      )
+
+    const livePlatformFees =
+      orders.reduce(
+        (s, o) =>
+          s +
+          Number(
+            o.platformFee ||
+              0,
+          ),
+        0,
+      )
+
+    const allTimeOrderCount =
+      (
+        historical
+          ?.orderCount ||
+        0
+      ) +
+      orders.length
+
+    const allTimeRevenue =
+      (
+        historical
+          ?.grossRevenue ||
+        0
+      ) +
+      liveGross
+
+    const allTimePlatformFees =
+      (
+        historical
+          ?.rawPlatformFees ||
+        0
+      ) +
+      livePlatformFees
+
     return {
       business,
 
@@ -1702,62 +3687,72 @@ CaviarQR Support`
         todayOrders.reduce(
           (s, o) =>
             s +
-            o.total,
+            Number(
+              o.total ||
+                0,
+            ),
           0,
         ),
 
       monthRevenue:
+        (
+          historical
+            ?.currentMonthGrossRevenue ||
+          0
+        ) +
         monthOrders.reduce(
           (s, o) =>
             s +
-            o.total,
+            Number(
+              o.total ||
+                0,
+            ),
           0,
         ),
 
-      allTimeRevenue:
-        orders.reduce(
-          (s, o) =>
-            s +
-            o.total,
-          0,
-        ),
+      allTimeRevenue,
 
       todayPlatformFees:
         todayOrders.reduce(
           (s, o) =>
             s +
-            (o.platformFee || 0),
+            Number(
+              o.platformFee ||
+                0,
+            ),
           0,
         ),
 
       monthPlatformFees:
+        (
+          historical
+            ?.currentMonthRawPlatformFees ||
+          0
+        ) +
         monthOrders.reduce(
           (s, o) =>
             s +
-            (o.platformFee || 0),
+            Number(
+              o.platformFee ||
+                0,
+            ),
           0,
         ),
 
-      allTimePlatformFees:
-        orders.reduce(
-          (s, o) =>
-            s +
-            (o.platformFee || 0),
-          0,
-        ),
+      allTimePlatformFees,
 
       averageOrder:
-        orders.length
-          ? orders.reduce(
-              (s, o) =>
-                s +
-                o.total,
-              0,
-            ) /
-            orders.length
+        allTimeOrderCount
+          ? allTimeRevenue /
+            allTimeOrderCount
           : 0,
 
       refunds:
+        (
+          historical
+            ?.statusRefundedOrderCount ||
+          0
+        ) +
         orders.filter(
           (o) =>
             o.status ===

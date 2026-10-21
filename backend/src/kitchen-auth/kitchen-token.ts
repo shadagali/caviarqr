@@ -7,6 +7,7 @@ export type KitchenSession = {
   role: 'kitchen'
   businessId: number
   storeCode: string
+  passwordVersion: string
   iat: number
   exp: number
 }
@@ -92,9 +93,46 @@ function signSegment(
     .digest('base64url')
 }
 
+
+export function kitchenPasswordVersion(
+  passwordHash: string,
+): string {
+  if (!passwordHash) {
+    throw new Error('Kitchen password is not configured.')
+  }
+
+  return createHmac('sha256', getKitchenTokenSecret())
+    .update('caviarqr-kitchen-password-version:')
+    .update(passwordHash)
+    .digest('base64url')
+}
+
+export function kitchenSessionMatchesPassword(
+  session: KitchenSession,
+  passwordHash: string | null | undefined,
+): boolean {
+  if (!passwordHash || !session.passwordVersion) {
+    return false
+  }
+
+  const expected = Buffer.from(
+    kitchenPasswordVersion(passwordHash),
+    'utf8',
+  )
+
+  const supplied = Buffer.from(
+    session.passwordVersion,
+    'utf8',
+  )
+
+  return expected.length === supplied.length &&
+    timingSafeEqual(expected, supplied)
+}
+
 export function createKitchenToken(
   businessId: number,
   storeCode: string,
+  kitchenPasswordHash: string,
 ) {
   const cleanBusinessId =
     Number(businessId)
@@ -126,6 +164,7 @@ export function createKitchenToken(
       cleanBusinessId,
     storeCode:
       cleanStoreCode,
+    passwordVersion: kitchenPasswordVersion(kitchenPasswordHash),
     iat: now,
     exp:
       now + ttlSeconds(),
@@ -209,6 +248,8 @@ export function verifyKitchenToken(
 
   if (
     payload.role !== 'kitchen' ||
+    typeof payload.passwordVersion !== 'string' ||
+    !payload.passwordVersion ||
     !Number.isInteger(
       payload.businessId,
     ) ||
@@ -231,6 +272,7 @@ export function verifyKitchenToken(
       Number(payload.businessId),
     storeCode:
       payload.storeCode.trim(),
+    passwordVersion: payload.passwordVersion!,
     iat: Number(payload.iat),
     exp: Number(payload.exp),
   }

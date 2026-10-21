@@ -5,6 +5,7 @@ import { Order } from '../order/order.entity'
 
 import { AnalyticsController } from './analytics.controller'
 import { AnalyticsService } from './analytics.service'
+import { OwnerSessionGuard } from '../owner-auth/owner-session.guard'
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AnalyticsService } from './analytics.service'
 
   providers: [
     AnalyticsService,
+    OwnerSessionGuard,
   ],
 
   exports: [

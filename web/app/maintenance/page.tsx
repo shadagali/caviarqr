@@ -1,5 +1,7 @@
 'use client'
 
+import MaintenanceSalesTaxSummary from './MaintenanceSalesTaxSummary'
+
 import {
   useEffect,
   useMemo,
@@ -26,8 +28,11 @@ const QR_BASE_URL =
 type Tab =
   | 'action'
   | 'cafes'
+  | 'sales'
+  | 'demos'
   | 'qr'
   | 'shop'
+  | 'legal'
 
 type Filter =
   | 'OPEN'
@@ -143,9 +148,92 @@ type Cafe = {
   cafeName: string
   orders: number
   revenue: number
+  monthPlatformFees: number
+  allTimePlatformFees: number
   openIssues: number
   criticalIssues: number
   lastOrderAt?: string | null
+}
+
+type SalesPartnerSummary = {
+  id: number
+  email: string
+  legalName: string
+  displayName?: string | null
+  referralCode: string
+  status: string
+  commissionBps: number
+  monthlyCommissionCapCents: number
+  currentMonthCommissionUnits: string
+  currentMonthEarnings: number
+  remainingCap: number
+  capReached: boolean
+  attributedCafeCount: number
+  activeCafeCount: number
+  terminatedCafeCount: number
+}
+
+// CAVIARQR_HOME_DEMO_V1
+type DemoRequest = {
+  id: string
+  email: string
+  phone: string
+  message: string
+  status: 'NEW' | 'CONTACTED' | 'CLOSED'
+  contactedAt?: string | null
+  closedAt?: string | null
+  createdAt: string
+  updatedAt?: string
+}
+
+type DemoStats = {
+  total: number
+  new: number
+  contacted: number
+  closed: number
+}
+
+type CafeSalesCommission = {
+  salesPartnerId: number | null
+  salesCommissionBps: number | null
+  salesCommissionTerminatedAt: string | null
+}
+
+
+type LegalDocumentType =
+  | 'TERMS'
+  | 'PRIVACY'
+  | 'SALES_PARTNER_AGREEMENT'
+
+type LegalDocumentStatus =
+  | 'DRAFT'
+  | 'PUBLISHED'
+  | 'ARCHIVED'
+
+type LegalDocument = {
+  id: string
+  documentType: LegalDocumentType
+  version: string
+  title: string
+  effectiveDate: string
+  status: LegalDocumentStatus
+  content: string
+  contentHash: string
+  requiresReacceptance: boolean
+  publishedAt?: string | null
+  archivedAt?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+type LegalDraft = {
+  id?: string
+  documentType: LegalDocumentType
+  version: string
+  title: string
+  effectiveDate: string
+  content: string
+  requiresReacceptance: boolean
 }
 
 type TableLink = {
@@ -240,6 +328,9 @@ type ShopOrder = {
   refundRequestedAt?: string | null
   refundedAt?: string | null
   refundFailureMessage?: string | null
+  salesPartnerId?: number | null
+  salesCode?: string | null
+  salesDiscountCents?: number
   createdAt: string
   items: ShopOrderItem[]
 }
@@ -458,6 +549,24 @@ function supportThreadToIssue(
       thread.status,
     )
 
+  const supportStatus =
+    String(
+      thread.status || '',
+    ).toUpperCase()
+
+  const latestSender =
+    String(
+      thread.latestMessage
+        ?.senderType || '',
+    ).toUpperCase()
+
+  const needsRestaurantAction =
+    !terminal &&
+    supportStatus ===
+      'AWAITING_RESTAURANT' &&
+    latestSender ===
+      'CUSTOMER'
+
   return {
     id: `SUPPORT:${orderId}`,
     backendOrderId: orderId,
@@ -482,16 +591,22 @@ function supportThreadToIssue(
       ),
     issueType:
       'CUSTOMER_SUPPORT_REQUEST',
-    issueResolved: terminal,
+    issueResolved:
+      !needsRestaurantAction,
     requiresOwnerAction:
-      !terminal,
+      needsRestaurantAction,
     ownerIssueType:
       'CUSTOMER_SUPPORT_REQUEST',
     ownerIssueSeverity:
       'WARNING',
     ownerActionMessage:
-      thread.latestMessage?.message ||
-      'Customer sent a help request.',
+      needsRestaurantAction
+        ? (
+            thread.latestMessage
+              ?.message ||
+            'Customer requested help.'
+          )
+        : null,
     ownerActionId:
       `SUP-${String(orderId).padStart(
         6,
@@ -665,15 +780,87 @@ const ICONS = {
 export default function MaintenancePage() {
   const [tab, setTab] = useState<Tab>('action')
   const [issues, setIssues] = useState<IssueOrder[]>([])
-  const [orders, setOrders] = useState<IssueOrder[]>([])
+  const [dashboardStats, setDashboardStats] = useState({
+    totalOrders: 0,
+    totalRevenue: 0,
+    unresolvedIssues: 0,
+    refundedOrders: 0,
+    grossPlatformFees: 0,
+    refundedPlatformFees: 0,
+    netPlatformFees: 0,
+  })
+
+  const [selectedCafeHasMore, setSelectedCafeHasMore] =
+    useState(false)
+
+  const [selectedCafeNextCursor, setSelectedCafeNextCursor] =
+    useState<string | null>(null)
+
+  const [cafeOrdersLoading, setCafeOrdersLoading] =
+    useState(false)
   const [supportIssues, setSupportIssues] =
     useState<IssueOrder[]>([])
   const [cafes, setCafes] = useState<Cafe[]>([])
+  const [salesPartners, setSalesPartners] =
+    useState<SalesPartnerSummary[]>([])
+  const [salesPartnersLoading, setSalesPartnersLoading] =
+    useState(false)
+  const [salesPartnerCapDrafts, setSalesPartnerCapDrafts] =
+    useState<Record<number, string>>({})
+  const [salesPartnerCapSavingId, setSalesPartnerCapSavingId] =
+    useState<number | null>(null)
+  const [demoRequests, setDemoRequests] =
+    useState<DemoRequest[]>([])
+  const [demoStats, setDemoStats] =
+    useState<DemoStats>({
+      total: 0,
+      new: 0,
+      contacted: 0,
+      closed: 0,
+    })
+  const [demoLoading, setDemoLoading] =
+    useState(false)
+  const [demoError, setDemoError] =
+    useState('')
+  const [demoBusyId, setDemoBusyId] =
+    useState<string | null>(null)
+
+  const [
+    legalDocuments,
+    setLegalDocuments,
+  ] = useState<LegalDocument[]>([])
+
+  const [
+    legalLoading,
+    setLegalLoading,
+  ] = useState(false)
+
+  const [
+    legalSaving,
+    setLegalSaving,
+  ] = useState(false)
+
+  const [
+    legalError,
+    setLegalError,
+  ] = useState('')
+
+  const [
+    legalDraft,
+    setLegalDraft,
+  ] = useState<LegalDraft | null>(
+    null,
+  )
+
   const [selectedCafe, setSelectedCafe] = useState<string | null>(null)
   const [selectedCafeOrders, setSelectedCafeOrders] = useState<IssueOrder[]>([])
   const [selectedCafeProcessingFee, setSelectedCafeProcessingFee] =
     useState('4.75')
   const [processingFeeSaving, setProcessingFeeSaving] =
+    useState(false)
+  const [selectedCafeSalesCommission, setSelectedCafeSalesCommission] =
+    useState<CafeSalesCommission | null>(null)
+  const [terminatingSalesCommission, setTerminatingSalesCommission] =
     useState(false)
 
   const [
@@ -736,6 +923,21 @@ export default function MaintenancePage() {
     standRegistered,
     setStandRegistered,
   ] = useState(false)
+
+  const [
+    standActivationCode,
+    setStandActivationCode,
+  ] = useState('')
+
+  const [
+    qrShopOrder,
+    setQrShopOrder,
+  ] = useState<{
+    id: number
+    orderNumber: string
+    salesPartnerId?: number | null
+    salesCode?: string | null
+  } | null>(null)
 
   const [
     shopProducts,
@@ -908,79 +1110,115 @@ export default function MaintenancePage() {
 
   function buildCafeList(
     storeList: any[],
-    issueList: IssueOrder[],
-    orderList: IssueOrder[],
   ) {
-    const map = new Map<string, Cafe>()
-    storeList.forEach((store: any) => {
-      const storeCode =
-        typeof store === 'string'
-          ? store
-          : store.storeCode || store.code || String(store.id || '')
-      if (!storeCode) return
-      const cafeName =
-        typeof store === 'string'
-          ? store
-          : store.cafeName || store.name || store.storeCode || storeCode
-      map.set(storeCode, {
-        storeCode,
-        cafeName,
-        orders: 0,
-        revenue: 0,
-        openIssues: 0,
-        criticalIssues: 0,
-        lastOrderAt: null,
-      })
-    })
+    const nextCafes =
+      storeList
+        .map(
+          (store: any): Cafe | null => {
+            const storeCode =
+              String(
+                typeof store === 'string'
+                  ? store
+                  : store?.storeCode ||
+                      store?.code ||
+                      '',
+              ).trim()
 
-    const all = uniqueOrders([
-      ...issueList,
-      ...orderList,
-    ])
-    all.forEach((order) => {
-      if (!order.storeCode) return
-      const cafe = map.get(order.storeCode) || {
-        storeCode: order.storeCode,
-        cafeName: order.cafeName || order.storeCode,
-        orders: 0,
-        revenue: 0,
-        openIssues: 0,
-        criticalIssues: 0,
-        lastOrderAt: null,
-      }
+            if (!storeCode) {
+              return null
+            }
 
-      cafe.orders += 1
+            if (
+              typeof store ===
+              'string'
+            ) {
+              return {
+                storeCode,
+                cafeName:
+                  storeCode,
+                orders: 0,
+                revenue: 0,
+                monthPlatformFees:
+                  0,
+                allTimePlatformFees:
+                  0,
+                openIssues: 0,
+                criticalIssues: 0,
+                lastOrderAt: null,
+              }
+            }
 
-      const refundedAmount =
-        order.status === 'REFUNDED' ||
-        order.refundProcessed
-          ? Number(
-              order.refundAmount ??
-                order.total ??
-                0,
-            )
-          : 0
+            return {
+              storeCode,
 
-      cafe.revenue +=
-        Number(order.total || 0) -
-        refundedAmount
-      if (isOpenIssue(order)) cafe.openIssues += 1
-      if (isOpenIssue(order) && isCritical(order)) cafe.criticalIssues += 1
+              cafeName:
+                String(
+                  store.cafeName ||
+                    store.name ||
+                    storeCode,
+                ),
 
-      const oldTime = cafe.lastOrderAt ? new Date(cafe.lastOrderAt).getTime() : 0
-      const newTime = order.createdAt ? new Date(order.createdAt).getTime() : 0
-      if (newTime > oldTime) cafe.lastOrderAt = order.createdAt || null
+              orders:
+                Number(
+                  store.orders ||
+                    0,
+                ),
 
-      map.set(order.storeCode, cafe)
-    })
+              revenue:
+                Number(
+                  store.revenue ||
+                    0,
+                ),
+
+              monthPlatformFees:
+                Number(
+                  store.monthPlatformFees ||
+                    0,
+                ),
+
+              allTimePlatformFees:
+                Number(
+                  store.allTimePlatformFees ||
+                    0,
+                ),
+
+              openIssues:
+                Number(
+                  store.openIssues ||
+                    0,
+                ),
+
+              criticalIssues:
+                Number(
+                  store.criticalIssues ||
+                    0,
+                ),
+
+              lastOrderAt:
+                store.lastOrderAt ||
+                null,
+            }
+          },
+        )
+        .filter(
+          (
+            cafe,
+          ): cafe is Cafe =>
+            Boolean(cafe),
+        )
+        .sort(
+          (a, b) =>
+            b.openIssues -
+              a.openIssues ||
+            b.criticalIssues -
+              a.criticalIssues ||
+            a.storeCode.localeCompare(
+              b.storeCode,
+            ),
+        )
 
     setCafes(
-      Array.from(map.values()).sort(
-        (a, b) =>
-          b.openIssues - a.openIssues ||
-          b.criticalIssues - a.criticalIssues ||
-          a.storeCode.localeCompare(b.storeCode),
-      ),
+      nextCafes,
     )
   }
 
@@ -1097,19 +1335,19 @@ export default function MaintenancePage() {
     try {
       const [
         issuesRes,
-        ordersRes,
         storesRes,
+        statsRes,
       ] = await Promise.all([
         apiFetch(
           `${API}/maintenance/issues`,
           {},
         ),
         apiFetch(
-          `${API}/maintenance/orders`,
+          `${API}/maintenance/stores`,
           {},
         ),
         apiFetch(
-          `${API}/maintenance/stores`,
+          `${API}/maintenance/stats`,
           {},
         ),
       ])
@@ -1118,11 +1356,61 @@ export default function MaintenancePage() {
         issuesRes,
       ) as IssueOrder[]
 
-      const orderList = getArray(
-        ordersRes,
-      ) as IssueOrder[]
+      const storeList =
+        getArray(
+          storesRes,
+        )
 
-      const storeList = getArray(storesRes)
+      setDashboardStats({
+        totalOrders:
+          Number(
+            (statsRes as any)
+              ?.totalOrders ||
+              0,
+          ),
+
+        totalRevenue:
+          Number(
+            (statsRes as any)
+              ?.totalRevenue ||
+              0,
+          ),
+
+        unresolvedIssues:
+          Number(
+            (statsRes as any)
+              ?.unresolvedIssues ||
+              0,
+          ),
+
+        refundedOrders:
+          Number(
+            (statsRes as any)
+              ?.refundedOrders ||
+              0,
+          ),
+
+        grossPlatformFees:
+          Number(
+            (statsRes as any)
+              ?.grossPlatformFees ||
+              0,
+          ),
+
+        refundedPlatformFees:
+          Number(
+            (statsRes as any)
+              ?.refundedPlatformFees ||
+              0,
+          ),
+
+        netPlatformFees:
+          Number(
+            (statsRes as any)
+              ?.netPlatformFees ||
+              0,
+          ),
+      })
 
       try {
         const supportRes =
@@ -1149,94 +1437,26 @@ export default function MaintenancePage() {
       }
 
       setIssues(issueList)
-      setOrders(orderList)
 
       buildCafeList(
         storeList,
-        issueList,
-        orderList,
       )
 
       setBackendOnline(true)
       setBackendError('')
       setLastUpdated(new Date())
 
-      const activeCafe = selectedCafeRef.current
+      const activeCafe =
+        selectedCafeRef.current
 
       if (activeCafe) {
-        const requestId =
-          cafeRequestIdRef.current + 1
-
-        cafeRequestIdRef.current = requestId
-
-        try {
-          const cafeRes = await apiFetch(
-            `${API}/maintenance/cafe/${encodeURIComponent(
-              activeCafe,
-            )}`,
-            {},
-          )
-
-          if (
-            requestId !==
-            cafeRequestIdRef.current
-          ) {
-            return
-          }
-
-          const freshProcessingFee = Number(
-            (cafeRes as any)?.business?.processingFeePercent,
-          )
-
-          if (Number.isFinite(freshProcessingFee)) {
-            setSelectedCafeProcessingFee(
-              freshProcessingFee.toFixed(2),
-            )
-          }
-
-          const freshEmailMarketingEnabled =
-            (cafeRes as any)?.business
-              ?.emailMarketingEnabled
-
-          setSelectedCafeEmailMarketingEnabled(
-            typeof freshEmailMarketingEnabled ===
-              'boolean'
-              ? freshEmailMarketingEnabled
-              : true,
-          )
-
-          const freshCafeOrders = getArray(
-            cafeRes,
-          ) as IssueOrder[]
-
-          setSelectedCafeOrders(
-            freshCafeOrders.length
-              ? uniqueOrders(freshCafeOrders)
-              : uniqueOrders([
-                  ...issueList,
-                  ...orderList,
-                ]).filter(
-                  (order) =>
-                    order.storeCode === activeCafe,
-                ),
-          )
-        } catch {
-          if (
-            requestId ===
-            cafeRequestIdRef.current
-          ) {
-            setSelectedCafeOrders(
-              uniqueOrders([
-                ...issueList,
-                ...orderList,
-              ]).filter(
-                (order) =>
-                  order.storeCode === activeCafe,
-              ),
-            )
-          }
-        }
+        await loadCafeOrdersPage(
+          activeCafe,
+          false,
+          null,
+        )
       }
+
     } catch (error: any) {
       setBackendOnline(false)
 
@@ -1251,26 +1471,65 @@ export default function MaintenancePage() {
     }
   }
 
-  async function openCafe(
+  async function loadCafeOrdersPage(
     storeCode: string,
+    append = false,
+    cursor: string | null = null,
   ) {
     const requestId =
-      cafeRequestIdRef.current + 1
+      cafeRequestIdRef.current +
+      1
 
-    cafeRequestIdRef.current = requestId
+    cafeRequestIdRef.current =
+      requestId
 
-    selectedCafeRef.current = storeCode
-    setSelectedCafe(storeCode)
-    setSelectedCafeProcessingFee('')
-    setSelectedCafeEmailMarketingEnabled(null)
+    setCafeOrdersLoading(
+      true,
+    )
 
     try {
-      const response = await apiFetch(
-        `${API}/maintenance/cafe/${encodeURIComponent(
+      const params =
+        new URLSearchParams()
+
+      params.set(
+        'limit',
+        '50',
+      )
+
+      if (
+        append &&
+        cursor
+      ) {
+        params.set(
+          'cursor',
+          cursor,
+        )
+      }
+
+      const encodedStoreCode =
+        encodeURIComponent(
           storeCode,
-        )}`,
-        {},
-      )
+        )
+
+      const [
+        detailsResponse,
+        ordersResponse,
+      ] =
+        await Promise.all([
+          append
+            ? Promise.resolve(
+                null,
+              )
+            : apiFetch(
+                `${API}/maintenance/cafe/${encodedStoreCode}`,
+                {},
+              ),
+
+          apiFetch(
+            `${API}/maintenance/cafe/${encodedStoreCode}/orders?${params.toString()}`,
+            {},
+          ),
+        ])
 
       if (
         requestId !==
@@ -1279,62 +1538,203 @@ export default function MaintenancePage() {
         return
       }
 
-      const processingFee = Number(
-        (response as any)?.business?.processingFeePercent,
-      )
-
-      setSelectedCafeProcessingFee(
-        Number.isFinite(processingFee)
-          ? processingFee.toFixed(2)
-          : '4.75',
-      )
-
-      const emailMarketingEnabled =
-        (response as any)?.business
-          ?.emailMarketingEnabled
-
-      setSelectedCafeEmailMarketingEnabled(
-        typeof emailMarketingEnabled ===
-          'boolean'
-          ? emailMarketingEnabled
-          : true,
-      )
-
-      const cafeOrders = getArray(
-        response,
-      ) as IssueOrder[]
-
-      setSelectedCafeOrders(
-        cafeOrders.length
-          ? uniqueOrders(cafeOrders)
-          : allOrders.filter(
-              (order) =>
-                order.storeCode === storeCode,
-            ),
-      )
-    } catch {
       if (
-        requestId !==
-        cafeRequestIdRef.current
+        detailsResponse
       ) {
-        return
+        const processingFee =
+          Number(
+            (
+              detailsResponse as any
+            )?.business
+              ?.processingFeePercent,
+          )
+
+        setSelectedCafeProcessingFee(
+          Number.isFinite(
+            processingFee,
+          )
+            ? processingFee.toFixed(
+                2,
+              )
+            : '4.75',
+        )
+
+        const emailMarketingEnabled =
+          (
+            detailsResponse as any
+          )?.business
+            ?.emailMarketingEnabled
+
+        setSelectedCafeEmailMarketingEnabled(
+          typeof emailMarketingEnabled ===
+            'boolean'
+            ? emailMarketingEnabled
+            : true,
+        )
+
+        const business =
+          (detailsResponse as any)
+            ?.business
+
+        const salesPartnerId =
+          Number(
+            business
+              ?.salesPartnerId,
+          )
+
+        const salesCommissionBps =
+          Number(
+            business
+              ?.salesCommissionBps,
+          )
+
+        setSelectedCafeSalesCommission({
+          salesPartnerId:
+            Number.isInteger(
+              salesPartnerId,
+            ) &&
+            salesPartnerId > 0
+              ? salesPartnerId
+              : null,
+          salesCommissionBps:
+            Number.isInteger(
+              salesCommissionBps,
+            )
+              ? salesCommissionBps
+              : null,
+          salesCommissionTerminatedAt:
+            business
+              ?.salesCommissionTerminatedAt
+              ? String(
+                  business
+                    .salesCommissionTerminatedAt,
+                )
+              : null,
+        })
       }
 
+      const pageOrders =
+        getArray(
+          ordersResponse,
+        ) as IssueOrder[]
+
       setSelectedCafeOrders(
-        allOrders.filter(
-          (order) =>
-            order.storeCode === storeCode,
+        (previous) =>
+          append
+            ? uniqueOrders([
+                ...previous,
+                ...pageOrders,
+              ])
+            : uniqueOrders(
+                pageOrders,
+              ),
+      )
+
+      const page =
+        (
+          ordersResponse as any
+        )?.page
+
+      setSelectedCafeHasMore(
+        Boolean(
+          page?.hasMore,
         ),
       )
 
-      setSelectedCafeProcessingFee('4.75')
-      setSelectedCafeEmailMarketingEnabled(null)
-
-      pushToast(
-        'error',
-        'Cafe details could not be refreshed. Showing cached dashboard data.',
+      setSelectedCafeNextCursor(
+        page?.nextCursor
+          ? String(
+              page.nextCursor,
+            )
+          : null,
       )
+    } catch (error: any) {
+      console.error(
+        'CAFE ORDER LOAD FAILED:',
+        error,
+      )
+
+      if (!append) {
+        setSelectedCafeOrders(
+          [],
+        )
+
+        setSelectedCafeHasMore(
+          false,
+        )
+
+        setSelectedCafeNextCursor(
+          null,
+        )
+      }
+    } finally {
+      if (
+        requestId ===
+        cafeRequestIdRef.current
+      ) {
+        setCafeOrdersLoading(
+          false,
+        )
+      }
     }
+  }
+
+  async function openCafe(
+    storeCode: string,
+  ) {
+    selectedCafeRef.current =
+      storeCode
+
+    setSelectedCafe(
+      storeCode,
+    )
+
+    setSelectedCafeProcessingFee(
+      '',
+    )
+
+    setSelectedCafeEmailMarketingEnabled(
+      null,
+    )
+
+    setSelectedCafeSalesCommission(
+      null,
+    )
+
+    setSelectedCafeOrders(
+      [],
+    )
+
+    setSelectedCafeHasMore(
+      false,
+    )
+
+    setSelectedCafeNextCursor(
+      null,
+    )
+
+    await loadCafeOrdersPage(
+      storeCode,
+      false,
+      null,
+    )
+  }
+
+  async function loadMoreCafeOrders() {
+    if (
+      !selectedCafe ||
+      !selectedCafeHasMore ||
+      !selectedCafeNextCursor ||
+      cafeOrdersLoading
+    ) {
+      return
+    }
+
+    await loadCafeOrdersPage(
+      selectedCafe,
+      true,
+      selectedCafeNextCursor,
+    )
   }
 
   async function saveProcessingFee() {
@@ -1484,6 +1884,763 @@ export default function MaintenancePage() {
         false
 
       setEmailMarketingSaving(
+        false,
+      )
+    }
+  }
+
+
+  function legalTypeLabel(
+    type: LegalDocumentType,
+  ) {
+    if (
+      type ===
+      'SALES_PARTNER_AGREEMENT'
+    ) {
+      return 'Sales Partner Agreement'
+    }
+
+    if (
+      type ===
+      'PRIVACY'
+    ) {
+      return 'Privacy Policy'
+    }
+
+    return 'Restaurant Terms'
+  }
+
+  async function loadLegalDocuments() {
+    if (legalLoading) {
+      return
+    }
+
+    setLegalLoading(true)
+    setLegalError('')
+
+    try {
+      const result =
+        (await apiFetch(
+          `${API}/maintenance/legal-documents`,
+        )) as {
+          success?: boolean
+          message?: string
+          documents?: LegalDocument[]
+        }
+
+      if (!result?.success) {
+        throw new Error(
+          result?.message ||
+            'Legal documents could not be loaded.',
+        )
+      }
+
+      setLegalDocuments(
+        Array.isArray(
+          result?.documents,
+        )
+          ? result.documents
+          : [],
+      )
+    } catch (error) {
+      console.error(
+        'Legal documents load failed',
+        error,
+      )
+
+      setLegalError(
+        'Legal documents could not be loaded.',
+      )
+    } finally {
+      setLegalLoading(false)
+    }
+  }
+
+  function beginLegalDraft(
+    type: LegalDocumentType,
+    base?: LegalDocument,
+  ) {
+    const today =
+      new Date()
+        .toISOString()
+        .slice(
+          0,
+          10,
+        )
+
+    setLegalDraft({
+      documentType:
+        type,
+
+      version:
+        `${today}-v1`,
+
+      title:
+        base?.title ||
+        legalTypeLabel(
+          type,
+        ),
+
+      effectiveDate:
+        today,
+
+      content:
+        base?.content ||
+        '',
+
+      requiresReacceptance:
+        false,
+    })
+
+    setTimeout(
+      () => {
+        globalThis.document
+          .getElementById(
+            'legal-draft-editor',
+          )
+          ?.scrollIntoView({
+            behavior:
+              'smooth',
+            block:
+              'start',
+          })
+      },
+      0,
+    )
+  }
+
+  function editLegalDraft(
+    document: LegalDocument,
+  ) {
+    if (
+      document.status !==
+      'DRAFT'
+    ) {
+      return
+    }
+
+    setLegalDraft({
+      id:
+        document.id,
+
+      documentType:
+        document.documentType,
+
+      version:
+        document.version,
+
+      title:
+        document.title,
+
+      effectiveDate:
+        String(
+          document.effectiveDate ||
+          '',
+        ).slice(
+          0,
+          10,
+        ),
+
+      content:
+        document.content,
+
+      requiresReacceptance:
+        Boolean(
+          document.requiresReacceptance,
+        ),
+    })
+
+    setTimeout(
+      () => {
+        globalThis.document
+          .getElementById(
+            'legal-draft-editor',
+          )
+          ?.scrollIntoView({
+            behavior:
+              'smooth',
+            block:
+              'start',
+          })
+      },
+      0,
+    )
+  }
+
+  async function saveLegalDraft() {
+    if (
+      !legalDraft ||
+      legalSaving
+    ) {
+      return
+    }
+
+    if (
+      !legalDraft.version.trim() ||
+      !legalDraft.title.trim() ||
+      !legalDraft.effectiveDate ||
+      !legalDraft.content.trim()
+    ) {
+      pushToast(
+        'error',
+        'Version, title, effective date, and document text are required.',
+      )
+
+      return
+    }
+
+    setLegalSaving(true)
+
+    try {
+      const url =
+        legalDraft.id
+          ? `${API}/maintenance/legal-documents/${legalDraft.id}`
+          : `${API}/maintenance/legal-documents/draft`
+
+      const result = await apiFetch(
+        url,
+        {
+          method:
+            legalDraft.id
+              ? 'PATCH'
+              : 'POST',
+
+          headers: {
+            'Content-Type':
+              'application/json',
+          },
+
+          body:
+            JSON.stringify({
+              documentType:
+                legalDraft.documentType,
+
+              version:
+                legalDraft.version.trim(),
+
+              title:
+                legalDraft.title.trim(),
+
+              effectiveDate:
+                legalDraft.effectiveDate,
+
+              content:
+                legalDraft.content.trim(),
+
+              requiresReacceptance:
+                legalDraft.requiresReacceptance,
+            }),
+        },
+      )
+
+      if (!result?.success) {
+        throw new Error(
+          result?.message ||
+            'Legal draft could not be saved.',
+        )
+      }
+
+      pushToast(
+        'success',
+        legalDraft.id
+          ? 'Legal draft saved.'
+          : 'Legal draft created.',
+      )
+
+      setLegalDraft(
+        null,
+      )
+
+      await loadLegalDocuments()
+    } catch (error: any) {
+      console.error(
+        'Legal draft save failed',
+        error,
+      )
+
+      pushToast(
+        'error',
+        error?.message ||
+          'Legal draft could not be saved.',
+      )
+    } finally {
+      setLegalSaving(false)
+    }
+  }
+
+  function publishLegalDocument(
+    document: LegalDocument,
+  ) {
+    if (
+      document.status !==
+      'DRAFT'
+    ) {
+      return
+    }
+
+    askConfirm({
+      title:
+        `Publish ${legalTypeLabel(document.documentType)}?`,
+
+      message:
+        `Version ${document.version} will become the live published version. The currently published version, if any, will be archived and preserved.`,
+
+      confirmLabel:
+        'Publish version',
+
+      onConfirm:
+        () => {
+          void (async () => {
+            setLegalSaving(
+              true,
+            )
+
+            try {
+              const result = await apiFetch(
+                `${API}/maintenance/legal-documents/${document.id}/publish`,
+                {
+                  method:
+                    'POST',
+                },
+              )
+
+              if (!result?.success) {
+                throw new Error(
+                  result?.message ||
+                    'The legal document could not be published.',
+                )
+              }
+
+              pushToast(
+                'success',
+                `${legalTypeLabel(document.documentType)} ${document.version} published.`,
+              )
+
+              setLegalDraft(
+                null,
+              )
+
+              await loadLegalDocuments()
+            } catch (error) {
+              console.error(
+                'Legal publish failed',
+                error,
+              )
+
+              pushToast(
+                'error',
+                'The legal document could not be published.',
+              )
+            } finally {
+              setLegalSaving(
+                false,
+              )
+            }
+          })()
+        },
+    })
+  }
+
+  function archiveLegalDocument(
+    document: LegalDocument,
+  ) {
+    if (
+      document.status ===
+      'ARCHIVED'
+    ) {
+      return
+    }
+
+    askConfirm({
+      title:
+        `Archive ${document.version}?`,
+
+      message:
+        'The version will remain permanently available in legal history, but it will no longer be an active draft or published version.',
+
+      confirmLabel:
+        'Archive version',
+
+      tone:
+        'danger',
+
+      onConfirm:
+        () => {
+          void (async () => {
+            setLegalSaving(
+              true,
+            )
+
+            try {
+              const result = await apiFetch(
+                `${API}/maintenance/legal-documents/${document.id}/archive`,
+                {
+                  method:
+                    'POST',
+                },
+              )
+
+              if (!result?.success) {
+                throw new Error(
+                  result?.message ||
+                    'The legal document could not be archived.',
+                )
+              }
+
+              pushToast(
+                'success',
+                `Version ${document.version} archived.`,
+              )
+
+              if (
+                legalDraft?.id ===
+                document.id
+              ) {
+                setLegalDraft(
+                  null,
+                )
+              }
+
+              await loadLegalDocuments()
+            } catch (error) {
+              console.error(
+                'Legal archive failed',
+                error,
+              )
+
+              pushToast(
+                'error',
+                'The legal document could not be archived.',
+              )
+            } finally {
+              setLegalSaving(
+                false,
+              )
+            }
+          })()
+        },
+    })
+  }
+
+  async function loadDemos() {
+    if (!API_CONFIGURED) {
+      return
+    }
+
+    try {
+      setDemoLoading(true)
+      setDemoError('')
+
+      const result =
+        (await apiFetch(
+          `${API}/maintenance/demos`,
+          {},
+        )) as {
+          success?: boolean
+          message?: string
+          requests?: DemoRequest[]
+          stats?: Partial<DemoStats>
+        }
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            'Demo requests could not be loaded.',
+        )
+      }
+
+      setDemoRequests(
+        Array.isArray(result.requests)
+          ? result.requests
+          : [],
+      )
+
+      setDemoStats({
+        total: Number(
+          result.stats?.total || 0,
+        ),
+        new: Number(
+          result.stats?.new || 0,
+        ),
+        contacted: Number(
+          result.stats?.contacted || 0,
+        ),
+        closed: Number(
+          result.stats?.closed || 0,
+        ),
+      })
+    } catch (error: any) {
+      setDemoError(
+        error?.message ||
+          'Demo requests could not be loaded.',
+      )
+    } finally {
+      setDemoLoading(false)
+    }
+  }
+
+  async function updateDemoStatus(
+    request: DemoRequest,
+    status: DemoRequest['status'],
+  ) {
+    if (demoBusyId) {
+      return
+    }
+
+    try {
+      setDemoBusyId(request.id)
+
+      const result =
+        (await apiFetch(
+          `${API}/maintenance/demos/${encodeURIComponent(
+            request.id,
+          )}/status`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+            body: JSON.stringify({
+              status,
+            }),
+          },
+        )) as {
+          success?: boolean
+          message?: string
+        }
+
+      if (!result.success) {
+        throw new Error(
+          result.message ||
+            'Demo request could not be updated.',
+        )
+      }
+
+      pushToast(
+        'success',
+        `Demo request marked ${status.toLowerCase()}.`,
+      )
+
+      await loadDemos()
+    } catch (error: any) {
+      pushToast(
+        'error',
+        error?.message ||
+          'Demo request could not be updated.',
+      )
+    } finally {
+      setDemoBusyId(null)
+    }
+  }
+
+  async function loadSalesPartners() {
+    if (!API_CONFIGURED) {
+      return
+    }
+
+    try {
+      setSalesPartnersLoading(true)
+
+      const result =
+        (await apiFetch(
+          `${API}/maintenance/sales-partners`,
+          {},
+        )) as {
+          partners?: SalesPartnerSummary[]
+        }
+
+      const partners =
+        Array.isArray(
+          result?.partners,
+        )
+          ? result.partners
+          : []
+
+      setSalesPartners(
+        partners,
+      )
+
+      setSalesPartnerCapDrafts(
+        Object.fromEntries(
+          partners.map(
+            (partner) => [
+              partner.id,
+              (
+                Number(
+                  partner
+                    .monthlyCommissionCapCents ||
+                    0,
+                ) / 100
+              ).toFixed(2),
+            ],
+          ),
+        ),
+      )
+    } catch (error: any) {
+      pushToast(
+        'error',
+        error?.message ||
+          'Sales Partner earnings could not be loaded.',
+      )
+    } finally {
+      setSalesPartnersLoading(false)
+    }
+  }
+
+  async function saveSalesPartnerMonthlyCap(
+    partner: SalesPartnerSummary,
+  ) {
+    if (
+      salesPartnerCapSavingId !==
+      null
+    ) {
+      return
+    }
+
+    const draft =
+      String(
+        salesPartnerCapDrafts[
+          partner.id
+        ] ?? '',
+      ).trim()
+
+    const dollars =
+      Number(draft)
+
+    const rawCents =
+      dollars * 100
+
+    const cents =
+      Math.round(
+        rawCents,
+      )
+
+    if (
+      !Number.isFinite(dollars) ||
+      dollars < 0 ||
+      !Number.isSafeInteger(
+        cents,
+      ) ||
+      Math.abs(
+        rawCents - cents,
+      ) > 0.000001
+    ) {
+      pushToast(
+        'error',
+        'Enter a valid monthly cap with no more than two decimal places.',
+      )
+      return
+    }
+
+    try {
+      setSalesPartnerCapSavingId(
+        partner.id,
+      )
+
+      await apiFetch(
+        `${API}/maintenance/sales-partner/${partner.id}/monthly-cap`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type':
+              'application/json',
+          },
+          body: JSON.stringify({
+            monthlyCommissionCapCents:
+              cents,
+          }),
+        },
+      )
+
+      pushToast(
+        'success',
+        `${partner.displayName || partner.legalName} monthly commission cap saved at ${money(dollars)}.`,
+      )
+
+      await loadSalesPartners()
+    } catch (error: any) {
+      pushToast(
+        'error',
+        error?.message ||
+          'Monthly commission cap could not be updated.',
+      )
+    } finally {
+      setSalesPartnerCapSavingId(
+        null,
+      )
+    }
+  }
+
+  async function terminateSelectedCafeCommission() {
+    if (
+      !selectedCafe ||
+      !selectedCafeSalesCommission
+        ?.salesPartnerId ||
+      selectedCafeSalesCommission
+        .salesCommissionTerminatedAt ||
+      terminatingSalesCommission
+    ) {
+      return
+    }
+
+    const confirmed =
+      window.confirm(
+        `Terminate future Sales Partner commission for ${selectedCafe}? Already-earned commission will not be changed.`,
+      )
+
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      setTerminatingSalesCommission(
+        true,
+      )
+
+      const result =
+        (await apiFetch(
+          `${API}/maintenance/cafe/${encodeURIComponent(
+            selectedCafe,
+          )}/sales-commission/terminate`,
+          {
+            method: 'PATCH',
+          },
+        )) as {
+          salesCommissionTerminatedAt?:
+            string | null
+        }
+
+      setSelectedCafeSalesCommission(
+        (current) =>
+          current
+            ? {
+                ...current,
+                salesCommissionTerminatedAt:
+                  result
+                    ?.salesCommissionTerminatedAt ||
+                  new Date()
+                    .toISOString(),
+              }
+            : current,
+      )
+
+      pushToast(
+        'success',
+        `${selectedCafe} will no longer generate new Sales Partner commission.`,
+      )
+
+      if (tab === 'sales') {
+        await loadSalesPartners()
+      }
+    } catch (error: any) {
+      pushToast(
+        'error',
+        error?.message ||
+          'Sales Partner commission could not be terminated.',
+      )
+    } finally {
+      setTerminatingSalesCommission(
         false,
       )
     }
@@ -1689,30 +2846,30 @@ export default function MaintenancePage() {
   useEffect(() => {
     void loadData()
     void loadPlatformRevenue()
-  
+
     const dashboardTimer = autoRefresh
       ? window.setInterval(
           () => void loadData(true),
           20_000,
         )
       : null
-  
+
     const revenueTimer = window.setInterval(
       () => void loadPlatformRevenue(),
       5 * 60 * 1000,
     )
-  
+
     return () => {
       if (dashboardTimer) {
         window.clearInterval(dashboardTimer)
       }
-  
+
       window.clearInterval(revenueTimer)
     }
-  
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh])
-  
+
 
   useEffect(() => {
     selectedCafeRef.current = selectedCafe
@@ -1750,41 +2907,34 @@ export default function MaintenancePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supportOrder?.id])
 
-  const allOrders = useMemo(
-    () =>
-      uniqueOrders([
-        ...issues,
-        ...orders,
-      ]),
-    [issues, orders],
-  )
-
   const actionCenterOrders =
     useMemo(
       () =>
         uniqueOrders([
-          ...allOrders,
+          ...issues,
           ...supportIssues,
-        ]),
+        ]).filter(
+          isOpenIssue,
+        ),
       [
-        allOrders,
+        issues,
         supportIssues,
       ],
     )
 
   const openIssues =
-    actionCenterOrders.filter(
-      isOpenIssue,
-    )
+    actionCenterOrders
 
   const criticalIssues =
-    openIssues.filter(isCritical)
+    openIssues.filter(
+      isCritical,
+    )
 
-  const refundedOrders =
-    allOrders.filter(
-      (order) =>
-        order.status === 'REFUNDED' ||
-        order.refundProcessed,
+  const refundedOrderCount =
+    Number(
+      dashboardStats
+        .refundedOrders ||
+        0,
     )
 
   const openRiskOrders =
@@ -1820,38 +2970,19 @@ export default function MaintenancePage() {
         order: IssueOrder,
       ) =>
         sum +
-        Number(order.total || 0),
+        Number(
+          order.total ||
+            0,
+        ),
       0,
     )
-  
-  const grossPlatformFees =
-    allOrders.reduce(
-      (sum, order) =>
-        sum +
-        Number(order.platformFee || 0),
-      0,
-    )
-  
-  const refundedPlatformFees =
-    allOrders
-      .filter(
-        (order) =>
-          (
-            order.status === 'REFUNDED' ||
-            order.refundProcessed
-          ) &&
-          order.refundApplicationFee,
-      )
-      .reduce(
-        (sum, order) =>
-          sum +
-          Number(order.platformFee || 0),
-        0,
-      )
-  
+
   const netPlatformFees =
-    grossPlatformFees -
-    refundedPlatformFees
+    Number(
+      dashboardStats
+        .netPlatformFees ||
+        0,
+    )
 
   const filteredIssues = useMemo(() => {
     const q =
@@ -2070,11 +3201,20 @@ export default function MaintenancePage() {
           }),
         },
       )) as {
+        success?: boolean
         message?: string
+        statusCode?: number
         refundId?: string
         stripeRefundStatus?: string
         pending?: boolean
         reconciliationRequired?: boolean
+      }
+
+      if (!result?.success) {
+        throw new Error(
+          result?.message ||
+            'Refund request failed.',
+        )
       }
 
       if (
@@ -2330,23 +3470,23 @@ export default function MaintenancePage() {
     ) {
       return crypto.randomUUID()
     }
-  
+
     return `${Date.now()}-${Math.random()
       .toString(36)
       .slice(2)}`
   }
-  
+
   function requestPlatformWithdrawal() {
     const amount = Number(withdrawAmount)
-  
+
     const withdrawable = Number(
       platformRevenue?.withdrawable || 0,
     )
-  
+
     const currency = String(
       platformRevenue?.currency || 'usd',
     ).toUpperCase()
-  
+
     if (revenueLoading) {
       pushToast(
         'info',
@@ -2354,12 +3494,12 @@ export default function MaintenancePage() {
       )
       return
     }
-  
+
     if (withdrawable <= 0) {
       const pending = Number(
         platformRevenue?.pending || 0,
       )
-  
+
       pushToast(
         'info',
         pending > 0
@@ -2368,10 +3508,10 @@ export default function MaintenancePage() {
             )} is pending in Stripe and cannot be withdrawn yet.`
           : 'No CaviarQR platform funds are currently available.',
       )
-  
+
       return
     }
-  
+
     if (
       !Number.isFinite(amount) ||
       amount <= 0
@@ -2382,7 +3522,7 @@ export default function MaintenancePage() {
       )
       return
     }
-  
+
     if (amount > withdrawable) {
       pushToast(
         'error',
@@ -2392,10 +3532,10 @@ export default function MaintenancePage() {
       )
       return
     }
-  
+
     const idempotencyKey =
       createPayoutIdempotencyKey()
-  
+
     askConfirm({
       title:
         'Withdraw CaviarQR platform funds?',
@@ -2413,7 +3553,7 @@ export default function MaintenancePage() {
       },
     })
   }
-  
+
   async function performPlatformWithdrawal(
     amount: number,
     idempotencyKey: string,
@@ -2421,12 +3561,12 @@ export default function MaintenancePage() {
     if (payoutRequestInFlight.current) {
       return
     }
-  
+
     payoutRequestInFlight.current = true
-  
+
     try {
       setWithdrawing(true)
-  
+
       const result = await apiFetch(
         `${API}/maintenance/platform-withdraw`,
         {
@@ -2457,7 +3597,7 @@ export default function MaintenancePage() {
         )
       }
 
-  
+
       pushToast(
         'success',
         result?.payoutId
@@ -2465,9 +3605,9 @@ export default function MaintenancePage() {
           : result?.message ||
               'Platform payout created.',
       )
-  
+
       setWithdrawAmount('')
-  
+
       await loadPlatformRevenue()
     } catch (error: any) {
       pushToast(
@@ -2524,6 +3664,7 @@ export default function MaintenancePage() {
     setStandStatus('')
     setStandAlreadyExists(false)
     setStandRegistered(false)
+    setStandActivationCode('')
 
     try {
       const result =
@@ -2540,6 +3681,16 @@ export default function MaintenancePage() {
             body: JSON.stringify({
               storeCode,
               tables: qrTableCount,
+
+              /*
+               * Browser sends only our
+               * hardware-order ID.
+               * Sales attribution is derived
+               * and verified by the backend.
+               */
+              shopOrderId:
+                qrShopOrder?.id ||
+                undefined,
             }),
           },
         ) as {
@@ -2550,6 +3701,10 @@ export default function MaintenancePage() {
           status?: string
           alreadyExists?: boolean
           registered?: boolean
+          activationCode?: string | null
+          shopOrderId?: number | null
+          salesPartnerId?: number | null
+          salesAttributionSource?: string | null
           links?: {
             table: number
             url: string
@@ -2560,6 +3715,29 @@ export default function MaintenancePage() {
         throw new Error(
           result?.message ||
             'Could not create stand allocation.',
+        )
+      }
+
+      /*
+       * For a brand-new stand allocation, verify that the
+       * hardware-order attribution was preserved.
+       *
+       * For an already-registered restaurant, the hardware
+       * order is intentionally ignored so the existing sales
+       * attribution cannot be overwritten just because QR
+       * codes are being reprinted.
+       */
+      if (
+        qrShopOrder &&
+        result.registered !== true &&
+        Number(
+          result.shopOrderId ||
+            0,
+        ) !==
+          qrShopOrder.id
+      ) {
+        throw new Error(
+          'Hardware-order attribution was not preserved by the backend.',
         )
       }
 
@@ -2655,7 +3833,12 @@ export default function MaintenancePage() {
           true,
       )
 
-
+      setStandActivationCode(
+        String(
+          result.activationCode ||
+            '',
+        ).trim(),
+      )
 
       pushToast(
         result.alreadyExists
@@ -3794,6 +4977,14 @@ export default function MaintenancePage() {
           if (id === 'shop') {
             void loadShopData()
           }
+
+          if (id === 'sales') {
+            void loadSalesPartners()
+          }
+
+          if (id === 'demos') {
+            void loadDemos()
+          }
         }}
       >
         <span className="nav-icon">
@@ -4173,10 +5364,16 @@ export default function MaintenancePage() {
 
   function CafeOrderBox({ order }: { order: IssueOrder }) {
     const open = isOpenIssue(order)
-    const critical = isCritical(order)
+    const critical =
+      open && isCritical(order)
+
     const issueId =
-      order.ownerActionId ||
-      `ACT-${String(order.id).padStart(6, '0')}`
+      open
+        ? (
+            order.ownerActionId ||
+            `ACT-${String(order.id).padStart(6, '0')}`
+          )
+        : null
 
     return (
       <article
@@ -4221,22 +5418,27 @@ export default function MaintenancePage() {
                   ? 'Needs action'
                   : order.status === 'REFUNDED'
                   ? 'Refunded'
-                  : 'Resolved'}
+                  : order.status}
               </span>
 
               <span className="badge quiet">{order.status}</span>
             </div>
           </div>
 
-          <p className="cafe-order-message">
-            {getIssueMessage(order)}
-          </p>
+          {open && (
+            <p className="cafe-order-message">
+              {getIssueMessage(order)}
+            </p>
+          )}
 
           <div className="cafe-order-grid">
             <MatrixBox
               label="Order ID"
               value={`#${order.id}`}
-              sub={issueId}
+              sub={
+                issueId ||
+                'CaviarQR order'
+              }
             />
 
             <MatrixBox
@@ -4285,18 +5487,26 @@ export default function MaintenancePage() {
               sub={relativeTime(order.createdAt)}
             />
 
-            <MatrixBox
-              label="Resolution"
-              value={
-                order.issueResolved
-                  ? 'Resolved'
-                  : open
-                  ? 'Open'
-                  : 'No action'
-              }
-              sub={order.ownerActionResolvedBy || 'CaviarQR Ops'}
-              tone={order.issueResolved ? 'green' : open ? 'amber' : undefined}
-            />
+            {open && (
+              <MatrixBox
+                label="Issue"
+                value={
+                  critical
+                    ? 'Critical'
+                    : 'Needs action'
+                }
+                sub={
+                  order.ownerIssueType ||
+                  order.issueType ||
+                  'Active issue'
+                }
+                tone={
+                  critical
+                    ? 'red'
+                    : 'amber'
+                }
+              />
+            )}
           </div>
 
           <div className="cafe-items-box">
@@ -4345,12 +5555,17 @@ export default function MaintenancePage() {
           </span>
         </div>
         <div className="cafe-card-grid">
-          <div><small>Orders</small><strong>{cafe.orders}</strong></div>
+          <div><small>Total orders</small><strong>{cafe.orders}</strong></div>
           <div><small>Revenue</small><strong>{money(cafe.revenue)}</strong></div>
-          <div><small>Alerts</small><strong className={attention ? 'red' : 'green'}>{cafe.openIssues}</strong></div>
+          <div><small>Platform fees this month</small><strong>{money(cafe.monthPlatformFees)}</strong></div>
         </div>
         <div className="cafe-card-foot">
-          <span>Latest order <strong>{relativeTime(cafe.lastOrderAt)}</strong></span>
+          <span>
+            {cafe.openIssues > 0
+              ? `${cafe.openIssues} active issue${cafe.openIssues === 1 ? '' : 's'} · `
+              : ''}
+            Latest order <strong>{relativeTime(cafe.lastOrderAt)}</strong>
+          </span>
           <b>Open café →</b>
         </div>
       </button>
@@ -4364,30 +5579,32 @@ export default function MaintenancePage() {
   const selectedCafeRecord = selectedCafe
     ? cafes.find((cafe) => cafe.storeCode === selectedCafe)
     : undefined
-  const selectedCafeOpenIssues = sortedCafeOrders.filter(isOpenIssue).length
-  const selectedCafeCriticalIssues = sortedCafeOrders.filter(
-    (order) => isOpenIssue(order) && isCritical(order),
-  ).length
-  const selectedCafeRevenue =
-    selectedCafeFinancialOrders.reduce(
-      (sum, order) => {
-        const refundedAmount =
-          order.status === 'REFUNDED' ||
-          order.refundProcessed
-            ? Number(
-                order.refundAmount ??
-                  order.total ??
-                  0,
-              )
-            : 0
+  const selectedCafeOpenIssues =
+    Number(
+      selectedCafeRecord
+        ?.openIssues ||
+        0,
+    )
 
-        return (
-          sum +
-          Number(order.total || 0) -
-          refundedAmount
-        )
-      },
-      0,
+  const selectedCafeCriticalIssues =
+    Number(
+      selectedCafeRecord
+        ?.criticalIssues ||
+        0,
+    )
+
+  const selectedCafeRevenue =
+    Number(
+      selectedCafeRecord
+        ?.revenue ||
+        0,
+    )
+
+  const selectedCafeTotalOrders =
+    Number(
+      selectedCafeRecord
+        ?.orders ||
+        0,
     )
 
   const filterOptions: { id: Filter; label: string }[] = [
@@ -4433,6 +5650,9 @@ export default function MaintenancePage() {
         <nav>
           <NavButton id="action" icon={ICONS.inbox} title="Action Center" subtitle="Alerts across all cafés" count={openIssues.length} />
           <NavButton id="cafes" icon={ICONS.store} title="All Cafés" subtitle="Health & orders" />
+          <NavButton id="sales" icon={ICONS.wallet} title="Sales reps" subtitle="Earnings & caps" />
+          <NavButton id="demos" icon={ICONS.mail} title="Demos" subtitle="Demo requests" count={demoStats.new} />
+          <NavButton id="legal" icon={ICONS.clipboardCheck} title="Legal & Agreements" subtitle="Terms, privacy & contracts" />
           <NavButton id="qr" icon={ICONS.qr} title="QR Codes" subtitle="Table generator" />
           <NavButton id="shop" icon={ICONS.store} title="Shop" subtitle="Products & orders" />
         </nav>
@@ -4473,6 +5693,9 @@ export default function MaintenancePage() {
             <h2>
               {tab === 'action' && 'Action Center'}
               {tab === 'cafes' && (selectedCafeRecord?.cafeName || selectedCafe || 'All Cafés')}
+              {tab === 'sales' && 'Sales reps'}
+              {tab === 'demos' && 'Demo requests'}
+              {tab === 'legal' && 'Legal & Agreements'}
               {tab === 'qr' && 'QR Codes & Tag URLs'}
               {tab === 'shop' && 'CaviarQR Shop'}
             </h2>
@@ -4480,6 +5703,9 @@ export default function MaintenancePage() {
               {tab === 'action' && 'Prioritize failed orders, kitchen exceptions, and customer recovery.'}
               {tab === 'cafes' && !selectedCafe && 'A real-time health view of every café in the CaviarQR network.'}
               {tab === 'cafes' && selectedCafe && 'Each order stays in its own card while live refresh continues.'}
+              {tab === 'sales' && 'See every rep’s current-month earnings and change that rep’s monthly commission cap.'}
+              {tab === 'demos' && 'Review homepage demo requests and track follow-up from new lead to closed.'}
+              {tab === 'legal' && 'Manage published legal documents, immutable version history, and future re-acceptance requirements.'}
               {tab === 'qr' && 'Generate production links for caviarqr.com and copy URLs for tag manufacturing.'}
               {tab === 'shop' && 'Manage CaviarQR hardware products, inventory, customer orders, and fulfillment.'}
             </p>
@@ -4547,7 +5773,7 @@ export default function MaintenancePage() {
               <StatCard label="Open issues" value={openIssues.length} icon={ICONS.bell} hint="Waiting for owner action" />
               <StatCard label="Critical" value={criticalIssues.length} tone="red" icon={ICONS.alert} hint="Highest customer-impact risk" />
               <StatCard label="At risk" value={money(atRiskAmount)} tone="amber" icon={ICONS.wallet} hint="Paid value under review" />
-              <StatCard label="Refunded" value={refundedOrders.length} tone="green" icon={ICONS.rotate} hint="Customer recovery completed" />
+              <StatCard label="Refunded" value={refundedOrderCount} tone="green" icon={ICONS.rotate} hint="Customer recovery completed" />
               <StatCard label="Net platform fees" value={money(netPlatformFees)} icon={ICONS.clipboardCheck} hint="Recorded after returned fees" />
             </section>
 
@@ -4919,17 +6145,30 @@ export default function MaintenancePage() {
               <section className="network-summary">
                 <div><span className="section-kicker">Café network</span><h3>{cafes.length} connected location{cafes.length === 1 ? '' : 's'}</h3><p>Open a café to see every order, payment state, kitchen acknowledgement, and resolution in separate cards.</p></div>
                 <div className="network-summary-grid">
-                  <div><small>Healthy</small><strong className="green">{healthyCafes}</strong></div><div><small>Need attention</small><strong className={cafesNeedingAttention > 0 ? 'red' : ''}>{cafesNeedingAttention}</strong></div><div><small>Total orders</small><strong>{totalCafeOrders}</strong></div><div><small>Loaded revenue</small><strong>{money(totalCafeRevenue)}</strong></div>
+                  <div><small>Healthy</small><strong className="green">{healthyCafes}</strong></div><div><small>Need attention</small><strong className={cafesNeedingAttention > 0 ? 'red' : ''}>{cafesNeedingAttention}</strong></div><div><small>Total orders</small><strong>{totalCafeOrders}</strong></div><div><small>Café revenue</small><strong>{money(totalCafeRevenue)}</strong></div>
                 </div>
               </section>
               {filteredCafes.length === 0 ? <div className="empty"><div className="empty-icon"><Icon path={ICONS.store} size={22} /></div><h3>No cafés found</h3><p>No cafés match “{search}”.</p></div> : <section className="cafe-grid">{filteredCafes.map((cafe) => <CafeCard key={cafe.storeCode} cafe={cafe} />)}</section>}
             </> : <>
-              <button className="back" onClick={() => setSelectedCafe(null)}><Icon path={ICONS.chevronLeft} size={15} />Back to all cafés</button>
+              <button
+                className="back"
+                onClick={() => {
+                  selectedCafeRef.current = null
+                  cafeRequestIdRef.current += 1
+                  setSelectedCafe(null)
+                  setSelectedCafeOrders([])
+                  setSelectedCafeHasMore(false)
+                  setSelectedCafeNextCursor(null)
+                }}
+              >
+                <Icon path={ICONS.chevronLeft} size={15} />
+                Back to all cafés
+              </button>
               <section className="selected-cafe-hero">
                 <div className="selected-cafe-identity"><div className="selected-cafe-avatar">{initials(selectedCafeRecord?.cafeName || selectedCafe)}</div><div><span className="section-kicker">Selected café</span><h3>{selectedCafeRecord?.cafeName || selectedCafe}</h3><p className="mono">{selectedCafe}</p></div></div>
                 <div className="selected-cafe-health"><span className={`cafe-health ${selectedCafeCriticalIssues > 0 ? 'critical' : selectedCafeOpenIssues > 0 ? 'warning' : 'healthy'}`}><i />{selectedCafeCriticalIssues > 0 ? 'Critical attention' : selectedCafeOpenIssues > 0 ? 'Review needed' : 'Operating normally'}</span><small>{autoRefresh ? 'Live refresh stays on this café' : 'Auto-refresh is paused'}</small></div>
               </section>
-              <div className="cafe-detail-top"><div><small>Orders shown</small><strong>{sortedCafeOrders.length}</strong><span>Each card is one order</span></div><div><small>Open issues</small><strong className={selectedCafeOpenIssues > 0 ? 'red' : 'green'}>{selectedCafeOpenIssues}</strong><span>{selectedCafeCriticalIssues} critical</span></div><div><small>Order value</small><strong>{money(selectedCafeRevenue)}</strong><span>Across loaded records</span></div><div><small>Latest order</small><strong>{relativeTime(selectedCafeRecord?.lastOrderAt)}</strong><span>{autoRefresh ? 'Updating every 20 seconds' : 'Refresh paused'}</span></div></div>
+              <div className="cafe-detail-top"><div><small>Total orders</small><strong>{selectedCafeTotalOrders}</strong><span>{sortedCafeOrders.length} currently loaded</span></div><div><small>Open issues</small><strong className={selectedCafeOpenIssues > 0 ? 'red' : 'green'}>{selectedCafeOpenIssues}</strong><span>{selectedCafeCriticalIssues} critical</span></div><div><small>Revenue</small><strong>{money(selectedCafeRevenue)}</strong><span>All-time after recorded refunds</span></div><div><small>Latest order</small><strong>{relativeTime(selectedCafeRecord?.lastOrderAt)}</strong><span>{autoRefresh ? 'Updating every 20 seconds' : 'Refresh paused'}</span></div></div>
               <section className="processing-fee-card">
                 <div className="processing-fee-copy">
                   <span className="section-kicker">Billing</span>
@@ -4973,6 +6212,60 @@ export default function MaintenancePage() {
                     >
                       {processingFeeSaving ? 'Saving…' : 'Save fee'}
                     </button>
+                  </div>
+                </div>
+              </section>
+
+              <section className="processing-fee-card">
+                <div className="processing-fee-copy">
+                  <span className="section-kicker">
+                    Sales commission
+                  </span>
+
+                  <h3>
+                    Café × Sales Partner
+                  </h3>
+
+                  <p>
+                    {selectedCafeSalesCommission?.salesPartnerId
+                      ? `Sales Partner #${selectedCafeSalesCommission.salesPartnerId} · ${((selectedCafeSalesCommission.salesCommissionBps || 0) / 100).toFixed(2)}% of CaviarQR platform fees · ongoing by default.`
+                      : 'This café is not attributed to a Sales Partner.'}
+                  </p>
+                </div>
+
+                <div className="processing-fee-control">
+                  <label>
+                    Commission status
+                  </label>
+
+                  <div className="processing-fee-actions">
+                    <strong>
+                      {!selectedCafeSalesCommission
+                        ? 'Loading…'
+                        : !selectedCafeSalesCommission.salesPartnerId
+                          ? 'Not attributed'
+                          : selectedCafeSalesCommission.salesCommissionTerminatedAt
+                            ? `Terminated ${timeLabel(selectedCafeSalesCommission.salesCommissionTerminatedAt)}`
+                            : 'ONGOING'}
+                    </strong>
+
+                    {selectedCafeSalesCommission?.salesPartnerId &&
+                      !selectedCafeSalesCommission.salesCommissionTerminatedAt && (
+                        <button
+                          type="button"
+                          className="processing-fee-save"
+                          disabled={
+                            terminatingSalesCommission
+                          }
+                          onClick={() =>
+                            void terminateSelectedCafeCommission()
+                          }
+                        >
+                          {terminatingSalesCommission
+                            ? 'Terminating…'
+                            : 'Terminate commission'}
+                        </button>
+                      )}
                   </div>
                 </div>
               </section>
@@ -5029,14 +6322,1328 @@ export default function MaintenancePage() {
                 </div>
               </section>
 
-              <div className="cafe-orders-heading"><div><span className="section-kicker">Order timeline</span><h3>All orders for this café</h3></div><span className="order-count-chip">{sortedCafeOrders.length} orders</span></div>
-              <section className="cafe-order-list">{sortedCafeOrders.length === 0 ? <div className="empty"><div className="empty-icon"><Icon path={ICONS.inbox} size={22} /></div><h3>No orders yet</h3><p>This café has no orders on record.</p></div> : sortedCafeOrders.map((order) => <CafeOrderBox key={String(order.id)} order={order} />)}</section>
+              <div className="cafe-orders-heading">
+                <div>
+                  <span className="section-kicker">
+                    Order timeline
+                  </span>
+                  <h3>
+                    All orders for this café
+                  </h3>
+                </div>
+
+                <span className="order-count-chip">
+                  {selectedCafeTotalOrders} total orders
+                </span>
+              </div>
+
+              <section className="cafe-order-list">
+                {sortedCafeOrders.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-icon">
+                      <Icon path={ICONS.inbox} size={22} />
+                    </div>
+
+                    <h3>
+                      {cafeOrdersLoading
+                        ? 'Loading orders…'
+                        : 'No orders yet'}
+                    </h3>
+
+                    <p>
+                      {cafeOrdersLoading
+                        ? 'Loading this café’s order history.'
+                        : 'This café has no orders on record.'}
+                    </p>
+                  </div>
+                ) : (
+                  sortedCafeOrders.map(
+                    (order) => (
+                      <CafeOrderBox
+                        key={String(order.id)}
+                        order={order}
+                      />
+                    ),
+                  )
+                )}
+              </section>
+
+              {selectedCafeHasMore && (
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    marginTop: 18,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="refresh-btn"
+                    onClick={() =>
+                      void loadMoreCafeOrders()
+                    }
+                    disabled={
+                      cafeOrdersLoading
+                    }
+                  >
+                    {cafeOrdersLoading
+                      ? 'Loading…'
+                      : `Load more · ${sortedCafeOrders.length} of ${selectedCafeTotalOrders}`}
+                  </button>
+                </div>
+              )}
             </>}
           </>
         )}
 
+        {tab === 'sales' && (
+          <section className="qr-section">
+            <MaintenanceSalesTaxSummary />
+            <section className="network-summary">
+              <div>
+                <span className="section-kicker">
+                  Sales Partner compensation
+                </span>
+                <h3>
+                  {salesPartners.length} sales rep{salesPartners.length === 1 ? '' : 's'}
+                </h3>
+                <p>
+                  Commission is ongoing by default at the attributed café’s rate. Each rep defaults to a $20,000 UTC-calendar-month cap, and you can change the cap below.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="refresh-btn"
+                disabled={salesPartnersLoading}
+                onClick={() =>
+                  void loadSalesPartners()
+                }
+              >
+                {salesPartnersLoading
+                  ? 'Refreshing…'
+                  : 'Refresh sales reps'}
+              </button>
+            </section>
+
+            {salesPartnersLoading &&
+              salesPartners.length === 0 ? (
+                <div className="empty">
+                  <h3>Loading sales reps…</h3>
+                </div>
+              ) : salesPartners.length === 0 ? (
+                <div className="empty">
+                  <div className="empty-icon">
+                    <Icon path={ICONS.wallet} size={22} />
+                  </div>
+                  <h3>No sales reps yet</h3>
+                  <p>Sales Partner accounts will appear here when they are created.</p>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 16,
+                  }}
+                >
+                  {salesPartners.map(
+                    (partner) => {
+                      const draft =
+                        salesPartnerCapDrafts[
+                          partner.id
+                        ] ??
+                        (partner.monthlyCommissionCapCents / 100).toFixed(2)
+
+                      return (
+                        <section
+                          key={partner.id}
+                          className="processing-fee-card"
+                        >
+                          <div className="processing-fee-copy">
+                            <span className="section-kicker">
+                              {partner.status} · {partner.referralCode}
+                            </span>
+                            <h3>
+                              {partner.displayName || partner.legalName}
+                            </h3>
+                            <p>
+                              {partner.email} · {(partner.commissionBps / 100).toFixed(2)}% of CaviarQR platform fees · {partner.activeCafeCount} active café{partner.activeCafeCount === 1 ? '' : 's'} · {partner.terminatedCafeCount} terminated.
+                            </p>
+                          </div>
+
+                          <div
+                            style={{
+                              minWidth: 300,
+                              display: 'grid',
+                              gap: 12,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                                gap: 10,
+                              }}
+                            >
+                              <div>
+                                <small>This month</small>
+                                <strong style={{ display: 'block', marginTop: 4 }}>
+                                  {money(partner.currentMonthEarnings)}
+                                </strong>
+                              </div>
+                              <div>
+                                <small>Remaining</small>
+                                <strong style={{ display: 'block', marginTop: 4 }}>
+                                  {money(partner.remainingCap)}
+                                </strong>
+                              </div>
+                            </div>
+
+                            <label
+                              htmlFor={`sales-cap-${partner.id}`}
+                            >
+                              Monthly commission cap ($)
+                            </label>
+
+                            <div className="processing-fee-actions">
+                              <div className="processing-fee-input">
+                                <span>$</span>
+                                <input
+                                  id={`sales-cap-${partner.id}`}
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  inputMode="decimal"
+                                  value={draft}
+                                  disabled={
+                                    salesPartnerCapSavingId !== null
+                                  }
+                                  onChange={(event) =>
+                                    setSalesPartnerCapDrafts(
+                                      (current) => ({
+                                        ...current,
+                                        [partner.id]: event.target.value,
+                                      }),
+                                    )
+                                  }
+                                />
+                              </div>
+
+                              <button
+                                type="button"
+                                className="processing-fee-save"
+                                disabled={
+                                  salesPartnerCapSavingId !== null
+                                }
+                                onClick={() =>
+                                  void saveSalesPartnerMonthlyCap(
+                                    partner,
+                                  )
+                                }
+                              >
+                                {salesPartnerCapSavingId === partner.id
+                                  ? 'Saving…'
+                                  : 'Save cap'}
+                              </button>
+                            </div>
+
+                            <small>
+                              {partner.capReached
+                                ? 'Monthly cap reached. No additional commission accrues until the next UTC month unless you raise the cap.'
+                                : 'Changing the cap affects future accrual only and never reduces commission already earned.'}
+                            </small>
+                          </div>
+                        </section>
+                      )
+                    },
+                  )}
+                </div>
+              )}
+          </section>
+        )}
+
+
+        {tab === 'legal' && (
+          <section
+            style={{
+              display: 'grid',
+              gap: 20,
+            }}
+          >
+            <div
+              className="ops-hero"
+            >
+              <div>
+                <span className="ops-kicker">
+                  Legal document control
+                </span>
+
+                <h3>
+                  Version every agreement.
+                  Never overwrite history.
+                </h3>
+
+                <p>
+                  Create drafts, preview changes,
+                  publish a new live version, and
+                  preserve every prior version for
+                  audit and acceptance records.
+                </p>
+              </div>
+
+              <div
+                className="ops-hero-side"
+              >
+                <div className="hero-status">
+                  <span
+                    className="dot ok"
+                  />
+
+                  <div>
+                    <small>
+                      Published documents
+                    </small>
+
+                    <strong>
+                      {
+                        legalDocuments.filter(
+                          (document) =>
+                            document.status ===
+                            'PUBLISHED',
+                        ).length
+                      }
+                      /3
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {legalError && (
+              <div
+                style={{
+                  padding: 14,
+                  border:
+                    '1px solid #fecaca',
+                  borderRadius: 12,
+                  background:
+                    '#fef2f2',
+                  color:
+                    '#991b1b',
+                }}
+              >
+                {legalError}
+              </div>
+            )}
+
+            {(
+              [
+                'TERMS',
+                'PRIVACY',
+                'SALES_PARTNER_AGREEMENT',
+              ] as LegalDocumentType[]
+            ).map(
+              (
+                type,
+              ) => {
+                const versions =
+                  legalDocuments
+                    .filter(
+                      (document) =>
+                        document.documentType ===
+                        type,
+                    )
+                    .sort(
+                      (
+                        a,
+                        b,
+                      ) =>
+                        new Date(
+                          b.createdAt,
+                        ).getTime() -
+                        new Date(
+                          a.createdAt,
+                        ).getTime(),
+                    )
+
+                const published =
+                  versions.find(
+                    (document) =>
+                      document.status ===
+                      'PUBLISHED',
+                  )
+
+                const draft =
+                  versions.find(
+                    (document) =>
+                      document.status ===
+                      'DRAFT',
+                  )
+
+                return (
+                  <div
+                    key={type}
+                    style={{
+                      background:
+                        '#fff',
+                      border:
+                        '1px solid #e4e4e7',
+                      borderRadius:
+                        18,
+                      overflow:
+                        'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display:
+                          'flex',
+                        justifyContent:
+                          'space-between',
+                        alignItems:
+                          'flex-start',
+                        gap:
+                          18,
+                        padding:
+                          22,
+                        borderBottom:
+                          '1px solid #eee',
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize:
+                              12,
+                            fontWeight:
+                              700,
+                            letterSpacing:
+                              '.06em',
+                            textTransform:
+                              'uppercase',
+                            color:
+                              '#71717a',
+                          }}
+                        >
+                          {
+                            legalTypeLabel(
+                              type,
+                            )
+                          }
+                        </div>
+
+                        <h3
+                          style={{
+                            margin:
+                              '7px 0 5px',
+                            fontSize:
+                              20,
+                          }}
+                        >
+                          {published
+                            ? published.title
+                            : 'No published version'}
+                        </h3>
+
+                        <div
+                          style={{
+                            color:
+                              '#71717a',
+                            fontSize:
+                              13,
+                            lineHeight:
+                              1.6,
+                          }}
+                        >
+                          {published
+                            ? `Published ${published.version} · Effective ${String(
+                                published.effectiveDate,
+                              ).slice(
+                                0,
+                                10,
+                              )}`
+                            : 'Create and publish the first version.'}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          display:
+                            'flex',
+                          gap:
+                            8,
+                          flexWrap:
+                            'wrap',
+                          justifyContent:
+                            'flex-end',
+                        }}
+                      >
+                        {draft ? (
+                          <button
+                            type="button"
+                            className="refresh-btn"
+                            onClick={() =>
+                              editLegalDraft(
+                                draft,
+                              )
+                            }
+                          >
+                            Edit draft
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="refresh-btn"
+                            onClick={() =>
+                              beginLegalDraft(
+                                type,
+                                published,
+                              )
+                            }
+                          >
+                            {published
+                              ? 'Create new version'
+                              : 'Create first version'}
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          className="refresh-btn"
+                          onClick={() =>
+                            void loadLegalDocuments()
+                          }
+                          disabled={
+                            legalLoading
+                          }
+                        >
+                          {legalLoading
+                            ? 'Refreshing'
+                            : 'Refresh'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {versions.length ===
+                    0 ? (
+                      <div
+                        style={{
+                          padding:
+                            22,
+                          color:
+                            '#71717a',
+                          fontSize:
+                            14,
+                        }}
+                      >
+                        No versions stored yet.
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          display:
+                            'grid',
+                        }}
+                      >
+                        {versions.map(
+                          (
+                            document,
+                          ) => (
+                            <div
+                              key={
+                                document.id
+                              }
+                              style={{
+                                display:
+                                  'grid',
+                                gridTemplateColumns:
+                                  'minmax(150px, 1.2fr) minmax(100px, .8fr) minmax(110px, .8fr) auto',
+                                gap:
+                                  12,
+                                alignItems:
+                                  'center',
+                                padding:
+                                  '15px 22px',
+                                borderTop:
+                                  '1px solid #f4f4f5',
+                              }}
+                            >
+                              <div>
+                                <strong
+                                  style={{
+                                    display:
+                                      'block',
+                                    fontSize:
+                                      14,
+                                  }}
+                                >
+                                  {
+                                    document.version
+                                  }
+                                </strong>
+
+                                <span
+                                  style={{
+                                    display:
+                                      'block',
+                                    marginTop:
+                                      3,
+                                    color:
+                                      '#71717a',
+                                    fontSize:
+                                      11,
+                                    fontFamily:
+                                      'monospace',
+                                  }}
+                                >
+                                  SHA-256{' '}
+                                  {
+                                    document.contentHash.slice(
+                                      0,
+                                      16,
+                                    )
+                                  }
+                                  …
+                                </span>
+                              </div>
+
+                              <div
+                                style={{
+                                  fontSize:
+                                    13,
+                                }}
+                              >
+                                {
+                                  String(
+                                    document.effectiveDate,
+                                  ).slice(
+                                    0,
+                                    10,
+                                  )
+                                }
+                              </div>
+
+                              <div>
+                                <span
+                                  style={{
+                                    display:
+                                      'inline-block',
+                                    padding:
+                                      '5px 9px',
+                                    borderRadius:
+                                      999,
+                                    background:
+                                      document.status ===
+                                      'PUBLISHED'
+                                        ? '#ecfdf5'
+                                        : document.status ===
+                                          'DRAFT'
+                                        ? '#fff7ed'
+                                        : '#f4f4f5',
+                                    color:
+                                      document.status ===
+                                      'PUBLISHED'
+                                        ? '#047857'
+                                        : document.status ===
+                                          'DRAFT'
+                                        ? '#c2410c'
+                                        : '#52525b',
+                                    fontSize:
+                                      11,
+                                    fontWeight:
+                                      700,
+                                  }}
+                                >
+                                  {
+                                    document.status
+                                  }
+                                </span>
+
+                                {document.requiresReacceptance && (
+                                  <span
+                                    style={{
+                                      display:
+                                        'block',
+                                      marginTop:
+                                        5,
+                                      color:
+                                        '#b45309',
+                                      fontSize:
+                                        11,
+                                    }}
+                                  >
+                                    Re-acceptance required
+                                  </span>
+                                )}
+                              </div>
+
+                              <div
+                                style={{
+                                  display:
+                                    'flex',
+                                  justifyContent:
+                                    'flex-end',
+                                  gap:
+                                    7,
+                                  flexWrap:
+                                    'wrap',
+                                }}
+                              >
+                                {document.status ===
+                                  'DRAFT' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn email"
+                                      onClick={() =>
+                                        editLegalDraft(
+                                          document,
+                                        )
+                                      }
+                                      disabled={
+                                        legalSaving
+                                      }
+                                    >
+                                      Edit
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className="btn resolve"
+                                      onClick={() =>
+                                        publishLegalDocument(
+                                          document,
+                                        )
+                                      }
+                                      disabled={
+                                        legalSaving
+                                      }
+                                    >
+                                      Publish
+                                    </button>
+                                  </>
+                                )}
+
+                                {document.status ===
+                                  'DRAFT' && (
+                                  <button
+                                    type="button"
+                                    className="btn refund"
+                                    onClick={() =>
+                                      archiveLegalDocument(
+                                        document,
+                                      )
+                                    }
+                                    disabled={
+                                      legalSaving
+                                    }
+                                  >
+                                    Archive draft
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              },
+            )}
+
+            {legalDraft && (
+              <div
+                id="legal-draft-editor"
+                style={{
+                  background:
+                    '#fff',
+                  border:
+                    '1px solid #d4d4d8',
+                  borderRadius:
+                    18,
+                  padding:
+                    22,
+                  boxShadow:
+                    '0 14px 40px rgba(0,0,0,.06)',
+                }}
+              >
+                <div
+                  style={{
+                    display:
+                      'flex',
+                    justifyContent:
+                      'space-between',
+                    gap:
+                      16,
+                    alignItems:
+                      'flex-start',
+                    marginBottom:
+                      20,
+                  }}
+                >
+                  <div>
+                    <span className="ops-kicker">
+                      {legalDraft.id
+                        ? 'Edit draft'
+                        : 'New legal version'}
+                    </span>
+
+                    <h3
+                      style={{
+                        margin:
+                          '6px 0 0',
+                      }}
+                    >
+                      {
+                        legalTypeLabel(
+                          legalDraft.documentType,
+                        )
+                      }
+                    </h3>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="refresh-btn"
+                    onClick={() =>
+                      setLegalDraft(
+                        null,
+                      )
+                    }
+                    disabled={
+                      legalSaving
+                    }
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    display:
+                      'grid',
+                    gridTemplateColumns:
+                      'repeat(3, minmax(0, 1fr))',
+                    gap:
+                      14,
+                    marginBottom:
+                      14,
+                  }}
+                >
+                  <label>
+                    <small>
+                      Version
+                    </small>
+
+                    <input
+                      value={
+                        legalDraft.version
+                      }
+                      onChange={(
+                        event,
+                      ) =>
+                        setLegalDraft(
+                          (
+                            current,
+                          ) =>
+                            current
+                              ? {
+                                  ...current,
+                                  version:
+                                    event.target.value,
+                                }
+                              : current,
+                        )
+                      }
+                      style={{
+                        width:
+                          '100%',
+                        boxSizing:
+                          'border-box',
+                        marginTop:
+                          6,
+                        padding:
+                          '11px 12px',
+                        border:
+                          '1px solid #d4d4d8',
+                        borderRadius:
+                          10,
+                      }}
+                    />
+                  </label>
+
+                  <label>
+                    <small>
+                      Effective date
+                    </small>
+
+                    <input
+                      type="date"
+                      value={
+                        legalDraft.effectiveDate
+                      }
+                      onChange={(
+                        event,
+                      ) =>
+                        setLegalDraft(
+                          (
+                            current,
+                          ) =>
+                            current
+                              ? {
+                                  ...current,
+                                  effectiveDate:
+                                    event.target.value,
+                                }
+                              : current,
+                        )
+                      }
+                      style={{
+                        width:
+                          '100%',
+                        boxSizing:
+                          'border-box',
+                        marginTop:
+                          6,
+                        padding:
+                          '10px 12px',
+                        border:
+                          '1px solid #d4d4d8',
+                        borderRadius:
+                          10,
+                      }}
+                    />
+                  </label>
+
+                  <label>
+                    <small>
+                      Document type
+                    </small>
+
+                    <input
+                      value={
+                        legalTypeLabel(
+                          legalDraft.documentType,
+                        )
+                      }
+                      disabled
+                      style={{
+                        width:
+                          '100%',
+                        boxSizing:
+                          'border-box',
+                        marginTop:
+                          6,
+                        padding:
+                          '11px 12px',
+                        border:
+                          '1px solid #e4e4e7',
+                        borderRadius:
+                          10,
+                        background:
+                          '#f4f4f5',
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <label
+                  style={{
+                    display:
+                      'block',
+                    marginBottom:
+                      14,
+                  }}
+                >
+                  <small>
+                    Title
+                  </small>
+
+                  <input
+                    value={
+                      legalDraft.title
+                    }
+                    onChange={(
+                      event,
+                    ) =>
+                      setLegalDraft(
+                        (
+                          current,
+                        ) =>
+                          current
+                            ? {
+                                ...current,
+                                title:
+                                  event.target.value,
+                              }
+                            : current,
+                      )
+                    }
+                    style={{
+                      width:
+                        '100%',
+                      boxSizing:
+                        'border-box',
+                      marginTop:
+                        6,
+                      padding:
+                        '11px 12px',
+                      border:
+                        '1px solid #d4d4d8',
+                      borderRadius:
+                        10,
+                    }}
+                  />
+                </label>
+
+                <label
+                  style={{
+                    display:
+                      'block',
+                  }}
+                >
+                  <small>
+                    Agreement / policy text
+                  </small>
+
+                  <textarea
+                    value={
+                      legalDraft.content
+                    }
+                    onChange={(
+                      event,
+                    ) =>
+                      setLegalDraft(
+                        (
+                          current,
+                        ) =>
+                          current
+                            ? {
+                                ...current,
+                                content:
+                                  event.target.value,
+                              }
+                            : current,
+                      )
+                    }
+                    rows={24}
+                    style={{
+                      width:
+                        '100%',
+                      boxSizing:
+                        'border-box',
+                      marginTop:
+                        6,
+                      padding:
+                        14,
+                      border:
+                        '1px solid #d4d4d8',
+                      borderRadius:
+                        12,
+                      resize:
+                        'vertical',
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontSize:
+                        13,
+                      lineHeight:
+                        1.6,
+                    }}
+                  />
+                </label>
+
+                <label
+                  style={{
+                    display:
+                      'flex',
+                    alignItems:
+                      'flex-start',
+                    gap:
+                      10,
+                    marginTop:
+                      14,
+                    fontSize:
+                      13,
+                    cursor:
+                      'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={
+                      legalDraft.requiresReacceptance
+                    }
+                    onChange={(
+                      event,
+                    ) =>
+                      setLegalDraft(
+                        (
+                          current,
+                        ) =>
+                          current
+                            ? {
+                                ...current,
+                                requiresReacceptance:
+                                  event.target.checked,
+                              }
+                            : current,
+                      )
+                    }
+                  />
+
+                  <span>
+                    Require existing users to
+                    accept this new version when
+                    re-acceptance enforcement is
+                    enabled for this document
+                    type.
+                  </span>
+                </label>
+
+                <div
+                  style={{
+                    display:
+                      'flex',
+                    justifyContent:
+                      'flex-end',
+                    gap:
+                      10,
+                    marginTop:
+                      20,
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="refresh-btn"
+                    onClick={() =>
+                      setLegalDraft(
+                        null,
+                      )
+                    }
+                    disabled={
+                      legalSaving
+                    }
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn resolve"
+                    onClick={() =>
+                      void saveLegalDraft()
+                    }
+                    disabled={
+                      legalSaving
+                    }
+                  >
+                    {legalSaving
+                      ? 'Saving…'
+                      : 'Save draft'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === 'demos' && (
+          <section className="demo-console">
+            <div className="demo-console-head">
+              <div>
+                <span>Homepage leads</span>
+                <strong>Demo inbox</strong>
+              </div>
+              <button
+                type="button"
+                className="refresh-btn"
+                onClick={() => void loadDemos()}
+                disabled={demoLoading}
+              >
+                <span className={demoLoading ? 'spin' : ''}>
+                  <Icon path={ICONS.refresh} size={14} />
+                </span>
+                {demoLoading ? 'Refreshing' : 'Refresh demos'}
+              </button>
+            </div>
+
+            <div className="demo-metrics">
+              <div className="demo-metric">
+                <small>New</small>
+                <strong>{demoStats.new}</strong>
+                <span>Waiting for first contact</span>
+              </div>
+              <div className="demo-metric">
+                <small>Contacted</small>
+                <strong>{demoStats.contacted}</strong>
+                <span>Follow-up in progress</span>
+              </div>
+              <div className="demo-metric">
+                <small>Closed</small>
+                <strong>{demoStats.closed}</strong>
+                <span>Completed or archived</span>
+              </div>
+              <div className="demo-metric total">
+                <small>Total</small>
+                <strong>{demoStats.total}</strong>
+                <span>All homepage requests</span>
+              </div>
+            </div>
+
+            {demoError && (
+              <div className="demo-error">
+                <Icon path={ICONS.alert} size={17} />
+                <span>{demoError}</span>
+              </div>
+            )}
+
+            {demoLoading && demoRequests.length === 0 ? (
+              <div className="demo-empty">
+                Loading demo requests…
+              </div>
+            ) : demoRequests.length === 0 ? (
+              <div className="demo-empty">
+                <div className="demo-empty-icon">
+                  <Icon path={ICONS.mail} size={22} />
+                </div>
+                <strong>No demo requests yet</strong>
+                <span>Homepage submissions will appear here automatically.</span>
+              </div>
+            ) : (
+              <div className="demo-list">
+                {demoRequests.map((request) => {
+                  const busy = demoBusyId === request.id
+
+                  return (
+                    <article
+                      key={request.id}
+                      className={`demo-card ${request.status.toLowerCase()}`}
+                    >
+                      <div className="demo-card-head">
+                        <div>
+                          <div className="demo-contact">
+                            <a href={`mailto:${request.email}`}>
+                              {request.email}
+                            </a>
+                            <span>•</span>
+                            <a href={`tel:${request.phone}`}>
+                              {request.phone}
+                            </a>
+                          </div>
+                          <small>
+                            Received {new Date(request.createdAt).toLocaleString()}
+                          </small>
+                        </div>
+
+                        <span className={`demo-status ${request.status.toLowerCase()}`}>
+                          {request.status === 'NEW'
+                            ? 'New'
+                            : request.status === 'CONTACTED'
+                              ? 'Contacted'
+                              : 'Closed'}
+                        </span>
+                      </div>
+
+                      <p>{request.message}</p>
+
+                      <div className="demo-card-actions">
+                        <a className="demo-link" href={`mailto:${request.email}`}>
+                          <Icon path={ICONS.mail} size={14} />
+                          Email
+                        </a>
+                        <a className="demo-link" href={`tel:${request.phone}`}>
+                          Call
+                        </a>
+
+                        {request.status !== 'CONTACTED' && (
+                          <button
+                            type="button"
+                            className="demo-action primary"
+                            disabled={busy}
+                            onClick={() => void updateDemoStatus(request, 'CONTACTED')}
+                          >
+                            Mark contacted
+                          </button>
+                        )}
+
+                        {request.status !== 'CLOSED' && (
+                          <button
+                            type="button"
+                            className="demo-action"
+                            disabled={busy}
+                            onClick={() => void updateDemoStatus(request, 'CLOSED')}
+                          >
+                            Close
+                          </button>
+                        )}
+
+                        {request.status === 'CLOSED' && (
+                          <button
+                            type="button"
+                            className="demo-action"
+                            disabled={busy}
+                            onClick={() => void updateDemoStatus(request, 'NEW')}
+                          >
+                            Reopen
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+        )}
+
         {tab === 'qr' && (
           <section className="qr-section">
+            {qrShopOrder && (
+              <div
+                className="domain-box"
+                style={{
+                  marginBottom: 18,
+                }}
+              >
+                <small>
+                  Hardware order source
+                </small>
+
+                <strong
+                  style={{
+                    display: 'block',
+                    marginTop: 6,
+                  }}
+                >
+                  {
+                    qrShopOrder.orderNumber
+                  }
+                </strong>
+
+                <p>
+                  Sales Partner:{' '}
+                  {qrShopOrder.salesCode
+                    ? qrShopOrder.salesCode
+                    : 'Direct / none'}
+                  . The backend verifies the
+                  paid order and copies its
+                  immutable attribution.
+                </p>
+
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() =>
+                    setQrShopOrder(
+                      null,
+                    )
+                  }
+                >
+                  Clear hardware order
+                </button>
+              </div>
+            )}
+
             <div className="qr-form">
               <div className="field">
                 <label>Store code</label>
@@ -5117,6 +7724,67 @@ export default function MaintenancePage() {
                     ? 'REGISTERED'
                     : standStatus}
                 </strong>
+
+                {standActivationCode && (
+                  <div
+                    style={{
+                      marginTop: 16,
+                      padding: 14,
+                      border:
+                        '1px solid #e1d7c7',
+                      borderRadius: 10,
+                      background: '#fffaf2',
+                    }}
+                  >
+                    <small>
+                      Private activation code — save
+                      this now
+                    </small>
+
+                    <strong
+                      className="mono"
+                      style={{
+                        display: 'block',
+                        margin:
+                          '7px 0 10px',
+                        wordBreak:
+                          'break-all',
+                      }}
+                    >
+                      {standActivationCode}
+                    </strong>
+
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() =>
+                        void copyText(
+                          standActivationCode,
+                          'stand-activation-code',
+                        )
+                      }
+                    >
+                      <Icon
+                        path={ICONS.copy}
+                        size={14}
+                      />
+                      Copy activation code
+                    </button>
+
+                    <p
+                      style={{
+                        marginTop: 10,
+                        marginBottom: 0,
+                      }}
+                    >
+                      Send this privately to the
+                      restaurant owner. It is not
+                      included in the QR/NFC URL and
+                      cannot be recovered from the
+                      database later.
+                    </p>
+                  </div>
+                )}
 
                 {standAlreadyExists &&
                   !standRegistered && (
@@ -6297,6 +8965,118 @@ export default function MaintenancePage() {
                             ),
                           )}
                         </div>
+
+                        {order.paymentStatus ===
+                          'PAID' &&
+                        ![
+                          'SUCCEEDED',
+                          'PENDING',
+                          'CREATING',
+                          'UNKNOWN',
+                        ].includes(
+                          order.refundStatus ||
+                            'NONE',
+                        ) && (
+                          <div
+                            style={{
+                              marginTop: 14,
+                              padding: 14,
+                              border:
+                                '1px solid rgba(0,0,0,.12)',
+                              borderRadius: 12,
+                              display:
+                                'flex',
+                              alignItems:
+                                'center',
+                              justifyContent:
+                                'space-between',
+                              gap: 12,
+                              flexWrap:
+                                'wrap',
+                            }}
+                          >
+                            <div
+                              style={{
+                                display:
+                                  'grid',
+                                gap: 4,
+                              }}
+                            >
+                              <strong>
+                                Restaurant stand setup
+                              </strong>
+
+                              <span
+                                style={{
+                                  fontSize: 13,
+                                  color:
+                                    '#6e6e6e',
+                                }}
+                              >
+                                Sales Partner:{' '}
+                                {order.salesCode ||
+                                  'Direct / none'}
+                              </span>
+                            </div>
+
+                            <button
+                              type="button"
+                              className="shop-refresh"
+                              onClick={() => {
+                                setQrShopOrder({
+                                  id:
+                                    order.id,
+
+                                  orderNumber:
+                                    order.orderNumber,
+
+                                  salesPartnerId:
+                                    order.salesPartnerId ||
+                                    null,
+
+                                  salesCode:
+                                    order.salesCode ||
+                                    null,
+                                })
+
+                                setQrStoreCode(
+                                  '',
+                                )
+
+                                setTableLinks(
+                                  [],
+                                )
+
+                                setStandStatus(
+                                  '',
+                                )
+
+                                setStandAlreadyExists(
+                                  false,
+                                )
+
+                                setStandRegistered(
+                                  false,
+                                )
+
+                                setStandActivationCode(
+                                  '',
+                                )
+
+                                setTab(
+                                  'qr',
+                                )
+
+                                pushToast(
+                                  'info',
+                                  `Hardware order ${order.orderNumber} selected for stand creation.`,
+                                )
+                              }}
+                            >
+                              Create stand set
+                            </button>
+                          </div>
+                        )}
 
                         <div className="shop-fulfillment">
                           <label className="shop-field">
@@ -9796,6 +12576,266 @@ export default function MaintenancePage() {
           }
         }
 
+
+        /* CAVIARQR_HOME_DEMO_V1 */
+        .demo-console {
+          display: grid;
+          gap: 18px;
+        }
+
+        .demo-console-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+        }
+
+        .demo-console-head > div span,
+        .demo-console-head > div strong {
+          display: block;
+        }
+
+        .demo-console-head > div span {
+          color: var(--faint);
+          font-size: 9.5px;
+          font-weight: 800;
+          letter-spacing: .08em;
+          text-transform: uppercase;
+        }
+
+        .demo-console-head > div strong {
+          margin-top: 3px;
+          color: var(--ink);
+          font-size: 15px;
+        }
+
+        .demo-metrics {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+        }
+
+        .demo-metric {
+          min-height: 118px;
+          border: 1px solid #e7e9ee;
+          border-radius: 16px;
+          padding: 16px;
+          background: #fff;
+          box-shadow: var(--shadow-sm);
+        }
+
+        .demo-metric small,
+        .demo-metric span {
+          display: block;
+        }
+
+        .demo-metric small {
+          color: var(--muted);
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: .08em;
+          text-transform: uppercase;
+        }
+
+        .demo-metric strong {
+          display: block;
+          margin: 9px 0 4px;
+          color: var(--ink);
+          font-size: 27px;
+          line-height: 1;
+        }
+
+        .demo-metric span {
+          color: var(--faint);
+          font-size: 10px;
+          font-weight: 600;
+        }
+
+        .demo-metric.total {
+          background: #171717;
+          border-color: #171717;
+        }
+
+        .demo-metric.total small,
+        .demo-metric.total span {
+          color: #a8a8a8;
+        }
+
+        .demo-metric.total strong {
+          color: #fff;
+        }
+
+        .demo-error {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          border: 1px solid #fecdca;
+          border-radius: 13px;
+          padding: 12px 14px;
+          background: #fff6f5;
+          color: #b42318;
+          font-size: 12px;
+          font-weight: 650;
+        }
+
+        .demo-list {
+          display: grid;
+          gap: 12px;
+        }
+
+        .demo-card {
+          position: relative;
+          border: 1px solid #e6e8ec;
+          border-left: 4px solid #98a2b3;
+          border-radius: 16px;
+          padding: 17px 18px;
+          background: #fff;
+          box-shadow: var(--shadow-sm);
+        }
+
+        .demo-card.new { border-left-color: #f79009; }
+        .demo-card.contacted { border-left-color: #2e90fa; }
+        .demo-card.closed { border-left-color: #12b76a; opacity: .86; }
+
+        .demo-card-head {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 18px;
+        }
+
+        .demo-contact {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 7px;
+          color: var(--muted);
+          font-size: 12px;
+          font-weight: 700;
+        }
+
+        .demo-contact a {
+          color: var(--ink);
+          text-decoration: none;
+        }
+
+        .demo-contact a:hover { text-decoration: underline; }
+
+        .demo-card-head small {
+          display: block;
+          margin-top: 5px;
+          color: var(--faint);
+          font-size: 9.5px;
+          font-weight: 600;
+        }
+
+        .demo-status {
+          flex: 0 0 auto;
+          border-radius: 999px;
+          padding: 6px 9px;
+          background: #f2f4f7;
+          color: #475467;
+          font-size: 9px;
+          font-weight: 850;
+          letter-spacing: .07em;
+          text-transform: uppercase;
+        }
+
+        .demo-status.new { background: #fff7ed; color: #b54708; }
+        .demo-status.contacted { background: #eff8ff; color: #175cd3; }
+        .demo-status.closed { background: #ecfdf3; color: #027a48; }
+
+        .demo-card > p {
+          margin: 15px 0 0;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+          color: var(--body);
+          font-size: 13px;
+          line-height: 1.6;
+        }
+
+        .demo-card-actions {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 16px;
+        }
+
+        .demo-link,
+        .demo-action {
+          min-height: 34px;
+          border: 1px solid #e0e3e8;
+          border-radius: 9px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 0 11px;
+          background: #fff;
+          color: #344054;
+          text-decoration: none;
+          font-size: 10.5px;
+          font-weight: 750;
+        }
+
+        .demo-link:hover,
+        .demo-action:hover {
+          border-color: #c9ced6;
+          background: #f9fafb;
+        }
+
+        .demo-action.primary {
+          margin-left: auto;
+          border-color: #171717;
+          background: #171717;
+          color: #fff;
+        }
+
+        .demo-action:disabled {
+          opacity: .5;
+          cursor: wait;
+        }
+
+        .demo-empty {
+          min-height: 250px;
+          border: 1px dashed #d8dde5;
+          border-radius: 18px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          gap: 7px;
+          background: #fff;
+          color: var(--muted);
+          text-align: center;
+          font-size: 12px;
+        }
+
+        .demo-empty-icon {
+          width: 42px;
+          height: 42px;
+          border-radius: 12px;
+          display: grid;
+          place-items: center;
+          margin-bottom: 5px;
+          background: #f2f4f7;
+          color: #667085;
+        }
+
+        .demo-empty strong { color: var(--ink); font-size: 13px; }
+        .demo-empty span { color: var(--faint); font-size: 10.5px; }
+
+        @media (max-width: 900px) {
+          .demo-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        @media (max-width: 640px) {
+          .demo-console-head { align-items: stretch; flex-direction: column; }
+          .demo-metrics { grid-template-columns: 1fr; }
+          .demo-card-head { flex-direction: column; }
+          .demo-action.primary { margin-left: 0; }
+        }
       `}</style>
     </div>
   )

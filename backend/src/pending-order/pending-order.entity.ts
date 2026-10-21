@@ -27,6 +27,16 @@ export type PendingOrderItem = {
   // Customer cooking / allergy request
   note?: string
 
+  customizations?: Array<{
+    groupId: string
+    groupName: string
+    options: Array<{
+      optionId: string
+      name: string
+      priceDelta: number
+    }>
+  }>
+
   unitPriceCents: number
   price: number
 }

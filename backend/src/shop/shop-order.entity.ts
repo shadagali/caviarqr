@@ -262,6 +262,37 @@ export class ShopOrder {
   refundConfirmationEmailFailureMessage:
     string | null
 
+  // =========================
+  // SALES PARTNER ATTRIBUTION
+  // =========================
+
+  @Column({
+    type: 'integer',
+    nullable: true,
+  })
+  salesPartnerId:
+    number | null
+
+  /*
+   * Snapshot the actual code used during
+   * checkout so attribution history does
+   * not change if a partner code changes.
+   */
+  @Column({
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+  })
+  salesCode:
+    string | null
+
+  @Column({
+    type: 'integer',
+    default: 0,
+  })
+  salesDiscountCents:
+    number
+
   @CreateDateColumn({
     type: 'timestamptz',
   })

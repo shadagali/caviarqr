@@ -1,3 +1,4 @@
+import { SalesCommissionService } from '../sales/sales-commission.service'
 import {
   Injectable,
   BadRequestException,
@@ -44,6 +45,7 @@ import {
 } from '../marketing/marketing.service'
 
 import { ShopService } from '../shop/shop.service'
+import { RefundService } from '../refund/refund.service'
 
 @Injectable()
 export class WebhookService {
@@ -56,7 +58,13 @@ export class WebhookService {
 
   private readonly webhookSecret: string
 
+  private readonly connectWebhookSecret:
+    string | null
+
   constructor(
+    private readonly salesCommissionService:
+      SalesCommissionService,
+
     @InjectRepository(Order)
     private orderRepo: Repository<Order>,
 
@@ -76,12 +84,21 @@ export class WebhookService {
 
     private shopService:
       ShopService,
+
+    private refundService:
+      RefundService,
   ) {
     const key =
       process.env.STRIPE_SECRET_KEY
 
     const webhookSecret =
       process.env.STRIPE_WEBHOOK_SECRET
+
+    const connectWebhookSecret =
+      String(
+        process.env.STRIPE_CONNECT_WEBHOOK_SECRET ||
+          '',
+      ).trim()
 
     const isProduction =
       process.env.NODE_ENV ===
@@ -122,6 +139,18 @@ export class WebhookService {
 
     this.webhookSecret =
       webhookSecret
+
+    if (
+      connectWebhookSecret &&
+      !connectWebhookSecret.startsWith('whsec_')
+    ) {
+      throw new Error(
+        'Invalid STRIPE_CONNECT_WEBHOOK_SECRET.',
+      )
+    }
+
+    this.connectWebhookSecret =
+      connectWebhookSecret || null
 
     this.stripe = new Stripe(
       key,
@@ -220,16 +249,19 @@ export class WebhookService {
 
   private async getStripePaymentFinancials(
     paymentIntentId: string,
+    connectedAccountId?: string | null,
   ): Promise<{
     stripeChargeId: string | null
     stripeBalanceTransactionId: string | null
     stripeFee: number | null
+    paidAt: Date | null
   }> {
     if (!paymentIntentId) {
       return {
         stripeChargeId: null,
         stripeBalanceTransactionId: null,
         stripeFee: null,
+        paidAt: null,
       }
     }
 
@@ -242,6 +274,12 @@ export class WebhookService {
               'latest_charge.balance_transaction',
             ],
           },
+          connectedAccountId
+            ? {
+                stripeAccount:
+                  connectedAccountId,
+              }
+            : undefined,
         )
 
       let charge: Stripe.Charge | null =
@@ -259,6 +297,12 @@ export class WebhookService {
                 'balance_transaction',
               ],
             },
+            connectedAccountId
+              ? {
+                  stripeAccount:
+                    connectedAccountId,
+                }
+              : undefined,
           )
       } else if (
         paymentIntent.latest_charge &&
@@ -278,7 +322,35 @@ export class WebhookService {
           stripeChargeId: null,
           stripeBalanceTransactionId: null,
           stripeFee: null,
+          paidAt: null,
         }
+      }
+
+      /*
+       * Stripe Charge.created is the authoritative
+       * successful-payment timestamp used for the
+       * Sales Partner 30-day availability clock.
+       */
+      const chargeCreatedSeconds =
+        Number(
+          charge.created,
+        )
+
+      const paidAt =
+        Number.isInteger(
+          chargeCreatedSeconds,
+        ) &&
+        chargeCreatedSeconds > 0
+          ? new Date(
+              chargeCreatedSeconds *
+                1000,
+            )
+          : null
+
+      if (!paidAt) {
+        this.logger.warn(
+          `STRIPE_CHARGE_CREATED_INVALID: ${charge.id}`,
+        )
       }
 
       let balanceTransaction:
@@ -292,6 +364,12 @@ export class WebhookService {
         balanceTransaction =
           await this.stripe.balanceTransactions.retrieve(
             charge.balance_transaction,
+            connectedAccountId
+              ? {
+                  stripeAccount:
+                    connectedAccountId,
+                }
+              : undefined,
           )
       } else if (
         charge.balance_transaction &&
@@ -314,6 +392,7 @@ export class WebhookService {
             null,
           stripeFee:
             null,
+          paidAt,
         }
       }
 
@@ -339,6 +418,7 @@ export class WebhookService {
             balanceTransaction.id,
           stripeFee:
             null,
+          paidAt,
         }
       }
 
@@ -353,6 +433,7 @@ export class WebhookService {
               feeCents / 100
             ).toFixed(2),
           ),
+        paidAt,
       }
     } catch (err: any) {
       this.logger.error(
@@ -362,14 +443,14 @@ export class WebhookService {
 
       /*
        * Never block a paid order from reaching
-       * the kitchen because fee reporting failed.
-       * A null fee is intentionally distinguishable
-       * from an actual $0.00 Stripe fee.
+       * the kitchen because Stripe reporting
+       * enrichment failed.
        */
       return {
         stripeChargeId: null,
         stripeBalanceTransactionId: null,
         stripeFee: null,
+        paidAt: null,
       }
     }
   }
@@ -1332,22 +1413,46 @@ Powered by CaviarQR`
           sig,
           this.webhookSecret,
         )
+    } catch (primaryErr: any) {
+      if (!this.connectWebhookSecret) {
+        this.logger.error(
+          'WEBHOOK_SIGNATURE_VERIFY_FAILED',
+          primaryErr?.message ||
+            primaryErr,
+        )
 
-      console.log(
-        '🔥 WEBHOOK:',
-        event.type,
-      )
-    } catch (err: any) {
-      this.logger.error(
-        'WEBHOOK_SIGNATURE_VERIFY_FAILED',
-        err?.message ||
-          err,
-      )
+        throw new BadRequestException(
+          'Webhook signature verification failed',
+        )
+      }
 
-      throw new BadRequestException(
-        'Webhook signature verification failed',
-      )
+      try {
+        event =
+          this.stripe.webhooks.constructEvent(
+            rawBody,
+            sig,
+            this.connectWebhookSecret,
+          )
+      } catch (connectErr: any) {
+        this.logger.error(
+          'WEBHOOK_SIGNATURE_VERIFY_FAILED',
+          connectErr?.message ||
+            connectErr,
+        )
+
+        throw new BadRequestException(
+          'Webhook signature verification failed',
+        )
+      }
     }
+
+    console.log(
+      '🔥 WEBHOOK:',
+      event.type,
+      event.account
+        ? 'CONNECTED'
+        : 'ACCOUNT',
+    )
 
     // =========================
     // 🔥 CHECKOUT COMPLETE
@@ -1375,6 +1480,7 @@ Powered by CaviarQR`
       } else {
         await this.handleCheckoutCompleted(
           session,
+          event.account || null,
         )
       }
     }
@@ -1440,6 +1546,32 @@ Powered by CaviarQR`
     }
 
     // =========================
+    // 💸 REFUND RECOVERY
+    // =========================
+    //
+    // Refund API calls already persist the Stripe result directly.
+    // These webhook events are the recovery path when Stripe accepted
+    // a refund but the API request timed out, the process restarted,
+    // or the response was otherwise lost.
+    //
+    // syncStripeRefund() matches the refund to the existing audited
+    // RefundAttempt using stripeRefundId or refundAttemptId metadata.
+    //
+    if (
+      event.type === 'refund.created' ||
+      event.type === 'refund.updated' ||
+      event.type === 'refund.failed'
+    ) {
+      const refund =
+        event.data.object as Stripe.Refund
+
+      await this.refundService
+        .syncStripeRefund(
+          refund,
+        )
+    }
+
+    // =========================
     // 🔥 PAYMENT SUCCESS
     // =========================
 
@@ -1463,6 +1595,7 @@ Powered by CaviarQR`
 
   private async handleCheckoutCompleted(
     session: Stripe.Checkout.Session,
+    connectedAccountId?: string | null,
   ) {
     const stripeSessionId =
       session.id || ''
@@ -1694,6 +1827,24 @@ Powered by CaviarQR`
         )
       }
 
+      if (connectedAccountId) {
+        const expectedStripeAccountId =
+          String(
+            business.stripeAccountId ||
+              '',
+          ).trim()
+
+        if (
+          !expectedStripeAccountId ||
+          connectedAccountId !==
+            expectedStripeAccountId
+        ) {
+          throw new Error(
+            'CONNECTED_ACCOUNT_MISMATCH',
+          )
+        }
+      }
+
       // =========================
       // 🔥 DUPLICATE PAYMENT CHECK
       // =========================
@@ -1727,6 +1878,13 @@ Powered by CaviarQR`
             .prepareSupportAndReceipt(
               existingOrder,
               business,
+            )
+
+          await this
+            .salesCommissionService
+            .recordPaidOrderSafely(
+              existingOrder.id,
+              'WEBHOOK_EXISTING_ORDER',
             )
 
           return
@@ -1808,6 +1966,7 @@ Powered by CaviarQR`
       const stripeFinancials =
         await this.getStripePaymentFinancials(
           paymentIntentId,
+          connectedAccountId,
         )
 
       const tableNumber =
@@ -1954,6 +2113,9 @@ Powered by CaviarQR`
       order.stripeFee =
         stripeFinancials.stripeFee
 
+      order.paidAt =
+        stripeFinancials.paidAt
+
       console.log(
         '🔥 ABOUT TO SAVE ORDER:',
         {
@@ -2051,6 +2213,13 @@ Powered by CaviarQR`
               business,
             )
 
+          await this
+            .salesCommissionService
+            .recordPaidOrderSafely(
+              concurrentOrder.id,
+              'WEBHOOK_CONCURRENT_DUPLICATE',
+            )
+
           return
         }
 
@@ -2090,10 +2259,8 @@ Powered by CaviarQR`
           `Order ${saved.id} sent to kitchen.`,
         )
 
-        this.scheduleKitchenAckTimeout(
-          saved.id,
-          business.id,
-        )
+        // Kitchen ACK timeout is handled by the durable
+        // database watchdog in MaintenanceService.
       } catch (err) {
         await this.createOwnerIssue(
           saved,
@@ -2118,6 +2285,13 @@ Powered by CaviarQR`
         .prepareSupportAndReceipt(
           saved,
           business,
+        )
+
+      await this
+        .salesCommissionService
+        .recordPaidOrderSafely(
+          saved.id,
+          'WEBHOOK_NEW_ORDER',
         )
     } catch (err: any) {
       this.logger.error(

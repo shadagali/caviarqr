@@ -46,6 +46,14 @@ import {
   KitchenSessionGuard,
 } from './kitchen-session.guard'
 
+import {
+  RefundReason,
+} from '../refund/dto/create-refund.dto'
+
+import {
+  RefundService,
+} from '../refund/refund.service'
+
 import type {
   KitchenRequest,
 } from './kitchen-session.guard'
@@ -63,6 +71,9 @@ export class KitchenAuthController {
 
     private readonly gateway:
       OrderGateway,
+
+    private readonly refundService:
+      RefundService,
   ) {
     // Fail fast instead of discovering an auth
     // misconfiguration after restaurants are live.
@@ -102,37 +113,30 @@ export class KitchenAuthController {
       )
     }
 
-    if (
-      business.kitchenPassword
-    ) {
-      const password =
-        String(
-          body?.password || '',
-        )
+    const password = String(body?.password || '')
 
-      if (!password) {
-        throw new UnauthorizedException(
-          'Invalid kitchen credentials.',
-        )
-      }
+    if (!business.kitchenPassword || !password) {
+      throw new UnauthorizedException(
+        'Invalid kitchen credentials.',
+      )
+    }
 
-      const valid =
-        await bcrypt.compare(
-          password,
-          business.kitchenPassword,
-        )
+    const valid = await bcrypt.compare(
+      password,
+      business.kitchenPassword,
+    )
 
-      if (!valid) {
-        throw new UnauthorizedException(
-          'Invalid kitchen credentials.',
-        )
-      }
+    if (!valid) {
+      throw new UnauthorizedException(
+        'Invalid kitchen credentials.',
+      )
     }
 
     const token =
       createKitchenToken(
         business.id,
         business.storeCode,
+        business.kitchenPassword!,
       )
 
     return {
@@ -223,6 +227,13 @@ export class KitchenAuthController {
             OrderStatus.REFUNDED,
         },
       )
+      .andWhere(
+        'order.status != :pendingPayment',
+        {
+          pendingPayment:
+            OrderStatus.PENDING_PAYMENT,
+        },
+      )
       .orderBy(
         'order.id',
         'DESC',
@@ -269,6 +280,13 @@ export class KitchenAuthController {
         'order.createdAt >= :cutoff',
         {
           cutoff,
+        },
+      )
+      .andWhere(
+        'order.status != :pendingPayment',
+        {
+          pendingPayment:
+            OrderStatus.PENDING_PAYMENT,
         },
       )
       .orderBy(
@@ -323,6 +341,12 @@ export class KitchenAuthController {
     ) {
       throw new BadRequestException(
         'This order is already closed.',
+      )
+    }
+
+    if (order.status === OrderStatus.PENDING_PAYMENT) {
+      throw new BadRequestException(
+        'Payment must be confirmed before kitchen preparation.',
       )
     }
 
@@ -385,6 +409,90 @@ export class KitchenAuthController {
     )
 
     return saved
+  }
+
+  @Patch('orders/:id/refund')
+  @UseGuards(KitchenSessionGuard)
+  async refundOrder(
+    @Param('id', ParseIntPipe)
+    orderId: number,
+
+    @Req()
+    request: KitchenRequest,
+  ) {
+    const kitchen =
+      this.requireKitchen(request)
+
+    /*
+     * Tenant check happens before the shared refund
+     * engine is allowed to touch money.
+     */
+    const order =
+      await this.orderRepo.findOne({
+        where: {
+          id: orderId,
+          businessId:
+            kitchen.businessId,
+          storeCode:
+            kitchen.storeCode,
+        },
+      })
+
+    if (!order) {
+      throw new NotFoundException(
+        'Order not found.',
+      )
+    }
+
+    const result =
+      await this.refundService
+        .createRefund(
+          order.id,
+          {
+            reason:
+              RefundReason.ORDER_NOT_DELIVERED,
+
+            note:
+              'Refund initiated by restaurant kitchen.',
+          },
+          {
+            requestedBy:
+              `kitchen:${kitchen.storeCode}`,
+
+            requestIp:
+              request.ip ||
+              null,
+
+            userAgent:
+              request.get(
+                'user-agent',
+              ) || null,
+          },
+        )
+
+    /*
+     * Push the latest state to any other open
+     * kitchen screens after the refund attempt.
+     */
+    const latestOrder =
+      await this.orderRepo.findOne({
+        where: {
+          id: orderId,
+          businessId:
+            kitchen.businessId,
+          storeCode:
+            kitchen.storeCode,
+        },
+      })
+
+    if (latestOrder) {
+      this.gateway.emitOrderUpdate(
+        kitchen.businessId,
+        latestOrder,
+      )
+    }
+
+    return result
   }
 
   @Patch('toggle-open')
