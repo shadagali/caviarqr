@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 
 import { Order } from '../order/order.entity'
+import { Business } from '../business/business.entity'
 
 import { AnalyticsController } from './analytics.controller'
 import { AnalyticsService } from './analytics.service'
@@ -11,6 +12,7 @@ import { OwnerSessionGuard } from '../owner-auth/owner-session.guard'
   imports: [
     TypeOrmModule.forFeature([
       Order,
+      Business,
     ]),
   ],
 
