@@ -913,6 +913,13 @@ export default function OwnerPage() {
   const [coverFile, setCoverFile] = useState<any>(null)
   const [kitchenMode, setKitchenMode] = useState("unknown")
   const [activeSection, setActiveSection] = useState("analytics")
+
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [deletePassword, setDeletePassword] = useState("")
+  const [deleteStoreCode, setDeleteStoreCode] = useState("")
+  const [deleteConfirm, setDeleteConfirm] = useState("")
+  const [deleteError, setDeleteError] = useState("")
+  const [deleting, setDeleting] = useState(false)
   const [fullRefreshing, setFullRefreshing] = useState(false)
 
   // =========================
@@ -1118,6 +1125,48 @@ export default function OwnerPage() {
   }, [])
 
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(""), 2800) }
+
+  const deleteOwnerAccount = async () => {
+    if (deleting || deleteStoreCode.trim() !== storeCode ||
+        deleteConfirm !== "DELETE" || !deletePassword) return
+
+    const token = localStorage.getItem("token")
+    if (!token) {
+      setDeleteError("Sign in again to continue.")
+      return
+    }
+
+    setDeleting(true)
+    setDeleteError("")
+
+    try {
+      await axios.post(
+        `${API}/business/delete-account`,
+        {
+          password: deletePassword,
+          storeCode: deleteStoreCode.trim(),
+          confirmation: "DELETE"
+        },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 30000
+        }
+      )
+
+      for (const key of ["businessId", "storeCode", "role", "token"]) {
+        localStorage.removeItem(key)
+      }
+      sessionStorage.removeItem("caviarqr-owner-refresh-section")
+      window.location.replace("/login?accountDeleted=1")
+    } catch (err: any) {
+      const message = err?.response?.data?.message
+      setDeleteError(
+        typeof message === "string" ? message :
+        "Deletion is not available yet or could not be completed. Your account remains active."
+      )
+      setDeleting(false)
+    }
+  }
 
   // =========================
   // EMAIL PROMOTIONS
@@ -2010,6 +2059,8 @@ export default function OwnerPage() {
 
     { id: "fee",       icon: "％", label: "Service Fee" },
     { id: "branding",  icon: "✦", label: "Branding" },
+
+    { id: "account-deletion", icon: "🗑", label: "Account Deletion" },
   ]
 
   if (!sessionReady || !businessId || !storeCode) {
@@ -3552,6 +3603,53 @@ export default function OwnerPage() {
             </div>
           )}
 
+
+          {activeSection === "account-deletion" && (
+            <div>
+              <div className="ph">
+                <div className="ph-left">
+                  <div className="ph-title">Account Deletion</div>
+                  <div className="ph-sub">
+                    Permanently close your restaurant account
+                  </div>
+                </div>
+              </div>
+
+              <div className="card" style={{ maxWidth: 520 }}>
+                <div className="card-title">
+                  Delete your restaurant account
+                </div>
+
+                <p style={{
+                  margin: "16px 0",
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                  color: "var(--text2)"
+                }}>
+                  This cannot be undone. You may register again
+                  using the same store code, but your new account
+                  will have no menu or previous owner data.
+                  Payment and legal records may need to be retained.
+                </p>
+
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ background: "#b91c1c", color: "white" }}
+                  onClick={() => {
+                    setDeletePassword("")
+                    setDeleteStoreCode("")
+                    setDeleteConfirm("")
+                    setDeleteError("")
+                    setShowDeleteDialog(true)
+                  }}
+                >
+                  Delete Account
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ── BRANDING ── */}
           {activeSection === "branding" && (
             <div>
@@ -3606,6 +3704,135 @@ export default function OwnerPage() {
 
         </div>
       </div>
+
+
+      {showDeleteDialog && (
+        <div
+          role="presentation"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1500,
+            background: "rgba(0,0,0,.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16
+          }}
+          onMouseDown={e => {
+            if (e.target === e.currentTarget && !deleting)
+              setShowDeleteDialog(false)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+            style={{
+              width: "100%",
+              maxWidth: 470,
+              background: "white",
+              color: "#111",
+              borderRadius: 14,
+              padding: 24,
+              maxHeight: "90dvh",
+              overflowY: "auto"
+            }}
+          >
+            <h2 id="delete-dialog-title"
+              style={{ fontSize: 20, marginBottom: 12 }}>
+              Delete Account Permanently?
+            </h2>
+
+            <p style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 18 }}>
+              This will permanently close this restaurant account.
+              Resolve pending orders, refunds and payouts first.
+              Some financial records must be retained.
+            </p>
+
+            <form onSubmit={e => {
+              e.preventDefault()
+              void deleteOwnerAccount()
+            }}>
+              <label className="field" style={{ marginBottom: 12 }}>
+                <span className="field-label">Owner password</span>
+                <input
+                  className="inp"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={deletePassword}
+                  onChange={e => setDeletePassword(e.target.value)}
+                  disabled={deleting}
+                />
+              </label>
+
+              <label className="field" style={{ marginBottom: 12 }}>
+                <span className="field-label">
+                  Type your store code ({storeCode})
+                </span>
+                <input
+                  className="inp"
+                  required
+                  autoComplete="off"
+                  value={deleteStoreCode}
+                  onChange={e => setDeleteStoreCode(e.target.value)}
+                  disabled={deleting}
+                />
+              </label>
+
+              <label className="field" style={{ marginBottom: 12 }}>
+                <span className="field-label">
+                  Type DELETE to confirm
+                </span>
+                <input
+                  className="inp"
+                  required
+                  autoComplete="off"
+                  value={deleteConfirm}
+                  onChange={e => setDeleteConfirm(e.target.value)}
+                  disabled={deleting}
+                />
+              </label>
+
+              {deleteError && (
+                <p role="alert"
+                  style={{ color: "#b91c1c", marginBottom: 12, fontSize: 13 }}>
+                  {deleteError}
+                </p>
+              )}
+
+              <div style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10
+              }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={deleting}
+                  onClick={() => setShowDeleteDialog(false)}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="btn"
+                  style={{ background: "#b91c1c", color: "white" }}
+                  disabled={
+                    deleting || !deletePassword ||
+                    deleteStoreCode.trim() !== storeCode ||
+                    deleteConfirm !== "DELETE"
+                  }
+                >
+                  {deleting ? "Deleting…" : "Delete Account"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {editingMenuItem && (
         <div
