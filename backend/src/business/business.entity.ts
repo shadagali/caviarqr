@@ -285,6 +285,10 @@ export class Business {
   })
   isOpen: boolean
 
+  // ACCOUNT CLOSURE
+  @Column({ type: 'timestamptz', nullable: true })
+  deletedAt: Date | null
+
   // =========================
   // RESET TOKEN
   // =========================

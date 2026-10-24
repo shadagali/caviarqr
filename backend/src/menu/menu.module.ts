@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { MenuItem } from './menu.entity'
+import { Business } from '../business/business.entity'
 import { MenuService } from './menu.service'
 import { MenuController } from './menu.controller'
 import { MenuAccessGuard } from './menu-access.guard'
 
 @Module({
-  imports: [TypeOrmModule.forFeature([MenuItem])],
+  imports: [TypeOrmModule.forFeature([MenuItem, Business])],
   controllers: [MenuController],
   providers: [
     MenuService,

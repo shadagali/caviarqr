@@ -4,6 +4,9 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common'
+import { InjectRepository } from '@nestjs/typeorm'
+import { Repository } from 'typeorm'
+import { Business } from '../business/business.entity'
 
 import type {
   Request,
@@ -32,7 +35,12 @@ export type MenuAccessRequest =
 export class MenuAccessGuard
   implements CanActivate
 {
-  canActivate(
+  constructor(
+    @InjectRepository(Business)
+    private readonly businesses: Repository<Business>,
+  ) {}
+
+  async canActivate(
     context: ExecutionContext,
   ) {
     const request =
@@ -64,6 +72,17 @@ export class MenuAccessGuard
       const owner =
         verifyOwnerToken(token)
 
+      const business = await this.businesses.findOne({
+        where: {
+          id: owner.businessId,
+          storeCode: owner.storeCode,
+        },
+      })
+
+      if (!business || business.deletedAt) {
+        throw new Error('Account closed')
+      }
+
       request.menuAccess = {
         role: 'owner',
         businessId:
@@ -78,6 +97,17 @@ export class MenuAccessGuard
     try {
       const kitchen =
         verifyKitchenToken(token)
+
+      const business = await this.businesses.findOne({
+        where: {
+          id: kitchen.businessId,
+          storeCode: kitchen.storeCode,
+        },
+      })
+
+      if (!business || business.deletedAt) {
+        throw new Error('Account closed')
+      }
 
       request.menuAccess = {
         role: 'kitchen',

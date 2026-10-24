@@ -48,7 +48,7 @@ export class KitchenSessionGuard implements CanActivate {
         },
       })
 
-      if (!business || !kitchenSessionMatchesPassword(
+      if (!business || business.deletedAt || !kitchenSessionMatchesPassword(
         kitchen,
         business.kitchenPassword,
       )) {

@@ -8,6 +8,9 @@ import {
 import type {
   Request,
 } from 'express'
+import { InjectRepository } from '@nestjs/typeorm'
+import { Repository } from 'typeorm'
+import { Business } from '../business/business.entity'
 
 import {
   ownerBearerToken,
@@ -27,7 +30,12 @@ export type OwnerRequest =
 export class OwnerSessionGuard
   implements CanActivate
 {
-  canActivate(
+  constructor(
+    @InjectRepository(Business)
+    private readonly businesses: Repository<Business>,
+  ) {}
+
+  async canActivate(
     context:
       ExecutionContext,
   ) {
@@ -49,11 +57,19 @@ export class OwnerSessionGuard
     }
 
     try {
-      request.owner =
-        verifyOwnerToken(
-          token,
-        )
+      const owner = verifyOwnerToken(token)
+      const business = await this.businesses.findOne({
+        where: {
+          id: owner.businessId,
+          storeCode: owner.storeCode,
+        },
+      })
 
+      if (!business || business.deletedAt) {
+        throw new Error('Account closed or session revoked')
+      }
+
+      request.owner = owner
       return true
     } catch {
       throw new UnauthorizedException(
