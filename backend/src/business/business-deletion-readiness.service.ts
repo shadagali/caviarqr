@@ -25,6 +25,11 @@ import {
   MarketingCampaign,
   MarketingCampaignStatus,
 } from '../marketing/marketing-campaign.entity'
+import { StandCode } from '../stand/stand-code.entity'
+import {
+  SalesCommission,
+  SalesCommissionStatus,
+} from '../sales/entities/sales-commission.entity'
 
 @Injectable()
 export class BusinessDeletionReadinessService {
@@ -66,6 +71,9 @@ export class BusinessDeletionReadinessService {
       pendingRefunds,
       activeSupport,
       campaignsSending,
+      unsettledSalesCommissions,
+      claimedStandCodes,
+      historicalOrders,
     ] = await Promise.all([
       this.db.getRepository(Order)
         .createQueryBuilder('o')
@@ -87,9 +95,9 @@ export class BusinessDeletionReadinessService {
             PendingOrderStatus.CHECKOUT_CREATED,
           ],
         })
-        .andWhere('(p.expiresAt IS NULL OR p.expiresAt > :now)', {
-          now: new Date(),
-        })
+        // Do not exclude expired sessions. Stripe webhooks can arrive
+        // after expiry and still need reconciliation against the
+        // ORIGINAL businessId before a store code can be reused.
         .getCount(),
 
       this.db.getRepository(RefundAttempt)
@@ -125,6 +133,29 @@ export class BusinessDeletionReadinessService {
           status: MarketingCampaignStatus.SENDING,
         },
       }),
+
+      // Commissions may still be owed even if every order is DONE.
+      this.db.getRepository(SalesCommission)
+        .createQueryBuilder('commission')
+        .where('commission.businessId = :businessId', { businessId })
+        .andWhere('commission.status IN (:...statuses)', {
+          statuses: [
+            SalesCommissionStatus.PENDING,
+            SalesCommissionStatus.AVAILABLE,
+            SalesCommissionStatus.PAYOUT_PENDING,
+          ],
+        })
+        .getCount(),
+
+      // Hardware stands can remain claimed to the old business.
+      // NEVER release them merely because a store code is known.
+      this.db.getRepository(StandCode).count({
+        where: { claimedBusinessId: businessId },
+      }),
+
+      // This is retained history, not itself a reason to refuse
+      // account closure. It must remain linked to businessId.
+      this.db.getRepository(Order).count({ where: { businessId } }),
     ])
 
     return {
@@ -132,12 +163,19 @@ export class BusinessDeletionReadinessService {
       deletionPerformed: false,
       canDeleteNow: false,
       requiresStripeAndOwnershipReview: true,
+      // There is no safe automated Stripe settlement verification yet.
+      // A connected account must be reviewed independently in Stripe.
+      hasConnectedStripeAccount: Boolean(business.stripeAccountId),
+      storeCodeReclaimAuthorized: false,
       counts: {
         unresolvedOrders,
         openCheckouts,
         pendingRefunds,
         activeSupport,
         campaignsSending,
+        unsettledSalesCommissions,
+        claimedStandCodes,
+        historicalOrders,
       },
       message:
         'Readiness check only. Account deletion is not enabled.',
