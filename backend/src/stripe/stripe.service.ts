@@ -202,7 +202,7 @@ export class StripeService {
             },
           })
 
-      if (!business) {
+      if (!business || business.deletedAt) {
         throw new BadRequestException(
           'Business not found.',
         )

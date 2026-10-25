@@ -350,6 +350,7 @@ export class OrderService {
   // =========================
   async getOrdersByStore(
     storeCode: string,
+    businessId: number,
   ) {
     try {
       return await this.orderRepo
@@ -361,6 +362,10 @@ export class OrderService {
           {
             storeCode,
           },
+        )
+        .andWhere(
+          'order.businessId = :businessId',
+          { businessId },
         )
         .andWhere(
           'order.status != :done',
@@ -396,6 +401,7 @@ export class OrderService {
   // =========================
   async getPastOrders(
     storeCode: string,
+    businessId: number,
   ) {
     try {
       console.log(
@@ -422,6 +428,10 @@ export class OrderService {
           {
             storeCode,
           },
+        )
+        .andWhere(
+          'order.businessId = :businessId',
+          { businessId },
         )
         .andWhere(
           'order.createdAt >= :cutoff',
@@ -715,6 +725,7 @@ export class OrderService {
   async searchOrders(
     storeCode: string,
     query: string,
+    businessId: number,
   ) {
     try {
       const qb = this.orderRepo
@@ -722,6 +733,10 @@ export class OrderService {
         .where(
           'order.storeCode = :storeCode',
           { storeCode },
+        )
+        .andWhere(
+          'order.businessId = :businessId',
+          { businessId },
         )
 
       if (

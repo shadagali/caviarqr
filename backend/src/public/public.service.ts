@@ -51,6 +51,12 @@ export class PublicService {
         },
       })
 
+    if (business?.deletedAt) {
+      throw new NotFoundException(
+        'Store not found',
+      )
+    }
+
     if (!business) {
       const stand =
         await this.standService

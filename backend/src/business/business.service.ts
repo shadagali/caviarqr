@@ -569,7 +569,7 @@ export class BusinessService {
         },
       })
 
-    if (!business) {
+    if (!business || business.deletedAt) {
       throw new UnauthorizedException(
         'Invalid email or password',
       )
@@ -1139,7 +1139,7 @@ If you did not request this reset, you can ignore this email.`,
         },
       })
 
-    if (!business) {
+    if (!business || business.deletedAt) {
       throw new UnauthorizedException(
         'Invalid credentials',
       )

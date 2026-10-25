@@ -102,7 +102,7 @@ export class MarketingService {
           },
         })
 
-    if (!business) {
+    if (!business || business.deletedAt) {
       throw new NotFoundException(
         'Cafe not found.',
       )
