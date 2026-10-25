@@ -12,6 +12,7 @@ import {
 } from './business-legal-acceptance.entity'
 import { BusinessService } from './business.service'
 import { BusinessController } from './business.controller'
+import { BusinessDeletionReadinessService } from './business-deletion-readiness.service'
 
 import {
   OwnerSessionGuard,
@@ -35,6 +36,7 @@ import {
   ],
   providers: [
     BusinessService,
+    BusinessDeletionReadinessService,
     OwnerSessionGuard,
   ],
   controllers: [BusinessController],

@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common'
 
 import { BusinessService } from './business.service'
+import { BusinessDeletionReadinessService } from './business-deletion-readiness.service'
 
 import type {
   Request,
@@ -27,7 +28,21 @@ export class BusinessController {
   constructor(
     private readonly businessService:
       BusinessService,
+    private readonly deletionReadiness: BusinessDeletionReadinessService,
   ) {}
+
+  @Post('delete-account/readiness')
+  @UseGuards(OwnerSessionGuard)
+  async checkAccountDeletion(
+    @Req() request: OwnerRequest,
+    @Body() body: { password?: string; storeCode?: string },
+  ) {
+    return this.deletionReadiness.check(
+      request.owner!.businessId,
+      request.owner!.storeCode,
+      body,
+    )
+  }
 
   // =========================
   // 🔥 SIGNUP
