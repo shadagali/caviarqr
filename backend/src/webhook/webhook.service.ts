@@ -1796,34 +1796,41 @@ Powered by CaviarQR`
       // 🔥 BUSINESS
       // =========================
 
+      // Resolve a paid checkout by its immutable restaurant ID,
+      // never by the reusable public store code. Late Stripe
+      // webhooks must remain attached to the original restaurant
+      // after that code is reclaimed by a different restaurant.
       const business =
         await this.businessRepo.findOne({
           where: {
-            storeCode,
+            id: pendingOrder.businessId,
           },
         })
 
       if (!business) {
         this.logger.error(
-          `BUSINESS_NOT_FOUND: ${storeCode}`,
+          `BUSINESS_ID_NOT_FOUND: ${pendingOrder.businessId}`,
         )
 
         await this.markPendingFailed(
           pendingOrderId,
           stripeSessionId,
           paymentIntentId,
-          `BUSINESS_NOT_FOUND: ${storeCode}`,
+          `BUSINESS_ID_NOT_FOUND: ${pendingOrder.businessId}`,
         )
 
         return
       }
 
+      // Active businesses must retain the store code used when
+      // the checkout started. Closed businesses may have a
+      // tombstoned storeCode, but are still the same business ID.
       if (
-        business.id !==
-        pendingOrder.businessId
+        !business.deletedAt &&
+        business.storeCode !== storeCode
       ) {
         throw new Error(
-          `BUSINESS_MISMATCH: PendingOrder belongs to ${pendingOrder.businessId}, store belongs to ${business.id}.`,
+          `STORE_CODE_BUSINESS_MISMATCH: PendingOrder ${pendingOrderId} does not belong to active business ${business.id}.`,
         )
       }
 
