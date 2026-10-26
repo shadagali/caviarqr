@@ -606,6 +606,7 @@ export class StripeService {
               'open' &&
             existingSession.url
           ) {
+            await this.assertCheckoutStillAllowed(business.id)
             return {
               url:
                 existingSession.url,
@@ -790,6 +791,8 @@ export class StripeService {
           )
         }
       }
+
+      await this.assertCheckoutStillAllowed(business.id)
 
       const paymentMetadata = {
         pendingOrderId:
@@ -1055,6 +1058,29 @@ export class StripeService {
   // =====================================
   // STRIPE ACCOUNT STATUS
   // =====================================
+
+  /**
+   * Recheck checkout eligibility under a short database row lock.
+   * Final account closure must lock this same business row before
+   * checking pending payments and committing the closed state.
+   */
+  private async assertCheckoutStillAllowed(
+    businessId: number,
+  ): Promise<void> {
+    await this.businessRepo.manager.transaction(async (manager) => {
+      const business = await manager.getRepository(Business)
+        .createQueryBuilder('business')
+        .setLock('pessimistic_read')
+        .where('business.id = :businessId', { businessId })
+        .getOne()
+
+      if (!business || business.deletedAt || !business.isOpen) {
+        throw new BadRequestException(
+          'Restaurant is no longer accepting payments.',
+        )
+      }
+    })
+  }
 
   private async syncStripeAccountStatus(
     business: Business,
